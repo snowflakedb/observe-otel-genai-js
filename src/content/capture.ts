@@ -3,10 +3,11 @@
  *
  * Controls how much of a generation/tool's prompt, completion, and tool-call
  * payload makes it onto the exported telemetry. Modes are deliberately coarse
- * so they're easy to reason about in policy reviews.
+ * so they're easy to reason about in policy reviews. Content is always carried
+ * as structured span attributes (`gen_ai.input.messages` etc.).
  */
 
-import type { BlobStore } from './blob-store.js';
+import type { Span } from '@opentelemetry/api';
 
 /**
  * Coarse switch for "what content is included at all":
@@ -16,18 +17,6 @@ import type { BlobStore } from './blob-store.js';
  *  - `metadata_only`   → strip ALL content; only structured metadata remains.
  */
 export type ContentCaptureMode = 'default' | 'full' | 'no_tool_content' | 'metadata_only';
-
-/**
- * Where prompt/completion content is carried on the telemetry:
- *  - `span_attributes` → structured `gen_ai.input.messages` /
- *    `gen_ai.output.messages` / `gen_ai.system_instructions` attributes on the
- *    generation span (semconv 1.37+ shape; JSON-string encoded today — see
- *    `content/encode.ts`). This is the default.
- *  - `span_events`     → legacy per-message span events
- *    (`gen_ai.user.message`, `gen_ai.choice`, ...). Retained for back-compat.
- *  - `none`            → no content carrier (metadata still emitted).
- */
-export type ContentCarrier = 'span_attributes' | 'span_events' | 'none';
 
 /**
  * Truncation strategy applied when content exceeds `maxContentLength`.
@@ -44,33 +33,10 @@ export type TruncationStrategy = 'middle' | 'end' | 'head_tail';
 export interface ContentCapture {
   /** When false, no content is emitted at all (`metadata_only` equivalent). */
   enabled: boolean;
-  /** Maximum chars per content payload before truncation/offload triggers. */
+  /** Maximum chars per content payload before truncation triggers. */
   maxContentLength: number;
   /** How to truncate when content exceeds `maxContentLength`. */
   truncationStrategy: TruncationStrategy;
-  /**
-   * @deprecated Use `carrier` instead. When `carrier` is unset, `useEvents:true`
-   * maps to `carrier:'span_attributes'`? No — it maps to `carrier:'span_events'`
-   * to preserve existing behavior; `useEvents:false` is ignored in favor of the
-   * `carrier` default.
-   *
-   * When `true`, content is emitted as span events
-   * (`gen_ai.user.message`, `gen_ai.choice`, ...).
-   */
-  useEvents: boolean;
-  /**
-   * Where content is carried. Defaults to `span_attributes` (structured
-   * `gen_ai.*.messages` on the span). Takes precedence over `useEvents`; when
-   * unset, a legacy `useEvents:true` is honored as `span_events`.
-   */
-  carrier?: ContentCarrier;
-  /**
-   * Optional blob store. When configured and content exceeds
-   * `maxContentLength`, the library uploads the full content and the span
-   * event carries a `gen_ai.content.uri` attribute instead of the truncated
-   * body.
-   */
-  blobStore?: BlobStore;
 }
 
 export const DEFAULT_MAX_CONTENT_LENGTH = 32 * 1024;
@@ -80,19 +46,7 @@ export function defaultContentCapture(): ContentCapture {
     enabled: true,
     maxContentLength: DEFAULT_MAX_CONTENT_LENGTH,
     truncationStrategy: 'middle',
-    useEvents: false,
-    carrier: 'span_attributes',
   };
-}
-
-/**
- * Resolves the effective content carrier. Explicit `carrier` wins; otherwise a
- * legacy `useEvents:true` maps to `span_events`; otherwise `span_attributes`.
- */
-export function resolveContentCarrier(capture: ContentCapture): ContentCarrier {
-  if (capture.carrier) return capture.carrier;
-  if (capture.useEvents) return 'span_events';
-  return 'span_attributes';
 }
 
 /**
@@ -156,6 +110,27 @@ export function truncate(
     originalSizeBytes,
     truncationStrategy: strategy,
   };
+}
+
+/**
+ * Stores content as a span attribute under `key`, applying truncation. When the
+ * payload overflows `maxContentLength`, the truncated body is written along with
+ * `${key}.truncated` and `${key}.original_size_bytes` markers so the original
+ * size is still visible on the span.
+ */
+export function applyContentAttribute(
+  span: Span,
+  key: string,
+  content: string | undefined,
+  capture: ContentCapture,
+): void {
+  if (!capture.enabled || !content) return;
+  const result = truncate(content, capture.maxContentLength, capture.truncationStrategy);
+  span.setAttribute(key, result.text);
+  if (result.truncated) {
+    span.setAttribute(`${key}.truncated`, true);
+    span.setAttribute(`${key}.original_size_bytes`, result.originalSizeBytes);
+  }
 }
 
 /**

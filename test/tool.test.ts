@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ATTR_OPERATION_NAME,
+  ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_ID,
+  ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_NAME,
   ATTR_TOOL_TYPE,
-  EVENT_GENAI_TOOL_MESSAGE,
   OP_EXECUTE_TOOL,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
@@ -37,7 +38,7 @@ describe('ToolExecutionRecorder', () => {
     expect(span?.kind).toBe(0 /* INTERNAL */);
   });
 
-  it('emits tool_call/tool_result span events when content capture is full', async () => {
+  it('emits tool_call arguments/result span attributes when content capture is full', async () => {
     const rec = h.client.startToolExecution({ toolName: 'search' });
     rec.setResult({
       arguments: { q: 'what is otel' },
@@ -46,8 +47,9 @@ describe('ToolExecutionRecorder', () => {
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
-    const toolMessageEvents = span!.events.filter((e) => e.name === EVENT_GENAI_TOOL_MESSAGE);
-    expect(toolMessageEvents.length).toBe(2);
+    expect(span?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
+    expect(span?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
+    expect(span!.events.length).toBe(0);
   });
 
   it('skips tool content when capture mode is no_tool_content', async () => {
@@ -59,8 +61,8 @@ describe('ToolExecutionRecorder', () => {
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
-    const eventNames = span!.events.map((e) => e.name);
-    expect(eventNames).not.toContain(EVENT_GENAI_TOOL_MESSAGE);
+    expect(span?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeUndefined();
+    expect(span?.attributes[ATTR_TOOL_CALL_RESULT]).toBeUndefined();
   });
 
   it('classifies tool execution errors as tool_execution_error', async () => {

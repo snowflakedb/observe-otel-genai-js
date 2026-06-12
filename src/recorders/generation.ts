@@ -7,21 +7,19 @@
  *   2. User code calls the provider, then calls `setResult({ usage, output, ... })`.
  *      Streaming users also call `setFirstTokenAt(t)` for TTFT.
  *   3. User calls `end()` (or `await using` cleanup does it). Finalize emits
- *      content events, refreshes attributes, records exceptions/status,
- *      records 1-6 histograms, and ends the span.
+ *      content as structured span attributes, refreshes attributes, records
+ *      exceptions/status, records 1-6 histograms, and ends the span.
  */
 
 import type { Span } from '@opentelemetry/api';
 import type { ContentCaptureMode } from '../content/capture.js';
-import { resolveContentCarrier } from '../content/capture.js';
 import { emitGenerationContent } from '../content/sink.js';
-import { BlobStoreError, ValidationError } from '../errors.js';
+import { ValidationError } from '../errors.js';
 import type { Generation, GenerationStart, ModelRef } from '../models/generation.js';
 import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
 import {
   ATTR_CONVERSATION_TITLE,
-  ERR_TYPE_BLOB_STORE,
   ERR_TYPE_MAPPING,
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -118,16 +116,9 @@ export class GenerationRecorder extends RecorderBase {
       ),
     );
 
-    // 4. Emit content via the configured carrier (span attributes by default).
+    // 4. Emit content as structured span attributes.
     if (!stripped && captureConfig.enabled) {
-      const carrier = resolveContentCarrier(captureConfig);
-      const { blobError } = await emitGenerationContent(
-        this.span,
-        generation,
-        captureConfig,
-        carrier,
-      );
-      if (blobError) this.localError = blobError;
+      emitGenerationContent(this.span, generation, captureConfig);
     } else if (stripped) {
       // Strip user-facing content from the merged payload so the attribute
       // application below does not leak the conversation title onto the span.
@@ -162,9 +153,6 @@ export class GenerationRecorder extends RecorderBase {
       classified = this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped);
     } else if (this.mappingError != null) {
       classified = this.classify(this.mappingError, ERR_TYPE_MAPPING, stripped);
-    } else if (this.localError instanceof BlobStoreError) {
-      classified = this.classify(this.localError, ERR_TYPE_BLOB_STORE, false);
-      this.recordSdkException(this.localError);
     } else if (this.localError instanceof ValidationError) {
       classified = this.classify(this.localError, ERR_TYPE_VALIDATION, false);
       this.recordSdkException(this.localError);

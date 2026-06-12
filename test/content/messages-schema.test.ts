@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  previewOf,
   toSemconvInputMessages,
   toSemconvOutputMessages,
   toSystemInstructions,
@@ -118,33 +117,5 @@ describe('messages-schema: toSystemInstructions', () => {
     expect(toSystemInstructions('')).toEqual([]);
     expect(toSystemInstructions('   ')).toEqual([]);
     expect(toSystemInstructions(undefined)).toEqual([]);
-  });
-});
-
-describe('messages-schema: previewOf', () => {
-  it('input preview picks the last user message text', () => {
-    const msgs: Message[] = [
-      { role: 'user', parts: [{ kind: 'text', text: 'first' }] },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'reply' }] },
-      { role: 'user', parts: [{ kind: 'text', text: 'latest question' }] },
-    ];
-    expect(previewOf(msgs, 'input', 256)).toBe('latest question');
-  });
-
-  it('output preview picks the first text part', () => {
-    const msgs: Message[] = [{ role: 'assistant', parts: [{ kind: 'text', text: 'answer' }] }];
-    expect(previewOf(msgs, 'output', 256)).toBe('answer');
-  });
-
-  it('truncates with an ellipsis at maxChars', () => {
-    const msgs: Message[] = [{ role: 'user', parts: [{ kind: 'text', text: 'abcdefghij' }] }];
-    const preview = previewOf(msgs, 'input', 5);
-    expect(preview).toBe('abcd\u2026');
-    expect(preview.length).toBe(5);
-  });
-
-  it('returns empty string for empty input', () => {
-    expect(previewOf([], 'input', 256)).toBe('');
-    expect(previewOf(undefined, 'output', 256)).toBe('');
   });
 });

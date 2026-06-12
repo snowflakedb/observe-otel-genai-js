@@ -1,23 +1,18 @@
 /**
  * `ToolExecutionRecorder` — wraps an `execute_tool` span.
  *
- * Tool arguments and results are serialized to JSON and emitted either as
- * span attributes (`gen_ai.tool.call.arguments` / `.result`) or as span events
- * (`gen_ai.content.tool_call` / `.tool_result`) depending on
- * `ContentCapture.useEvents`.
+ * Tool arguments and results are serialized to JSON and emitted as span
+ * attributes (`gen_ai.tool.call.arguments` / `.result`), subject to the
+ * content-capture mode.
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
-import { applyContentAttribute, emitContentEvent } from '../content/events.js';
-import { BlobStoreError } from '../errors.js';
+import { type ContentCaptureMode, applyContentAttribute } from '../content/capture.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
   ERR_TYPE_TOOL_EXECUTION,
-  EVENT_CONTENT_TOOL_CALL,
-  EVENT_CONTENT_TOOL_RESULT,
 } from '../semconv.js';
 import { applyToolAttributes } from '../spans/attributes.js';
 import { toolSpanName } from '../spans/names.js';
@@ -60,27 +55,11 @@ export class ToolExecutionRecorder extends RecorderBase {
     if (allowToolContent && captureConfig.enabled && this.result) {
       const argsStr = serializeToolPayload(this.result.arguments);
       const resStr = serializeToolPayload(this.result.result);
-      try {
-        if (argsStr && captureConfig.useEvents) {
-          await emitContentEvent(this.span, EVENT_CONTENT_TOOL_CALL, argsStr, captureConfig, {
-            role: this.seed.toolName,
-            index: 0,
-          });
-        } else if (argsStr) {
-          applyContentAttribute(this.span, ATTR_TOOL_CALL_ARGUMENTS, argsStr, captureConfig);
-        }
-
-        if (resStr && captureConfig.useEvents) {
-          await emitContentEvent(this.span, EVENT_CONTENT_TOOL_RESULT, resStr, captureConfig, {
-            role: this.seed.toolName,
-            index: 0,
-          });
-        } else if (resStr) {
-          applyContentAttribute(this.span, ATTR_TOOL_CALL_RESULT, resStr, captureConfig);
-        }
-      } catch (err) {
-        if (err instanceof BlobStoreError) this.localError = err;
-        else throw err;
+      if (argsStr) {
+        applyContentAttribute(this.span, ATTR_TOOL_CALL_ARGUMENTS, argsStr, captureConfig);
+      }
+      if (resStr) {
+        applyContentAttribute(this.span, ATTR_TOOL_CALL_RESULT, resStr, captureConfig);
       }
     }
 

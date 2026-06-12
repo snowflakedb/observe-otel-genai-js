@@ -16,7 +16,6 @@ Use `tsx` (already in devDependencies):
 pnpm exec tsx examples/basic-chat/index.ts
 pnpm exec tsx examples/multi-turn/index.ts
 pnpm exec tsx examples/multi-agent-dag/index.ts
-pnpm exec tsx examples/blob-store/index.ts
 pnpm exec tsx examples/observe/index.ts
 ```
 
@@ -27,7 +26,6 @@ pnpm exec tsx examples/observe/index.ts
 | `basic-chat/` | Single `startGeneration` lifecycle wrapped around a (mocked) provider call. |
 | `multi-turn/` | `withConversationId` + `turn_index` / `turn_role` across multiple turns. |
 | `multi-agent-dag/` | Planner → executor → responder with `parentGenerationIds` span links + `invokeAgent` callback variant. |
-| `blob-store/` | `LocalFsBlobStore` offloading a >100 KB prompt; span event carries `gen_ai.content.uri`. |
 | `observe/` | `bootstrapOtel` reading env vars; designed to ship to Observe (or any OTLP/HTTP backend). |
 
 Every example uses an in-memory exporter by default (so you can run it without a backend) and falls back to OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.

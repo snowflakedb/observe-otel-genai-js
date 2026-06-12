@@ -39,7 +39,6 @@ export {
 
 // Errors
 export {
-  BlobStoreError,
   ClientShutdownError,
   FlushTimeoutError,
   GenAIOtelError,
@@ -52,22 +51,13 @@ export {
   defaultContentCapture,
   DEFAULT_MAX_CONTENT_LENGTH,
   resolveContentCaptureMode,
-  resolveContentCarrier,
   truncate,
   type ContentCapture,
   type ContentCaptureMode,
-  type ContentCarrier,
   type TruncationResult,
   type TruncationStrategy,
 } from './content/capture.js';
-export { LocalFsBlobStore, type BlobStore } from './content/blob-store.js';
 export {
-  DEFAULT_CONTENT_ENCODING,
-  encodeContentValue,
-  type ContentEncoding,
-} from './content/encode.js';
-export {
-  previewOf,
   toSemconvInputMessages,
   toSemconvOutputMessages,
   toSystemInstructions,
@@ -136,10 +126,8 @@ export {
   ATTR_CONVERSATION_ID,
   ATTR_GENERATION_ID,
   ATTR_INPUT_MESSAGES,
-  ATTR_INPUT_PREVIEW,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
-  ATTR_OUTPUT_PREVIEW,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_MODEL,
@@ -173,9 +161,3 @@ export {
   type OperationName,
   type TokenType,
 } from './semconv.js';
-
-// Sanitizer factory
-export {
-  createSecretRedactionSanitizer,
-  type SecretRedactionOptions,
-} from './sanitizers/secret.js';

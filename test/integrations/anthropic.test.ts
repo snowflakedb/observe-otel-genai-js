@@ -94,8 +94,8 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     });
 
     const [span] = h.spans.getFinishedSpans();
-    const systemEvent = span!.events.find((e) => e.name === 'gen_ai.system.message');
-    expect(systemEvent?.attributes?.['genai.content.body']).toBe('be helpful');
+    const system = JSON.parse(span!.attributes['gen_ai.system_instructions'] as string);
+    expect(system).toEqual([{ type: 'text', content: 'be helpful' }]);
   });
 });
 

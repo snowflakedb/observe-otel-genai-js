@@ -1,24 +1,13 @@
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LocalFsBlobStore } from '../src/content/blob-store.js';
 import {
   defaultContentCapture,
   resolveContentCaptureMode,
   truncate,
 } from '../src/content/capture.js';
 import {
-  ATTR_CONTENT_BODY,
-  ATTR_CONTENT_TRUNCATED,
-  ATTR_CONTENT_TRUNCATION_STRATEGY,
-  ATTR_CONTENT_URI,
   ATTR_INPUT_MESSAGES,
-  ATTR_INPUT_PREVIEW,
   ATTR_OUTPUT_MESSAGES,
-  ATTR_OUTPUT_PREVIEW,
   ATTR_SYSTEM_INSTRUCTIONS,
-  EVENT_GENAI_USER_MESSAGE,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
 
@@ -66,100 +55,7 @@ describe('content capture mode resolution', () => {
   });
 });
 
-describe('content events on the generation span (span_events carrier)', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness({
-      contentCaptureMode: 'full',
-      contentCapture: { ...defaultContentCapture(), carrier: 'span_events' },
-    });
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
-
-  it('emits gen_ai.content.prompt events for input messages', async () => {
-    const rec = h.client.startGeneration({
-      model: { provider: 'openai', name: 'gpt-4o' },
-    });
-    rec.setResult({
-      input: [{ role: 'user', parts: [{ kind: 'text', text: 'hi there' }] }],
-      output: [{ role: 'assistant', parts: [{ kind: 'text', text: 'hello!' }] }],
-    });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    const promptEvents = span!.events.filter((e) => e.name === EVENT_GENAI_USER_MESSAGE);
-    expect(promptEvents.length).toBe(1);
-    expect(promptEvents[0]?.attributes?.[ATTR_CONTENT_BODY]).toBe('hi there');
-  });
-
-  it('truncates content over maxContentLength with explicit metadata', async () => {
-    await h.shutdown();
-    h = createHarness({
-      contentCaptureMode: 'full',
-      contentCapture: { ...defaultContentCapture(), carrier: 'span_events', maxContentLength: 50 },
-    });
-
-    const long = 'X'.repeat(500);
-    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    const ev = span!.events.find((e) => e.name === EVENT_GENAI_USER_MESSAGE);
-    expect(ev?.attributes?.[ATTR_CONTENT_TRUNCATED]).toBe(true);
-    expect(ev?.attributes?.[ATTR_CONTENT_TRUNCATION_STRATEGY]).toBe('middle');
-  });
-
-  it('offloads to BlobStore when configured and over threshold; emits gen_ai.content.uri', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'genai-otel-blob-'));
-    const blob = new LocalFsBlobStore(dir);
-
-    await h.shutdown();
-    h = createHarness({
-      contentCaptureMode: 'full',
-      contentCapture: {
-        ...defaultContentCapture(),
-        carrier: 'span_events',
-        maxContentLength: 100,
-        blobStore: blob,
-      },
-    });
-
-    const long = 'A'.repeat(5_000);
-    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    const ev = span!.events.find((e) => e.name === EVENT_GENAI_USER_MESSAGE);
-    expect(ev?.attributes?.[ATTR_CONTENT_URI]).toBeDefined();
-    expect((ev!.attributes![ATTR_CONTENT_URI] as string).startsWith('file://')).toBe(true);
-  });
-
-  it('strips content entirely under metadata_only', async () => {
-    await h.shutdown();
-    h = createHarness({
-      contentCaptureMode: 'metadata_only',
-      contentCapture: { ...defaultContentCapture(), carrier: 'span_events' },
-    });
-    const rec = h.client.startGeneration({
-      model: { provider: 'p', name: 'm' },
-      conversationTitle: 'sensitive title',
-    });
-    rec.setResult({
-      input: [{ role: 'user', parts: [{ kind: 'text', text: 'secret prompt' }] }],
-    });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    expect(span!.events.length).toBe(0);
-    expect(span!.attributes['genai.conversation.title']).toBe('');
-  });
-});
-
-describe('content on span attributes (default carrier)', () => {
+describe('content on span attributes', () => {
   let h: Harness;
   beforeEach(() => {
     h = createHarness({ contentCaptureMode: 'full' });
@@ -168,7 +64,7 @@ describe('content on span attributes (default carrier)', () => {
     await h.shutdown();
   });
 
-  it('emits structured gen_ai.input/output.messages as JSON strings and previews (no events)', async () => {
+  it('emits structured gen_ai.input/output.messages as JSON strings (no events)', async () => {
     const rec = h.client.startGeneration({
       model: { provider: 'openai', name: 'gpt-4o' },
       systemPrompt: 'You are helpful',
@@ -193,9 +89,6 @@ describe('content on span attributes (default carrier)', () => {
 
     const system = JSON.parse(span!.attributes[ATTR_SYSTEM_INSTRUCTIONS] as string);
     expect(system).toEqual([{ type: 'text', content: 'You are helpful' }]);
-
-    expect(span!.attributes[ATTR_INPUT_PREVIEW]).toBe('hi there');
-    expect(span!.attributes[ATTR_OUTPUT_PREVIEW]).toBe('hello!');
   });
 
   it('truncates oversized content and records per-key truncation flags', async () => {
@@ -216,26 +109,6 @@ describe('content on span attributes (default carrier)', () => {
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.original_size_bytes`]).toBeGreaterThan(50);
   });
 
-  it('offloads oversized content to BlobStore and sets <key>.uri', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'genai-otel-blob-attr-'));
-    const blob = new LocalFsBlobStore(dir);
-    await h.shutdown();
-    h = createHarness({
-      contentCaptureMode: 'full',
-      contentCapture: { ...defaultContentCapture(), maxContentLength: 100, blobStore: blob },
-    });
-
-    const long = 'A'.repeat(5_000);
-    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    const uri = span!.attributes[`${ATTR_INPUT_MESSAGES}.uri`] as string | undefined;
-    expect(uri).toBeDefined();
-    expect(uri!.startsWith('file://')).toBe(true);
-  });
-
   it('strips all content under metadata_only', async () => {
     await h.shutdown();
     h = createHarness({ contentCaptureMode: 'metadata_only' });
@@ -247,6 +120,5 @@ describe('content on span attributes (default carrier)', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span!.attributes[ATTR_INPUT_MESSAGES]).toBeUndefined();
-    expect(span!.attributes[ATTR_INPUT_PREVIEW]).toBeUndefined();
   });
 });

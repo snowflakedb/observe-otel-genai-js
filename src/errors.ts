@@ -15,9 +15,6 @@ export class GenAIOtelError extends Error {
 /** A user-supplied seed or result was invalid. */
 export class ValidationError extends GenAIOtelError {}
 
-/** A `BlobStore.put(...)` call failed. The span still gets the truncated body. */
-export class BlobStoreError extends GenAIOtelError {}
-
 /** A method was called on a client/recorder that has been shut down. */
 export class ClientShutdownError extends GenAIOtelError {}
 

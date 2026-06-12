@@ -15,6 +15,10 @@
       "types": "./dist/bootstrap/index.d.ts",
       "import": "./dist/bootstrap/index.js"
     },
+    "./redaction": {
+      "types": "./dist/sanitizers/secret.d.ts",
+      "import": "./dist/sanitizers/secret.js"
+    },
     "./vercel-ai-sdk": {
       "types": "./dist/integrations/vercel-ai-sdk/index.d.ts",
       "import": "./dist/integrations/vercel-ai-sdk/index.js"

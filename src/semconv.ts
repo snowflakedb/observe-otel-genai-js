@@ -73,55 +73,17 @@ export const ATTR_TOOL_CALL_RESULT = 'gen_ai.tool.call.result';
 export const ATTR_ERROR_TYPE = 'error.type';
 export const ATTR_ERROR_CATEGORY = 'error.category';
 
-// Content (events)
-export const ATTR_CONTENT_ROLE = 'gen_ai.content.role';
-export const ATTR_CONTENT_INDEX = 'gen_ai.content.index';
-export const ATTR_CONTENT_TRUNCATED = 'gen_ai.content.truncated';
-export const ATTR_CONTENT_ORIGINAL_SIZE_BYTES = 'gen_ai.content.original_size_bytes';
-export const ATTR_CONTENT_TRUNCATION_STRATEGY = 'gen_ai.content.truncation_strategy';
-export const ATTR_CONTENT_URI = 'gen_ai.content.uri';
+// Content (truncation markers, applied as `<key>.truncated` siblings by the
+// content sink; see content/capture.ts and content/sink.ts).
 
 // Content (structured messages on span attributes — OTel GenAI semconv 1.37+).
 // These hold the chat history / model responses / system instructions in the
 // spec's structured message shape. Per the semconv, when recorded on spans they
 // MAY be a JSON string if structured (nested) attribute values are not supported
-// by the SDK — which is the case for OpenTelemetry JS today (see content/encode.ts).
+// by the SDK — which is the case for OpenTelemetry JS today.
 export const ATTR_INPUT_MESSAGES = 'gen_ai.input.messages';
 export const ATTR_OUTPUT_MESSAGES = 'gen_ai.output.messages';
 export const ATTR_SYSTEM_INSTRUCTIONS = 'gen_ai.system_instructions';
-
-// Content previews (library-specific extension, `genai.*` namespace). Short flat
-// strings so consumers can render a content preview in a span table without
-// decoding the full `gen_ai.*.messages` payload.
-export const ATTR_INPUT_PREVIEW = 'genai.input.preview';
-export const ATTR_OUTPUT_PREVIEW = 'genai.output.preview';
-
-// -----------------------------------------------------------------------------
-// Span event names
-// -----------------------------------------------------------------------------
-
-// Spec-compliant GenAI semconv content event names (current proposal).
-// Role-keyed events for prompts; `gen_ai.choice` for completions; `gen_ai.tool.message`
-// for tool results. The body of each event lives in `gen_ai.content.body`
-// (library-specific extension under the `genai.*`-adjacent body key — the OTel
-// spec recommends a structured body field but the JS API does not yet expose
-// one, so we stash it on a single attribute).
-export const EVENT_GENAI_SYSTEM_MESSAGE = 'gen_ai.system.message';
-export const EVENT_GENAI_USER_MESSAGE = 'gen_ai.user.message';
-export const EVENT_GENAI_ASSISTANT_MESSAGE = 'gen_ai.assistant.message';
-export const EVENT_GENAI_TOOL_MESSAGE = 'gen_ai.tool.message';
-export const EVENT_GENAI_CHOICE = 'gen_ai.choice';
-
-// Body attribute on content events. Library-specific extension under the
-// `genai.*` namespace so it does not collide with the spec.
-export const ATTR_CONTENT_BODY = 'genai.content.body';
-
-// Legacy event names kept for the recorder's internal `ContentEventKind` union.
-// The wire-level event names are derived from message role at emit time.
-export const EVENT_CONTENT_PROMPT = 'gen_ai.content.prompt';
-export const EVENT_CONTENT_COMPLETION = 'gen_ai.content.completion';
-export const EVENT_CONTENT_TOOL_CALL = 'gen_ai.content.tool_call';
-export const EVENT_CONTENT_TOOL_RESULT = 'gen_ai.content.tool_result';
 
 // -----------------------------------------------------------------------------
 // `gen_ai.operation.name` values
@@ -213,7 +175,6 @@ export const ERR_TYPE_PROVIDER_CALL = 'provider_call_error';
 export const ERR_TYPE_MAPPING = 'mapping_error';
 export const ERR_TYPE_TOOL_EXECUTION = 'tool_execution_error';
 export const ERR_TYPE_VALIDATION = 'validation_error';
-export const ERR_TYPE_BLOB_STORE = 'blob_store_error';
 
 // -----------------------------------------------------------------------------
 // Identity
