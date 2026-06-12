@@ -1,0 +1,100 @@
+/**
+ * Shared test harness — wires up in-memory OTel exporters so each test can
+ * assert on emitted spans / metrics without hitting the network.
+ *
+ * Each test creates a `Harness` in `beforeEach` and disposes it in `afterEach`
+ * so providers are clean between runs.
+ */
+
+import { context, metrics as metricsApi, trace } from '@opentelemetry/api';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from '@opentelemetry/sdk-metrics';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+
+import { Client } from '../src/client.js';
+import type { ClientConfig } from '../src/config.js';
+
+export interface Harness {
+  client: Client;
+  spans: InMemorySpanExporter;
+  metricsExporter: InMemoryMetricExporter;
+  metricReader: PeriodicExportingMetricReader;
+  tracerProvider: NodeTracerProvider;
+  meterProvider: MeterProvider;
+  /** Flushes everything and shuts the harness down. */
+  shutdown(): Promise<void>;
+  /** Collects the latest metric snapshot. */
+  collectMetrics(): Promise<ReturnType<InMemoryMetricExporter['getMetrics']>>;
+  /** Resets the span exporter (useful when reusing a single harness). */
+  resetSpans(): void;
+}
+
+/**
+ * Builds a fresh harness with isolated providers. Each call replaces the
+ * globally-registered providers — tests must not run concurrently against
+ * separate harnesses in the same process.
+ */
+export function createHarness(input?: ClientConfig): Harness {
+  const spans = new InMemorySpanExporter();
+  const tracerProvider = new NodeTracerProvider({
+    resource: resourceFromAttributes({ 'service.name': 'genai-otel-test' }),
+    spanProcessors: [new SimpleSpanProcessor(spans)],
+  });
+  tracerProvider.register();
+  trace.setGlobalTracerProvider(tracerProvider);
+
+  const metricsExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const metricReader = new PeriodicExportingMetricReader({
+    exporter: metricsExporter,
+    exportIntervalMillis: 60_000, // we trigger flushes manually
+  });
+  const meterProvider = new MeterProvider({
+    resource: resourceFromAttributes({ 'service.name': 'genai-otel-test' }),
+    readers: [metricReader],
+  });
+  metricsApi.setGlobalMeterProvider(meterProvider);
+
+  const client = new Client(input);
+
+  return {
+    client,
+    spans,
+    metricsExporter,
+    metricReader,
+    tracerProvider,
+    meterProvider,
+    async shutdown() {
+      await client.shutdown();
+      await tracerProvider.shutdown();
+      await meterProvider.shutdown();
+      // Unregister the globally-registered providers so the NEXT call to
+      // `createHarness` can re-install fresh ones. Without these, the OTel
+      // API silently refuses to overwrite the existing globals and the next
+      // test's spans/metrics go to dead providers.
+      trace.disable();
+      metricsApi.disable();
+      context.disable();
+    },
+    async collectMetrics() {
+      await meterProvider.forceFlush();
+      return metricsExporter.getMetrics();
+    },
+    resetSpans() {
+      spans.reset();
+      metricsExporter.reset();
+    },
+  };
+}
+
+/**
+ * Convenience: returns the first span whose name matches `predicate`.
+ */
+export function findSpan(spans: InMemorySpanExporter, predicate: (name: string) => boolean) {
+  return spans.getFinishedSpans().find((s) => predicate(s.name));
+}
