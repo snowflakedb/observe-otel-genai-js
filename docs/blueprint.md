@@ -21,7 +21,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Agent-task span hierarchy**: first-class `invokeAgent(...)` Client method + `AgentInvocationRecorder` matching OTel GenAI semconv `gen_ai.operation.name = "invoke_agent"`.
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.
 - **Tool content capture**: ON by default (`contentCaptureMode: 'no_tool_content'` is the global default — note: `no_tool_content` strips tool content, but `full` includes it; per-call override beats both).
-- **PII redaction**: `createSecretRedactionSanitizer()` factory ships ~20 hand-curated, high-confidence secret regex patterns (inspired by Gitleaks). General PII redaction stays user-owned.
+- **PII / secret redaction**: user-owned. The library exposes a `generationSanitizer` hook on `ClientConfig` that runs on the merged `Generation` before emission; callers plug in their own redaction logic.
 - **BlobStore adapters**: `BlobStore` Protocol + `LocalFsBlobStore` for v1. S3 / GCS deferred to v2.
 
 ## Out of scope for v1
