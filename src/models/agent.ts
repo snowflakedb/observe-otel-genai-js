@@ -1,0 +1,41 @@
+import type { ParentGenerationRef } from './generation.js';
+
+/**
+ * Seed fields used when invoke_agent recording starts. Wraps an agent's
+ * overall task so nested LLM/tool calls parent under it via the active span
+ * context.
+ */
+export interface AgentInvocationStart {
+  agentName: string;
+  agentId?: string;
+  agentVersion?: string;
+  agentDescription?: string;
+  /** Short description of what the agent was asked to do. */
+  task?: string;
+  conversationId?: string;
+  userId?: string;
+  parentGenerationIds?: ParentGenerationRef[];
+  tags?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+  startedAt?: Date | number;
+}
+
+/**
+ * Seed fields used when create_agent recording starts. Captures the one-time
+ * setup work that happens when an agent is initialized — loading config,
+ * registering tools, building the system prompt, etc.
+ *
+ * Per the OTel GenAI semantic conventions, `create_agent` is a distinct
+ * operation from `invoke_agent`. It does not have a `task` field (creation
+ * is the agent definition, not a specific task) nor a `conversationId` or
+ * `userId` (creation is per-agent, not per-conversation/user).
+ */
+export interface AgentCreationStart {
+  agentName: string;
+  agentId?: string;
+  agentVersion?: string;
+  agentDescription?: string;
+  tags?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+  startedAt?: Date | number;
+}
