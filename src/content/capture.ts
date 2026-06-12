@@ -33,20 +33,40 @@ export type TruncationStrategy = 'middle' | 'end' | 'head_tail';
 export interface ContentCapture {
   /** When false, no content is emitted at all (`metadata_only` equivalent). */
   enabled: boolean;
-  /** Maximum chars per content payload before truncation triggers. */
-  maxContentLength: number;
-  /** How to truncate when content exceeds `maxContentLength`. */
+  /**
+   * Optional cap (in characters) on each content payload. When unset, `0`, or
+   * non-finite, content is emitted in full with no truncation — matching
+   * OpenTelemetry's own default (unbounded attribute values) and deferring size
+   * policy to the SDK's `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend.
+   * Set a finite value to opt into truncation (e.g. to stay under a strict
+   * backend per-attribute limit or the OTLP message-size ceiling).
+   */
+  maxContentLength?: number;
+  /** How to truncate string payloads when a finite `maxContentLength` is set. */
   truncationStrategy: TruncationStrategy;
 }
 
+/**
+ * A reasonable cap for callers who want to opt into truncation. NOT applied by
+ * default — `defaultContentCapture()` leaves `maxContentLength` unset (unlimited).
+ */
 export const DEFAULT_MAX_CONTENT_LENGTH = 32 * 1024;
 
 export function defaultContentCapture(): ContentCapture {
   return {
     enabled: true,
-    maxContentLength: DEFAULT_MAX_CONTENT_LENGTH,
+    // Unlimited by default — no built-in truncation.
     truncationStrategy: 'middle',
   };
+}
+
+/** True when `maxContentLength` is a finite, positive cap that should truncate. */
+export function isContentCapped(maxContentLength: number | undefined): maxContentLength is number {
+  return (
+    typeof maxContentLength === 'number' &&
+    Number.isFinite(maxContentLength) &&
+    maxContentLength > 0
+  );
 }
 
 /**
@@ -125,7 +145,12 @@ export function applyContentAttribute(
   capture: ContentCapture,
 ): void {
   if (!capture.enabled || !content) return;
-  const result = truncate(content, capture.maxContentLength, capture.truncationStrategy);
+  const cap = capture.maxContentLength;
+  if (!isContentCapped(cap)) {
+    span.setAttribute(key, content);
+    return;
+  }
+  const result = truncate(content, cap, capture.truncationStrategy);
   span.setAttribute(key, result.text);
   if (result.truncated) {
     span.setAttribute(`${key}.truncated`, true);

@@ -91,22 +91,43 @@ describe('content on span attributes', () => {
     expect(system).toEqual([{ type: 'text', content: 'You are helpful' }]);
   });
 
-  it('truncates oversized content and records per-key truncation flags', async () => {
-    await h.shutdown();
-    h = createHarness({
-      contentCaptureMode: 'full',
-      contentCapture: { ...defaultContentCapture(), maxContentLength: 50 },
-    });
-
-    const long = 'X'.repeat(500);
+  it('does not truncate by default (unlimited) — emits full valid JSON', async () => {
+    const long = 'X'.repeat(100_000);
     const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
     rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
-    expect((span!.attributes[ATTR_INPUT_MESSAGES] as string).length).toBeLessThanOrEqual(60);
+    const raw = span!.attributes[ATTR_INPUT_MESSAGES] as string;
+    const parsed = JSON.parse(raw);
+    expect(parsed).toEqual([{ role: 'user', parts: [{ type: 'text', content: long }] }]);
+    expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBeUndefined();
+  });
+
+  it('leaf-trims oversized content to fit a finite cap while staying valid JSON', async () => {
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      contentCapture: { ...defaultContentCapture(), maxContentLength: 200 },
+    });
+
+    const long = 'X'.repeat(500);
+    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
+    rec.setResult({
+      input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }],
+    });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const raw = span!.attributes[ATTR_INPUT_MESSAGES] as string;
+    expect(raw.length).toBeLessThanOrEqual(200);
+    // Still valid JSON with the message structure intact.
+    const parsed = JSON.parse(raw);
+    expect(parsed[0].role).toBe('user');
+    expect(parsed[0].parts[0].type).toBe('text');
+    expect(parsed[0].parts[0].content.length).toBeLessThan(500);
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBe(true);
-    expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.original_size_bytes`]).toBeGreaterThan(50);
+    expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.original_size_bytes`]).toBeGreaterThan(500);
   });
 
   it('strips all content under metadata_only', async () => {
