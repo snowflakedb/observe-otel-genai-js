@@ -17,7 +17,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Long prompt/response content**: span events with middle-truncation at 32 KB, optional `BlobStore` offload (`gen_ai.content.uri` on the event).
 - **Provider setup**: optional `bootstrapOtel(...)` helper in a separate submodule; core library has no `@opentelemetry/sdk-*` runtime dep.
 - **Export target**: any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...), endpoint + auth via standard `OTEL_EXPORTER_OTLP_*` env vars. No vendor-specific code.
-- **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `gen_ai.conversation.turn_index` / `gen_ai.conversation.turn_role`.
+- **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `genai.conversation.turn_index` / `genai.conversation.turn_role` (library extensions; the spec only defines `gen_ai.conversation.id`).
 - **Agent-task span hierarchy**: first-class `invokeAgent(...)` Client method + `AgentInvocationRecorder` matching OTel GenAI semconv `gen_ai.operation.name = "invoke_agent"`.
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.
 - **Tool content capture**: ON by default (`contentCaptureMode: 'no_tool_content'` is the global default — note: `no_tool_content` strips tool content, but `full` includes it; per-call override beats both).
@@ -97,7 +97,7 @@ withConversationId(conversationId, async () => {
 });
 ```
 
-Per-turn ordering via first-class `turnIndex` (int) and `turnRole` (string) fields on `GenerationStart`. Backends group by `gen_ai.conversation.id` and order by timestamp (or `gen_ai.conversation.turn_index` if set).
+Per-turn ordering via first-class `turnIndex` (int) and `turnRole` (string) fields on `GenerationStart`. Backends group by `gen_ai.conversation.id` and order by timestamp (or `genai.conversation.turn_index` if set).
 
 ## Multi-agent dependency DAG
 

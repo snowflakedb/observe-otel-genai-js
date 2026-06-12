@@ -24,7 +24,7 @@ pnpm exec tsx examples/otlp-export/index.ts
 | Example | Concept |
 |--------|---------|
 | `basic-chat/` | Single `startGeneration` lifecycle wrapped around a (mocked) provider call. |
-| `multi-turn/` | `withConversationId` + `turn_index` / `turn_role` across multiple turns. |
+| `multi-turn/` | `withConversationId` + `genai.conversation.turn_index` / `turn_role` across multiple turns. |
 | `multi-agent-dag/` | Planner → executor → responder with `parentGenerationIds` span links + `invokeAgent` callback variant. |
 | `otlp-export/` | `bootstrapOtel` reading env vars; ships to any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...). |
 

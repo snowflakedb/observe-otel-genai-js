@@ -29,6 +29,7 @@ import {
   ATTR_FINISH_REASONS,
   ATTR_GENERATION_ID,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_TYPE,
   ATTR_PARENT_GENERATION_IDS,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_CHOICE_COUNT,
@@ -39,6 +40,7 @@ import {
   ATTR_REQUEST_PRESENCE_PENALTY,
   ATTR_REQUEST_SEED,
   ATTR_REQUEST_STOP_SEQUENCES,
+  ATTR_REQUEST_STREAM,
   ATTR_REQUEST_TEMPERATURE,
   ATTR_REQUEST_THINKING_BUDGET,
   ATTR_REQUEST_THINKING_ENABLED,
@@ -47,13 +49,14 @@ import {
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_SDK_NAME,
+  ATTR_SERVER_ADDRESS,
+  ATTR_SERVER_PORT,
   ATTR_TOOL_CALL_ID,
   ATTR_TOOL_DESCRIPTION,
   ATTR_TOOL_NAME,
   ATTR_TOOL_TYPE,
   ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
-  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
@@ -145,6 +148,10 @@ export function applyGenerationAttributes(span: Span, view: GenerationAttributeV
   setStrArray(span, ATTR_REQUEST_STOP_SEQUENCES, view.stopSequences);
   setBool(span, ATTR_REQUEST_THINKING_ENABLED, view.thinkingEnabled);
   setNum(span, ATTR_REQUEST_THINKING_BUDGET, view.thinkingBudgetTokens);
+  setStr(span, ATTR_OUTPUT_TYPE, view.outputType);
+  setStr(span, ATTR_SERVER_ADDRESS, view.serverAddress);
+  setNum(span, ATTR_SERVER_PORT, view.serverPort);
+  if (view.mode === 'STREAM') setBool(span, ATTR_REQUEST_STREAM, true);
 
   setNum(span, ATTR_CONVERSATION_TURN_INDEX, view.turnIndex);
   setStr(span, ATTR_CONVERSATION_TURN_ROLE, view.turnRole);
@@ -167,8 +174,6 @@ export function applyGenerationAttributes(span: Span, view: GenerationAttributeV
     if (usage.outputTokens) setNum(span, ATTR_USAGE_OUTPUT_TOKENS, usage.outputTokens);
     if (usage.cacheReadInputTokens)
       setNum(span, ATTR_USAGE_CACHE_READ_INPUT_TOKENS, usage.cacheReadInputTokens);
-    if (usage.cacheWriteInputTokens)
-      setNum(span, ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS, usage.cacheWriteInputTokens);
     if (usage.cacheCreationInputTokens)
       setNum(span, ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS, usage.cacheCreationInputTokens);
     if (usage.reasoningTokens) setNum(span, ATTR_USAGE_REASONING_TOKENS, usage.reasoningTokens);

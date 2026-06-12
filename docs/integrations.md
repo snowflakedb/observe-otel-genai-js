@@ -84,8 +84,8 @@ const result = await instrumentedChatCompletion(client, openai, { /* params */ }
 
 Same shape as the OpenAI adapter, with mappings for Anthropic-specific fields:
 
-- `usage.cache_creation_input_tokens` → `gen_ai.usage.cache_creation_input_tokens`
-- `usage.cache_read_input_tokens` → `gen_ai.usage.cache_read_input_tokens`
+- `usage.cache_creation_input_tokens` → `gen_ai.usage.cache_creation.input_tokens`
+- `usage.cache_read_input_tokens` → `gen_ai.usage.cache_read.input_tokens`
 - `stop_reason` → `gen_ai.response.finish_reasons`
 - `content[*]` blocks (text/thinking/tool_use/tool_result) → content events
 

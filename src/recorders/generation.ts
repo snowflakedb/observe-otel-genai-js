@@ -26,7 +26,6 @@ import {
   OP_CHAT,
   TOKEN_TYPE_CACHE_CREATION,
   TOKEN_TYPE_CACHE_READ,
-  TOKEN_TYPE_CACHE_WRITE,
   TOKEN_TYPE_INPUT,
   TOKEN_TYPE_OUTPUT,
   TOKEN_TYPE_REASONING,
@@ -270,11 +269,6 @@ export class GenerationRecorder extends RecorderBase {
     this.host.metrics.recordTokenUsage(
       usage.cacheReadInputTokens ?? 0,
       TOKEN_TYPE_CACHE_READ,
-      labels,
-    );
-    this.host.metrics.recordTokenUsage(
-      usage.cacheWriteInputTokens ?? 0,
-      TOKEN_TYPE_CACHE_WRITE,
       labels,
     );
     this.host.metrics.recordTokenUsage(

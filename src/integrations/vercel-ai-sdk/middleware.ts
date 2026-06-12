@@ -16,7 +16,8 @@
  * (`LanguageModelMiddleware = LanguageModelV3Middleware`). Provider-level
  * shapes differ from the flattened top-level result shapes:
  *   - `usage` is nested: `{ inputTokens: { total, cacheRead, cacheWrite },
- *      outputTokens: { total, reasoning } }`.
+ *      outputTokens: { total, reasoning } }`. `cacheWrite` maps to the spec's
+ *      cache-creation counter (`gen_ai.usage.cache_creation.input_tokens`).
  *   - `finishReason` is an object: `{ unified, raw }`.
  *   - `content` is an array of `{ type: 'text'|'reasoning'|'tool-call'|... }`.
  * These mappers are intentionally local (the granular `LanguageModelV3*` part
@@ -163,6 +164,7 @@ function startSeed(
     presencePenalty: params.presencePenalty,
     stopSequences: normalizeStopSequences(params.stopSequences),
     seed: params.seed,
+    outputType: params.responseFormat?.type === 'json' ? 'json' : undefined,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -190,6 +192,7 @@ interface ProviderCallParams {
   presencePenalty?: number;
   stopSequences?: unknown;
   seed?: number;
+  responseFormat?: { type?: string };
 }
 
 interface ProviderGenerateResult {
@@ -229,7 +232,8 @@ function mapV3Usage(usage: unknown): TokenUsage | undefined {
     inputTokens: input?.total,
     outputTokens: output?.total,
     cacheReadInputTokens: input?.cacheRead,
-    cacheWriteInputTokens: input?.cacheWrite,
+    // AI SDK `cacheWrite` is the spec's cache-creation concept.
+    cacheCreationInputTokens: input?.cacheWrite,
     reasoningTokens: output?.reasoning,
   };
   return out;

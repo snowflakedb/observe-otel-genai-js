@@ -1,4 +1,4 @@
-import type { OperationName } from '../semconv.js';
+import type { OperationName, OutputType } from '../semconv.js';
 import type { Message } from './message.js';
 import type { TokenUsage } from './usage.js';
 
@@ -91,6 +91,14 @@ export interface GenerationStart {
   thinkingEnabled?: boolean;
   thinkingBudgetTokens?: number;
 
+  /** Requested output modality (`gen_ai.output.type`). */
+  outputType?: OutputType;
+
+  /** GenAI provider endpoint host (`server.address`). */
+  serverAddress?: string;
+  /** GenAI provider endpoint port (`server.port`). */
+  serverPort?: number;
+
   tools?: ToolDefinition[];
 
   // Multi-turn ordering
@@ -144,6 +152,10 @@ export interface Generation {
   toolChoice?: string;
   thinkingEnabled?: boolean;
   thinkingBudgetTokens?: number;
+
+  outputType?: OutputType;
+  serverAddress?: string;
+  serverPort?: number;
 
   input?: Message[];
   output?: Message[];

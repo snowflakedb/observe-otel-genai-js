@@ -8,7 +8,6 @@ export interface TokenUsage {
   outputTokens?: number;
   totalTokens?: number;
   cacheReadInputTokens?: number;
-  cacheWriteInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningTokens?: number;
 }
@@ -26,7 +25,6 @@ export function normalizeUsage(usage: TokenUsage | undefined): TokenUsage {
     outputTokens: output,
     totalTokens: total > 0 ? total : input + output,
     cacheReadInputTokens: u.cacheReadInputTokens ?? 0,
-    cacheWriteInputTokens: u.cacheWriteInputTokens ?? 0,
     cacheCreationInputTokens: u.cacheCreationInputTokens ?? 0,
     reasoningTokens: u.reasoningTokens ?? 0,
   };

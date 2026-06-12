@@ -11,8 +11,8 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `create_agent` |
 | `gen_ai.conversation.id` | string | when set on `GenerationStart` or in `withConversationId(...)` context |
 | `genai.conversation.title` | string | when `conversationTitle` is set |
-| `gen_ai.conversation.turn_index` | int | when `turnIndex` is set on the start |
-| `gen_ai.conversation.turn_role` | string | when `turnRole` is set on the start |
+| `genai.conversation.turn_index` | int | when `turnIndex` is set on the start |
+| `genai.conversation.turn_role` | string | when `turnRole` is set on the start |
 | `gen_ai.agent.name` | string | when `agentName` is set |
 | `gen_ai.agent.version` | string | when `agentVersion` is set |
 | `gen_ai.agent.id` | string | on `invoke_agent` and `create_agent` spans |
@@ -31,6 +31,8 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.request.model` | string | generation, embedding spans |
 | `gen_ai.response.model` | string | generation, embedding spans (when known after the provider call) |
 | `gen_ai.response.id` | string | generation spans (provider's response id) |
+| `server.address` | string | generation spans, when `serverAddress` is set (provider endpoint host) |
+| `server.port` | int | generation spans, when `serverPort` is set |
 
 ### Request controls
 
@@ -48,6 +50,8 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.request.thinking.enabled` | bool | |
 | `gen_ai.request.thinking.budget_tokens` | int | |
 | `gen_ai.request.encoding_formats` | string[] | embeddings only |
+| `gen_ai.request.stream` | bool | set `true` on streaming generations (derived from `mode === 'STREAM'`) |
+| `gen_ai.output.type` | string | requested output modality: `text`, `json`, `image`, `speech` |
 
 ### Response / usage
 
@@ -56,10 +60,9 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.response.finish_reasons` | string[] | always a single-element list mirroring `Generation.stopReason` |
 | `gen_ai.usage.input_tokens` | int | suppressed when zero |
 | `gen_ai.usage.output_tokens` | int | suppressed when zero |
-| `gen_ai.usage.cache_read_input_tokens` | int | |
-| `gen_ai.usage.cache_write_input_tokens` | int | |
-| `gen_ai.usage.cache_creation_input_tokens` | int | |
-| `gen_ai.usage.reasoning_tokens` | int | |
+| `gen_ai.usage.cache_read.input_tokens` | int | |
+| `gen_ai.usage.cache_creation.input_tokens` | int | AI SDK `cacheWrite` and Anthropic `cache_creation` both map here |
+| `gen_ai.usage.reasoning.output_tokens` | int | |
 
 ### Embedding-only
 
@@ -129,7 +132,7 @@ Each event carries:
 | `gen_ai.client.time_to_first_token` | s | powers-of-2 (streaming only, gated on `setFirstTokenAt`) |
 | `gen_ai.client.tool_calls_per_operation` | count | default OTel buckets |
 
-`gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_write`, `cache_creation`, `reasoning`.
+`gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_creation`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
 
 ## Span kinds
 

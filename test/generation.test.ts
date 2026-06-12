@@ -78,9 +78,8 @@ describe('GenerationRecorder', () => {
     const tokenTypes = tokens!.dataPoints.map((p) => p.attributes['gen_ai.token.type']);
     expect(tokenTypes).toContain('input');
     expect(tokenTypes).toContain('output');
-    // cache_read/cache_write/etc should NOT be emitted because their values are 0.
+    // cache_read/cache_creation/reasoning should NOT be emitted because their values are 0.
     expect(tokenTypes).not.toContain('cache_read');
-    expect(tokenTypes).not.toContain('cache_write');
     expect(tokenTypes).not.toContain('reasoning');
   });
 

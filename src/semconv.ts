@@ -15,8 +15,8 @@
 export const ATTR_OPERATION_NAME = 'gen_ai.operation.name';
 export const ATTR_CONVERSATION_ID = 'gen_ai.conversation.id';
 export const ATTR_CONVERSATION_TITLE = 'genai.conversation.title';
-export const ATTR_CONVERSATION_TURN_INDEX = 'gen_ai.conversation.turn_index';
-export const ATTR_CONVERSATION_TURN_ROLE = 'gen_ai.conversation.turn_role';
+export const ATTR_CONVERSATION_TURN_INDEX = 'genai.conversation.turn_index';
+export const ATTR_CONVERSATION_TURN_ROLE = 'genai.conversation.turn_role';
 export const ATTR_AGENT_NAME = 'gen_ai.agent.name';
 export const ATTR_AGENT_VERSION = 'gen_ai.agent.version';
 export const ATTR_AGENT_ID = 'gen_ai.agent.id';
@@ -46,15 +46,23 @@ export const ATTR_REQUEST_TOOL_CHOICE = 'gen_ai.request.tool_choice';
 export const ATTR_REQUEST_THINKING_ENABLED = 'gen_ai.request.thinking.enabled';
 export const ATTR_REQUEST_THINKING_BUDGET = 'gen_ai.request.thinking.budget_tokens';
 export const ATTR_REQUEST_ENCODING_FORMATS = 'gen_ai.request.encoding_formats';
+export const ATTR_REQUEST_STREAM = 'gen_ai.request.stream';
+export const ATTR_OUTPUT_TYPE = 'gen_ai.output.type';
+
+// Server (OTel general semconv — the GenAI provider endpoint).
+export const ATTR_SERVER_ADDRESS = 'server.address';
+export const ATTR_SERVER_PORT = 'server.port';
+
+/** `gen_ai.output.type` well-known values. */
+export type OutputType = 'text' | 'json' | 'image' | 'speech';
 
 // Response / usage
 export const ATTR_FINISH_REASONS = 'gen_ai.response.finish_reasons';
 export const ATTR_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 export const ATTR_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
-export const ATTR_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read_input_tokens';
-export const ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_write_input_tokens';
-export const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS = 'gen_ai.usage.cache_creation_input_tokens';
-export const ATTR_USAGE_REASONING_TOKENS = 'gen_ai.usage.reasoning_tokens';
+export const ATTR_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens';
+export const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS = 'gen_ai.usage.cache_creation.input_tokens';
+export const ATTR_USAGE_REASONING_TOKENS = 'gen_ai.usage.reasoning.output_tokens';
 
 // Embedding
 export const ATTR_EMBEDDING_INPUT_COUNT = 'gen_ai.embeddings.input_count';
@@ -121,7 +129,6 @@ export const METRIC_ATTR_TOKEN_TYPE = 'gen_ai.token.type';
 export const TOKEN_TYPE_INPUT = 'input';
 export const TOKEN_TYPE_OUTPUT = 'output';
 export const TOKEN_TYPE_CACHE_READ = 'cache_read';
-export const TOKEN_TYPE_CACHE_WRITE = 'cache_write';
 export const TOKEN_TYPE_CACHE_CREATION = 'cache_creation';
 export const TOKEN_TYPE_REASONING = 'reasoning';
 
@@ -129,7 +136,6 @@ export type TokenType =
   | typeof TOKEN_TYPE_INPUT
   | typeof TOKEN_TYPE_OUTPUT
   | typeof TOKEN_TYPE_CACHE_READ
-  | typeof TOKEN_TYPE_CACHE_WRITE
   | typeof TOKEN_TYPE_CACHE_CREATION
   | typeof TOKEN_TYPE_REASONING;
 
