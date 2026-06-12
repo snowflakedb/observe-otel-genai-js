@@ -16,7 +16,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Multi-agent fan-in DAG**: OTel span links + fallback `genai.parent_generation_ids` attribute (the library maintains a bounded LRU + TTL map of generation_id → SpanContext for in-process resolution).
 - **Long prompt/response content**: span events with middle-truncation at 32 KB, optional `BlobStore` offload (`gen_ai.content.uri` on the event).
 - **Provider setup**: optional `bootstrapOtel(...)` helper in a separate submodule; core library has no `@opentelemetry/sdk-*` runtime dep.
-- **Primary target**: Observe Inc., via OTLP/HTTP, endpoint + auth via env vars. No vendor-specific code.
+- **Export target**: any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...), endpoint + auth via standard `OTEL_EXPORTER_OTLP_*` env vars. No vendor-specific code.
 - **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `gen_ai.conversation.turn_index` / `gen_ai.conversation.turn_role`.
 - **Agent-task span hierarchy**: first-class `invokeAgent(...)` Client method + `AgentInvocationRecorder` matching OTel GenAI semconv `gen_ai.operation.name = "invoke_agent"`.
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.

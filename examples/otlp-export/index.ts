@@ -1,23 +1,23 @@
 /**
- * Observe integration example.
+ * OTLP export example.
  *
  * Uses `bootstrapOtel` to wire up OTLP/HTTP from env vars, then emits a
  * single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
- * points at — Observe is the documented primary, but anything OTel-native
- * works (Tempo, Honeycomb, Jaeger, ...).
+ * points at — any OTel-native backend works (Tempo, Honeycomb, Jaeger,
+ * Datadog, Observe, ...).
  *
  * Setup:
- *   cp examples/observe/.env.example .env
- *   # fill in your endpoint + token
+ *   cp examples/otlp-export/.env.example .env
+ *   # fill in your endpoint + auth header
  *   set -o allexport && source .env && set +o allexport
- *   pnpm exec tsx examples/observe/index.ts
+ *   pnpm exec tsx examples/otlp-export/index.ts
  */
 
 import { bootstrapOtel } from '../../src/bootstrap/index.js';
 import { Client, assistantTextMessage, userTextMessage } from '../../src/index.js';
 
 if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
-  console.error('OTEL_EXPORTER_OTLP_ENDPOINT is not set. See examples/observe/.env.example.');
+  console.error('OTEL_EXPORTER_OTLP_ENDPOINT is not set. See examples/otlp-export/.env.example.');
   process.exit(1);
 }
 
@@ -32,21 +32,21 @@ async function main() {
 
   await using rec = client.startGeneration({
     model: { provider: 'openai', name: 'gpt-4o' },
-    conversationId: 'observe-example-1',
-    agentName: 'observe-demo',
+    conversationId: 'otlp-export-example-1',
+    agentName: 'otlp-demo',
     maxTokens: 256,
     temperature: 0.3,
   });
 
   rec.setResult({
-    input: [userTextMessage('Tell me about Observe.')],
+    input: [userTextMessage('What does OpenTelemetry give me for free?')],
     output: [
       assistantTextMessage(
-        'Observe is an OTel-native observability platform that ingests OTLP and renders traces, metrics, and logs in a unified workspace.',
+        'OTLP lets you ship traces, metrics, and logs to any OTel-native backend without vendor lock-in.',
       ),
     ],
     usage: { inputTokens: 8, outputTokens: 32 },
-    responseId: 'obs-demo-1',
+    responseId: 'otlp-demo-1',
     responseModel: 'gpt-4o-2024-08-06',
     stopReason: 'stop',
   });
@@ -58,4 +58,4 @@ await tracerProvider.forceFlush();
 await meterProvider.forceFlush();
 await tracerProvider.shutdown();
 await meterProvider.shutdown();
-console.log('[example] flushed; check Observe for service.name = your OTEL_SERVICE_NAME');
+console.log('[example] flushed; check your backend for service.name = your OTEL_SERVICE_NAME');

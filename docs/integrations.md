@@ -24,7 +24,7 @@ const client = new Client();
 
 const result = await wrapGenerateText(
   client,
-  { model: openai('gpt-4o'), prompt: 'Tell me about Observe.' },
+  { model: openai('gpt-4o'), prompt: 'What is OpenTelemetry?' },
   { agentName: 'demo', conversationId: 'conv-1' },
 );
 console.log(result.text);

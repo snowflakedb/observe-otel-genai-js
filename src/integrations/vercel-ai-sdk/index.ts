@@ -11,7 +11,7 @@
  *
  *   const result = await wrapGenerateText(client, {
  *     model: openai('gpt-4o'),
- *     prompt: 'Tell me about Observe.',
+ *     prompt: 'What is OpenTelemetry?',
  *   }, { agentName: 'demo' });
  *
  * Note: targets AI SDK v6 (`ai ^6.0.0`). v5/v6 renamed several params

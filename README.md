@@ -82,7 +82,7 @@ OTEL_SERVICE_VERSION=0.1.0
 OTEL_DEPLOYMENT_ENVIRONMENT_NAME=dev
 ```
 
-For Observe specifically, see [`docs/observe-integration.md`](docs/observe-integration.md).
+For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/exporting.md).
 
 ## Framework integrations
 
