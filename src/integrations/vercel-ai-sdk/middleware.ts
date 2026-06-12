@@ -279,6 +279,11 @@ function messagesFromPrompt(prompt: unknown): Message[] {
   const messages: Message[] = [];
   for (const raw of prompt) {
     const msg = raw as ProviderPromptMessage;
+    // System content is captured separately via `systemPromptFromPrompt` and
+    // emitted as `gen_ai.system_instructions`. Per OTel GenAI semconv, system
+    // instructions provided separately from the chat history MUST NOT be
+    // duplicated into `gen_ai.input.messages`, so skip system-role messages.
+    if (msg.role === 'system') continue;
     const role = asMessageRole(msg.role);
     if (typeof msg.content === 'string') {
       messages.push({ role, parts: [textPart(msg.content)] });
