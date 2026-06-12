@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test:ci
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Validate package exports
+        run: |
+          test -f dist/index.js
+          test -f dist/index.d.ts
+          test -f dist/bootstrap/index.js
+          test -f dist/bootstrap/index.d.ts
+          test -f dist/integrations/vercel-ai-sdk/index.js
+          test -f dist/integrations/vercel-ai-sdk/index.d.ts
+          test -f dist/integrations/openai/index.js
+          test -f dist/integrations/openai/index.d.ts
+          test -f dist/integrations/anthropic/index.js
+          test -f dist/integrations/anthropic/index.d.ts
+          test -f dist/integrations/langchain/index.js
+          test -f dist/integrations/langchain/index.d.ts
+          echo "All export entry points present."
