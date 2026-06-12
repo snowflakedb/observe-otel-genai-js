@@ -1,0 +1,191 @@
+/**
+ * Serializes the library's internal `Message[]` into the OpenTelemetry GenAI
+ * semantic-conventions (1.37+) structured message shape used by the
+ * `gen_ai.input.messages`, `gen_ai.output.messages`, and
+ * `gen_ai.system_instructions` attributes.
+ *
+ * The output of these functions is the *structured* JS value (arrays + maps),
+ * matching the published JSON schema:
+ *   https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-input-messages.json
+ *
+ * It is intentionally NOT stringified here — `content/encode.ts` owns the
+ * structured-vs-JSON-string decision so the serializer stays a pure
+ * shape-mapper that's easy to unit-test and reuse.
+ *
+ * Part-kind mapping (genai-otel `Part.kind` -> semconv part `type`):
+ *   text        -> { type: 'text', content }
+ *   thinking    -> { type: 'reasoning', content }
+ *   tool_call   -> { type: 'tool_call', id?, name, arguments }
+ *   tool_result -> { type: 'tool_call_response', id?, result }
+ */
+
+import type { Message, Part } from '../models/message.js';
+
+/** A single part within a semconv message. */
+export interface SemconvPart {
+  type: 'text' | 'reasoning' | 'tool_call' | 'tool_call_response';
+  content?: string;
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+  result?: unknown;
+}
+
+/** A semconv input/output message. `finish_reason` is set on output choices. */
+export interface SemconvMessage {
+  role: string;
+  parts: SemconvPart[];
+  finish_reason?: string;
+}
+
+/** A semconv system-instructions entry (no role; flat list of text parts). */
+export interface SemconvInstruction {
+  type: 'text';
+  content: string;
+}
+
+/**
+ * Best-effort parse of a JSON string into a structured value. Returns the raw
+ * string when it does not parse (the spec allows opaque content), so we never
+ * throw while building telemetry.
+ */
+function parseJsonOrRaw(value: string | undefined): unknown {
+  if (value == null || value === '') return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function partToSemconv(part: Part): SemconvPart | undefined {
+  switch (part.kind) {
+    case 'text':
+      if (!part.text) return undefined;
+      return { type: 'text', content: part.text };
+    case 'thinking':
+      if (!part.thinking) return undefined;
+      return { type: 'reasoning', content: part.thinking };
+    case 'tool_call': {
+      const call = part.toolCall;
+      if (!call) return undefined;
+      const out: SemconvPart = { type: 'tool_call', name: call.name };
+      if (call.id) out.id = call.id;
+      const args = parseJsonOrRaw(call.inputJson);
+      if (args !== undefined) out.arguments = args;
+      return out;
+    }
+    case 'tool_result': {
+      const res = part.toolResult;
+      if (!res) return undefined;
+      const out: SemconvPart = { type: 'tool_call_response' };
+      if (res.toolCallId) out.id = res.toolCallId;
+      // Prefer structured content when present; fall back to free-form text.
+      const result = res.contentJson != null ? parseJsonOrRaw(res.contentJson) : res.content;
+      if (result !== undefined) out.result = result;
+      return out;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function messageToSemconv(message: Message): SemconvMessage | undefined {
+  const parts = message.parts.map(partToSemconv).filter((p): p is SemconvPart => p !== undefined);
+  if (parts.length === 0) return undefined;
+  return { role: message.role, parts };
+}
+
+/**
+ * Converts the input chat history into the `gen_ai.input.messages` shape.
+ * Messages are emitted in order. Empty messages (no renderable parts) are
+ * dropped.
+ */
+export function toSemconvInputMessages(messages: readonly Message[] | undefined): SemconvMessage[] {
+  if (!messages || messages.length === 0) return [];
+  return messages.map(messageToSemconv).filter((m): m is SemconvMessage => m !== undefined);
+}
+
+/**
+ * Converts model output into the `gen_ai.output.messages` shape. Each message
+ * is one choice/candidate. `finishReason`, when provided, is attached to every
+ * output message (the library models a single stop reason per generation).
+ */
+export function toSemconvOutputMessages(
+  messages: readonly Message[] | undefined,
+  finishReason?: string,
+): SemconvMessage[] {
+  if (!messages || messages.length === 0) return [];
+  const out: SemconvMessage[] = [];
+  for (const m of messages) {
+    const mapped = messageToSemconv(m);
+    if (!mapped) continue;
+    if (finishReason) mapped.finish_reason = finishReason;
+    out.push(mapped);
+  }
+  return out;
+}
+
+/**
+ * Converts a system prompt into the `gen_ai.system_instructions` shape — a flat
+ * list of text parts (no role). Returns `[]` for an empty prompt.
+ */
+export function toSystemInstructions(systemPrompt: string | undefined): SemconvInstruction[] {
+  if (!systemPrompt || systemPrompt.trim() === '') return [];
+  return [{ type: 'text', content: systemPrompt }];
+}
+
+/**
+ * Builds a short flat preview string for a span-table column. Picks the most
+ * relevant text:
+ *  - input  -> the last user message's text
+ *  - output -> the first text part of the first output message
+ * Falls back to the first renderable text found. Truncated to `maxChars`.
+ */
+export function previewOf(
+  messages: readonly Message[] | undefined,
+  kind: 'input' | 'output',
+  maxChars: number,
+): string {
+  if (!messages || messages.length === 0) return '';
+  let text = '';
+  if (kind === 'input') {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role !== 'user') continue;
+      const t = firstText(m);
+      if (t) {
+        text = t;
+        break;
+      }
+    }
+  } else {
+    for (const m of messages) {
+      const t = firstText(m);
+      if (t) {
+        text = t;
+        break;
+      }
+    }
+  }
+  if (!text) {
+    // Fallback: first renderable text in document order.
+    for (const m of messages) {
+      const t = firstText(m);
+      if (t) {
+        text = t;
+        break;
+      }
+    }
+  }
+  if (text.length <= maxChars) return text;
+  return maxChars <= 1 ? text.slice(0, maxChars) : `${text.slice(0, maxChars - 1)}\u2026`;
+}
+
+function firstText(message: Message): string {
+  for (const part of message.parts) {
+    if (part.kind === 'text' && part.text) return part.text;
+    if (part.kind === 'thinking' && part.thinking) return part.thinking;
+  }
+  return '';
+}
