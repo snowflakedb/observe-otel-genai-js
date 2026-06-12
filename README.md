@@ -1,0 +1,118 @@
+# @genai-otel/core
+
+A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) support. The core has no proprietary payloads, no library-owned network, and no background threads (the optional `bootstrap` submodule does run the standard OTel batch processors).
+
+> Design source of truth: [Lightweight OTel Wrapper for AI Agents — Blueprint](https://www.notion.so/35e770a806fc81a1ae29e780089785f4)
+
+## What it is
+
+A thin recorder/lifecycle layer that emits **6 span kinds + 4 histograms** with the GenAI semantic-conventions attribute set. Drop it into any app that already uses OpenTelemetry and ship the resulting telemetry to whichever backend the host app's OTLP exporter targets (Observe, Tempo, Honeycomb, Jaeger, Datadog, ...).
+
+The library does **not**:
+
+- Import from `@opentelemetry/sdk-*` in its core entry point.
+- Own a transport, queue, batch thread, or proto.
+- Register tracer/meter providers (the host app does that).
+- Enforce policies, ship custom payloads, or send anything to a proprietary ingest server.
+
+## Quickstart
+
+```bash
+pnpm add @genai-otel/core @opentelemetry/api @opentelemetry/context-async-hooks
+```
+
+If you want the library to set up OTel providers for you (recommended for getting started):
+
+```bash
+pnpm add @genai-otel/core \
+  @opentelemetry/api \
+  @opentelemetry/context-async-hooks \
+  @opentelemetry/sdk-trace-base \
+  @opentelemetry/sdk-trace-node \
+  @opentelemetry/sdk-metrics \
+  @opentelemetry/exporter-trace-otlp-http \
+  @opentelemetry/exporter-metrics-otlp-http \
+  @opentelemetry/resources \
+  @opentelemetry/semantic-conventions
+```
+
+```ts
+import { Client } from '@genai-otel/core';
+import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+
+// Set up OTel providers from OTEL_EXPORTER_OTLP_* env vars.
+const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
+
+await using client = new Client();
+
+await using rec = client.startGeneration({
+  model: { provider: 'openai', name: 'gpt-4o' },
+  conversationId: 'conv-1',
+  agentName: 'planner',
+  maxTokens: 512,
+  temperature: 0.2,
+});
+
+const resp = await openai.chat.completions.create({ /* ... */ });
+
+rec.setResult({
+  input: inputMessages,
+  output: outputMessages,
+  usage: {
+    inputTokens: resp.usage?.prompt_tokens ?? 0,
+    outputTokens: resp.usage?.completion_tokens ?? 0,
+  },
+  responseId: resp.id,
+  responseModel: resp.model,
+  stopReason: resp.choices[0]?.finish_reason ?? '',
+});
+
+// `await using` calls end() automatically on scope exit.
+```
+
+## Environment
+
+Configured via standard OpenTelemetry env vars:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=https://<your-otlp-gateway>
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>
+OTEL_SERVICE_NAME=my-agent
+OTEL_SERVICE_VERSION=0.1.0
+OTEL_DEPLOYMENT_ENVIRONMENT_NAME=dev
+```
+
+For Observe specifically, see [`docs/observe-integration.md`](docs/observe-integration.md).
+
+## Framework integrations
+
+First-party adapters live at their own subpath exports. Each peer dep is optional.
+
+```ts
+// Vercel AI SDK
+import { wrapGenerateText, wrapStreamText } from '@genai-otel/core/vercel-ai-sdk';
+
+// OpenAI SDK
+import { wrapOpenAI } from '@genai-otel/core/openai';
+
+// Anthropic SDK
+import { wrapAnthropic } from '@genai-otel/core/anthropic';
+
+// LangChain.js (and LangGraph)
+import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
+```
+
+See [`docs/integrations.md`](docs/integrations.md) for the per-adapter usage guide, mapping tables, and streaming notes.
+
+### Notes
+
+- **Vercel AI SDK version**: the `vercel-ai-sdk` adapter targets AI SDK v6 (`ai ^6.0.0`). v6 uses `maxOutputTokens` and `inputTokens`/`outputTokens` usage fields; the wrapper duck-types the legacy v4 `maxTokens` and `promptTokens`/`completionTokens` names too, so it stays tolerant of older shapes.
+- **Fluent-mode parenting**: `withConversationId(id)` and friends only set values on the library's own AsyncLocalStorage; they do NOT install an OTel context. A fluent-mode generation inside a `tracer.startActiveSpan(...)` block will auto-parent under that span (because OTel context is active), but two sibling fluent generations inside a bare `withConversationId(...)` block are siblings of the trace root, not of each other. Use the callback variant of `client.invokeAgent(seed, async (rec) => { ... })` when you need explicit parenting.
+
+## Status
+
+Pre-1.0. APIs may change. See [`docs/blueprint.md`](docs/blueprint.md) for the design rationale and [`docs/semconv-mapping.md`](docs/semconv-mapping.md) for the exhaustive attribute list.
+
+## License
+
+MIT
