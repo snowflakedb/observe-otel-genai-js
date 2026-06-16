@@ -13,7 +13,7 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import type { ResolvedClientConfig } from '../config.js';
 import {
   type ContentCapture,
@@ -106,6 +106,23 @@ export abstract class RecorderBase {
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.end();
+  }
+
+  /**
+   * Runs `fn` with this recorder's span installed as the active OTel span,
+   * then restores the previous context. Spans created inside `fn` (including
+   * across `await` boundaries in the returned promise chain) parent under this
+   * span via OTel context propagation.
+   *
+   * This does NOT end the recorder. It is the building block for "open the
+   * span now, keep it as the active parent while async work is kicked off, end
+   * it later" — e.g. wrap a streaming call so its per-step generation spans
+   * nest under an agent span, then call `end()` from the stream's onFinish.
+   * The span only needs to be active at the synchronous call site that starts
+   * the work (the AI SDK captures its parent there), not for the whole stream.
+   */
+  withActiveContext<T>(fn: () => T): T {
+    return context.with(trace.setSpan(context.active(), this.span), fn);
   }
 
   // ---------------------------------------------------------------------------

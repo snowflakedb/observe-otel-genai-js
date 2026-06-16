@@ -6,6 +6,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4]
+
+### Added
+- `RecorderBase.withActiveContext(fn)` runs `fn` with the recorder's span
+  installed as the active OTel span (without ending the recorder). This lets
+  callers open an agent span with the fluent `invokeAgent(seed)` variant, kick
+  off a streaming turn so its per-step generation spans nest under the agent
+  span, and end the recorder later from the stream's onFinish/onError.
+
 ### Fixed
 - `wrapStreamText` (Vercel AI SDK adapter) now returns the real
   `StreamTextResult` instead of a Proxy that broke the AI SDK contract.

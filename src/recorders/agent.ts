@@ -8,6 +8,11 @@
  * The fluent variant (`const rec = client.invokeAgent(seed)`) does NOT auto-
  * parent children. The trace structure still works via timestamp ordering
  * and `gen_ai.conversation.id` joins, but you lose the explicit tree.
+ *
+ * For streaming agents — where the turn's work completes asynchronously after
+ * the call returns, so the callback variant would end the span too early — use
+ * the fluent variant together with `rec.withActiveContext(fn)` to parent the
+ * stream's spans, then call `rec.end()` from the stream's onFinish/onError.
  */
 
 import type { Span } from '@opentelemetry/api';

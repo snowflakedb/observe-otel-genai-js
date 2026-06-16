@@ -68,4 +68,40 @@ describe('AgentInvocationRecorder', () => {
     expect(span?.attributes[ATTR_AGENT_NAME]).toBe('failing');
     expect(span?.status.code).toBe(2 /* ERROR */);
   });
+
+  it('withActiveContext parents nested spans under a fluent agent span and does not end it', async () => {
+    const rec = h.client.invokeAgent({ agentName: 'streamer', task: 'stream the answer' });
+
+    // Simulate a streaming turn: the work is kicked off inside withActiveContext
+    // (where the agent span is active), but the span is ended later.
+    await rec.withActiveContext(async () => {
+      const gen = h.client.startGeneration({
+        model: { provider: 'openai', name: 'gpt-4o' },
+        agentName: 'streamer',
+      });
+      gen.setResult({ usage: { inputTokens: 5, outputTokens: 2 } });
+      await gen.end();
+    });
+
+    // Before end(): only the child generation span has finished; the agent span is still open.
+    let finished = h.spans.getFinishedSpans();
+    expect(finished.find((s) => s.name.startsWith('invoke_agent'))).toBeUndefined();
+    const genSpan = finished.find((s) => s.name.startsWith('chat'));
+    expect(genSpan).toBeDefined();
+
+    await rec.end();
+
+    finished = h.spans.getFinishedSpans();
+    const agentSpan = finished.find((s) => s.name.startsWith('invoke_agent'));
+    expect(agentSpan).toBeDefined();
+    // The generation span nests under the agent span.
+    expect(genSpan!.spanContext().traceId).toBe(agentSpan!.spanContext().traceId);
+    expect(genSpan!.parentSpanContext?.spanId).toBe(agentSpan!.spanContext().spanId);
+  });
+
+  it('withActiveContext returns the callback result', () => {
+    const rec = h.client.invokeAgent({ agentName: 'returner' });
+    const value = rec.withActiveContext(() => 42);
+    expect(value).toBe(42);
+  });
 });
