@@ -6,6 +6,30 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-17
+
+### Changed
+- Version bump to catch up with missed `0.1.5` increment.
+
+## [0.1.5] - 2026-06-17
+
+### Changed
+- Vercel AI SDK adapter: replaced `LanguageModel` provider middleware with
+  `streamTextHooks` / `generateTextHooks` spread into `streamText` /
+  `generateText` params.  Supports per-step generation spans, TTFT on the first
+  text-delta, and discrete `execute_tool` spans via the
+  `experimental_onToolCall*` callbacks.  An `onStepFinish`-only fallback is
+  provided for `ToolLoopAgent`.
+- `mapAiUsage` moved and extended in `_model.ts` to cover cache and reasoning
+  token fields.
+- Reasoning content is now mapped to assistant thinking parts in
+  input/output messages.
+- Open tool recorders are reused in the `onStepFinish` fallback so an
+  unmatched `onToolCallStart` neither leaks nor double-records.
+
+### Removed
+- `middleware.ts` and its test suite replaced by `hooks.ts`.
+
 ## [0.1.4]
 
 ### Added
