@@ -1,23 +1,28 @@
 /**
  * Vercel AI SDK adapter.
  *
- * Wraps `generateText` / `streamText` / `generateObject` / `embed` / `embedMany`
- * so each call runs inside an `@genai-otel/core` recorder and produces the
- * standard GenAI semconv span + metrics, on top of whatever the AI SDK
- * already emits via its own telemetry hooks.
+ * Provides two integration styles:
  *
- * Usage:
- *   import { wrapGenerateText } from '@genai-otel/core/vercel-ai-sdk';
+ * 1. **Hooks** (recommended) — call `streamTextHooks` / `generateTextHooks` and
+ *    spread the returned callbacks into your `streamText` / `generateText` params.
+ *    Supports per-step generation spans, TTFT, and discrete `execute_tool` spans.
  *
- *   const result = await wrapGenerateText(client, {
+ * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap
+ *    the top-level AI SDK call and emit a single generation span per invocation.
+ *
+ * Usage (hooks):
+ *   import { streamTextHooks } from '@genai-otel/core/vercel-ai-sdk';
+ *
+ *   const result = streamText({
  *     model: openai('gpt-4o'),
  *     prompt: 'What is OpenTelemetry?',
- *   }, { agentName: 'demo' });
+ *     ...streamTextHooks(client, { agentName: 'demo' }),
+ *   });
  *
  * Note: targets AI SDK v6 (`ai ^6.0.0`). v5/v6 renamed several params
  * (e.g. `maxTokens` -> `maxOutputTokens`) and usage fields
  * (`promptTokens`/`completionTokens` -> `inputTokens`/`outputTokens`); the
- * wrapper duck-types both the legacy and current shapes so it stays tolerant.
+ * adapters duck-type both the legacy and current shapes so they stay tolerant.
  */
 
 import {
@@ -40,13 +45,15 @@ import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
   identityFields as identityFieldsFromAdapterOptions,
+  mapAiUsage,
   modelRefFromAi,
 } from './_model.js';
 
 export type { VercelAdapterOptions };
 
-// Re-export so the middleware ships under the same subpath entry.
-export { genaiOtelMiddleware } from './middleware.js';
+// Re-export hooks so they ship under the same subpath entry.
+export { generateTextHooks, streamTextHooks } from './hooks.js';
+export type { GenerateTextHooks, StreamTextHooks } from './hooks.js';
 
 // -----------------------------------------------------------------------------
 // generateText
@@ -308,28 +315,15 @@ function identityFields(
   return identityFieldsFromAdapterOptions(options);
 }
 
-function mapAiUsage(usage: unknown):
-  | {
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-    }
-  | undefined {
-  if (!usage || typeof usage !== 'object') return undefined;
-  const u = usage as Record<string, number | undefined>;
-  return {
-    inputTokens: u.promptTokens ?? u.inputTokens,
-    outputTokens: u.completionTokens ?? u.outputTokens,
-    totalTokens: u.totalTokens,
-  };
-}
-
 function normalizeStopSequences(s: unknown): string[] | undefined {
   if (Array.isArray(s)) return s.filter((x): x is string => typeof x === 'string');
   return undefined;
 }
 
 /** Reads `maxOutputTokens` (AI SDK v6) or legacy `maxTokens`. */
-function readMaxTokens(p: { maxTokens?: number; maxOutputTokens?: number }): number | undefined {
+function readMaxTokens(p: {
+  maxTokens?: number;
+  maxOutputTokens?: number;
+}): number | undefined {
   return p.maxTokens ?? p.maxOutputTokens;
 }

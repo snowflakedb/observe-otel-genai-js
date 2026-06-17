@@ -1,6 +1,6 @@
 /**
  * Shared helpers for the Vercel AI SDK adapters (function wrappers in
- * `index.ts` and the `LanguageModelV2`/`V3` middleware in `middleware.ts`).
+ * `index.ts` and the callback hooks in `hooks.ts`).
  */
 
 import type { ContentCaptureMode } from '../../content/capture.js';
@@ -8,7 +8,7 @@ import type { GenerationStart, ModelRef, ParentGenerationRef } from '../../model
 import { identityFieldsFromOptions } from '../_common/metadata.js';
 
 /**
- * Metadata applied to the recorder created by every wrapper / middleware. All
+ * Metadata applied to the recorder created by every wrapper / hook. All
  * fields are optional; identity defaults still fall through to
  * `withConversationId(...)` context, then to `ClientConfig` defaults.
  */
@@ -53,4 +53,31 @@ export function modelRefFromAi(model: unknown): ModelRef {
 export function embedModelRefFromAi(model: unknown): ModelRef {
   // EmbeddingModelV2/V3 has the same surface.
   return modelRefFromAi(model);
+}
+
+/**
+ * Maps AI SDK usage (v5 or v6 top-level shape) to a partial `TokenUsage` object.
+ * Handles both legacy `promptTokens`/`completionTokens` (v5) and
+ * `inputTokens`/`outputTokens` (v6).
+ */
+export function mapAiUsage(usage: unknown):
+  | {
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      reasoningTokens?: number;
+    }
+  | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const u = usage as Record<string, number | undefined>;
+  return {
+    inputTokens: u.promptTokens ?? u.inputTokens,
+    outputTokens: u.completionTokens ?? u.outputTokens,
+    totalTokens: u.totalTokens,
+    cacheReadInputTokens: u.cacheReadInputTokens,
+    cacheCreationInputTokens: u.cacheCreationInputTokens,
+    reasoningTokens: u.reasoningTokens,
+  };
 }
