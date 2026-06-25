@@ -21,7 +21,6 @@ export const ATTR_AGENT_NAME = 'gen_ai.agent.name';
 export const ATTR_AGENT_VERSION = 'gen_ai.agent.version';
 export const ATTR_AGENT_ID = 'gen_ai.agent.id';
 export const ATTR_AGENT_DESCRIPTION = 'gen_ai.agent.description';
-export const ATTR_AGENT_TASK = 'genai.agent.task';
 export const ATTR_USER_ID = 'user.id';
 export const ATTR_SDK_NAME = 'genai.sdk.name';
 export const ATTR_GENERATION_ID = 'genai.generation.id';

@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { assistantTextMessage, userTextMessage } from '../src/models/message.js';
 import {
   ATTR_AGENT_ID,
   ATTR_AGENT_NAME,
-  ATTR_AGENT_TASK,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_MESSAGES,
+  ATTR_PROVIDER_NAME,
+  ATTR_REQUEST_MODEL,
   OP_INVOKE_AGENT,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
@@ -21,9 +25,11 @@ describe('AgentInvocationRecorder', () => {
     const rec = h.client.invokeAgent({
       agentName: 'responder',
       agentId: 'agent_xyz',
-      task: 'answer the question',
+      requestProvider: 'openai',
+      requestModel: 'gpt-4o',
+      input: [userTextMessage('answer the question')],
     });
-    rec.setOutput('hello there');
+    rec.setOutput([assistantTextMessage('hello there')]);
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
@@ -31,13 +37,44 @@ describe('AgentInvocationRecorder', () => {
     expect(span?.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
     expect(span?.attributes[ATTR_AGENT_NAME]).toBe('responder');
     expect(span?.attributes[ATTR_AGENT_ID]).toBe('agent_xyz');
-    expect(span?.attributes[ATTR_AGENT_TASK]).toBe('answer the question');
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('openai');
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-4o');
     expect(span?.kind).toBe(0 /* INTERNAL */);
-    expect(span?.attributes['genai.agent.output']).toBe('hello there');
+
+    const input = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(input).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: 'answer the question' }] },
+    ]);
+    const output = JSON.parse(span!.attributes[ATTR_OUTPUT_MESSAGES] as string);
+    expect(output).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'hello there' }] },
+    ]);
+  });
+
+  it('falls back to the bare operation name when agentName is blank', async () => {
+    const rec = h.client.invokeAgent({ agentName: '' });
+    await rec.end();
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.name).toBe('invoke_agent');
+  });
+
+  it('strips input/output messages under metadata_only', async () => {
+    await h.shutdown();
+    h = createHarness({ contentCaptureMode: 'metadata_only' });
+    const rec = h.client.invokeAgent({
+      agentName: 'responder',
+      input: [userTextMessage('secret prompt')],
+    });
+    rec.setOutput([assistantTextMessage('secret answer')]);
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_INPUT_MESSAGES]).toBeUndefined();
+    expect(span?.attributes[ATTR_OUTPUT_MESSAGES]).toBeUndefined();
   });
 
   it('callback variant auto-parents nested generation spans under the agent span', async () => {
-    await h.client.invokeAgent({ agentName: 'planner', task: 'plan the response' }, async () => {
+    await h.client.invokeAgent({ agentName: 'planner' }, async () => {
       const gen = h.client.startGeneration({
         model: { provider: 'openai', name: 'gpt-4o' },
         agentName: 'planner',
@@ -70,7 +107,7 @@ describe('AgentInvocationRecorder', () => {
   });
 
   it('withActiveContext parents nested spans under a fluent agent span and does not end it', async () => {
-    const rec = h.client.invokeAgent({ agentName: 'streamer', task: 'stream the answer' });
+    const rec = h.client.invokeAgent({ agentName: 'streamer' });
 
     // Simulate a streaming turn: the work is kicked off inside withActiveContext
     // (where the agent span is active), but the span is ended later.

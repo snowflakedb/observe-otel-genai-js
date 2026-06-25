@@ -6,6 +6,38 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-25
+
+### Changed
+- Agent spans now emit the standard structured content attributes
+  `gen_ai.input.messages` / `gen_ai.output.messages` instead of the custom
+  `genai.agent.task` / `genai.agent.output`. Agent input is supplied as
+  `AgentInvocationStart.input: Message[]` and output via
+  `recorder.setOutput(messages: Message[])` (message-native; no scalar
+  fallback). Content reuses the generation size/truncation policy via the new
+  `emitAgentContent` sink.
+- LangChain adapter wraps chain output into an assistant message before
+  `setOutput`.
+
+### Added
+- `gen_ai.provider.name` and `gen_ai.request.model` on `invoke_agent` and
+  `create_agent` spans, sourced from new optional `requestProvider` /
+  `requestModel` seed fields. Closes the OTel-required `gen_ai.provider.name`
+  gap on `create_agent` spans.
+
+### Removed
+- `genai.agent.task` / `genai.agent.output` attributes and the `task` scalar
+  field on `AgentInvocationStart`.
+
+### Fixed
+- Blank agent name now yields the bare span name `invoke_agent` /
+  `create_agent` (matching the semconv) instead of `... unknown`.
+
+### Docs
+- Removed stale span-events / `BlobStore` offload documentation; documented the
+  current structured-attribute content capture in `docs/semconv-mapping.md` and
+  `docs/blueprint.md`.
+
 ## [0.1.6] - 2026-06-17
 
 ### Changed

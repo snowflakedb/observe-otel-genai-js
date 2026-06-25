@@ -71,7 +71,7 @@ export function isContentCapped(maxContentLength: number | undefined): maxConten
 
 /**
  * Result of running content through the truncator. Carries the byte-count
- * delta so it can be reported as `gen_ai.content.original_size_bytes`.
+ * delta so it can be reported via the `${attr}.original_size_bytes` marker.
  */
 export interface TruncationResult {
   text: string;

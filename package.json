@@ -1,6 +1,6 @@
 {
   "name": "@genai-otel/core",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
   "license": "MIT",
   "type": "module",

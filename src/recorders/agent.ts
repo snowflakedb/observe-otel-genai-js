@@ -17,7 +17,9 @@
 
 import type { Span } from '@opentelemetry/api';
 import type { ContentCaptureMode } from '../content/capture.js';
+import { emitAgentContent } from '../content/sink.js';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
+import type { Message } from '../models/message.js';
 import {
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -30,8 +32,7 @@ import { RecorderBase, type RecorderHostContext } from './base.js';
 
 export class AgentInvocationRecorder extends RecorderBase {
   private readonly seed: AgentInvocationStart;
-  private output: unknown | undefined;
-  private outputSet = false;
+  private outputMessages: Message[] | undefined;
 
   constructor(
     host: RecorderHostContext,
@@ -45,12 +46,13 @@ export class AgentInvocationRecorder extends RecorderBase {
   }
 
   /**
-   * Records the agent's final output / task result. Stored as
-   * `genai.agent.output` on the span (serialized to JSON if not a string).
+   * Records the agent's final output as structured chat messages. Emitted as
+   * the standard `gen_ai.output.messages` attribute (subject to content-capture
+   * config). Callers with a raw string should wrap it via
+   * `assistantTextMessage(text)`.
    */
-  setOutput(output: unknown): void {
-    this.output = output;
-    this.outputSet = true;
+  setOutput(messages: Message[]): void {
+    this.outputMessages = messages;
   }
 
   /** Alias for setCallError matching the AgentInvocationRecorder docs. */
@@ -61,15 +63,14 @@ export class AgentInvocationRecorder extends RecorderBase {
   protected async finalize(): Promise<void> {
     const completedAtMs = this.host.now();
     this.completedAtMs = completedAtMs;
-    const { mode } = this.resolveContentCapture();
+    const { mode, config: captureConfig } = this.resolveContentCapture();
     const stripped = mode === 'metadata_only';
 
     this.span.updateName(agentSpanName(this.seed.agentName));
     applyAgentAttributes(this.span, this.seed);
 
-    if (this.outputSet && !stripped) {
-      const text = typeof this.output === 'string' ? this.output : safeStringify(this.output);
-      if (text) this.span.setAttribute('genai.agent.output', text);
+    if (!stripped && captureConfig.enabled) {
+      emitAgentContent(this.span, this.seed.input, this.outputMessages, captureConfig);
     }
 
     this.recordExceptionIfAny(this.callError, stripped);
@@ -82,8 +83,8 @@ export class AgentInvocationRecorder extends RecorderBase {
     const durationSeconds = Math.max(0, (completedAtMs - this.startedAtMs) / 1000);
     this.host.metrics.recordOperationDuration(durationSeconds, {
       operationName: OP_INVOKE_AGENT,
-      providerName: '',
-      requestModel: '',
+      providerName: this.seed.requestProvider ?? '',
+      requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
@@ -94,19 +95,6 @@ export class AgentInvocationRecorder extends RecorderBase {
 
   static applyStartAttributes(span: Span, seed: AgentInvocationStart): void {
     applyAgentAttributes(span, seed);
-  }
-}
-
-function safeStringify(value: unknown): string {
-  if (value == null) return '';
-  try {
-    return JSON.stringify(value);
-  } catch {
-    try {
-      return String(value);
-    } catch {
-      return '';
-    }
   }
 }
 
@@ -163,8 +151,8 @@ export class AgentCreationRecorder extends RecorderBase {
     const durationSeconds = Math.max(0, (completedAtMs - this.startedAtMs) / 1000);
     this.host.metrics.recordOperationDuration(durationSeconds, {
       operationName: OP_CREATE_AGENT,
-      providerName: '',
-      requestModel: '',
+      providerName: this.seed.requestProvider ?? '',
+      requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,

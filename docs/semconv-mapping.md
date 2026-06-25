@@ -17,7 +17,6 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.agent.version` | string | when `agentVersion` is set |
 | `gen_ai.agent.id` | string | on `invoke_agent` and `create_agent` spans |
 | `gen_ai.agent.description` | string | on `invoke_agent` and `create_agent` spans |
-| `genai.agent.task` | string | only on `invoke_agent` spans |
 | `user.id` | string | when `userId` is set |
 | `genai.sdk.name` | string | always `"genai-otel-ts"` |
 | `genai.generation.id` | string | unique generation id, auto-generated if not supplied |
@@ -27,8 +26,8 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.provider.name` | string | generation, embedding, tool spans |
-| `gen_ai.request.model` | string | generation, embedding spans |
+| `gen_ai.provider.name` | string | generation, embedding, tool, and agent (`invoke_agent` / `create_agent`) spans, when `requestProvider` is set |
+| `gen_ai.request.model` | string | generation, embedding, and agent spans, when the model is known |
 | `gen_ai.response.model` | string | generation, embedding spans (when known after the provider call) |
 | `gen_ai.response.id` | string | generation spans (provider's response id) |
 | `server.address` | string | generation spans, when `serverAddress` is set (provider endpoint host) |
@@ -80,48 +79,40 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.tool.call.id` | string |
 | `gen_ai.tool.type` | string |
 | `gen_ai.tool.description` | string |
-| `gen_ai.tool.call.arguments` | string (JSON, when `useEvents=false`) |
-| `gen_ai.tool.call.result` | string (JSON, when `useEvents=false`) |
+| `gen_ai.tool.call.arguments` | string (JSON) |
+| `gen_ai.tool.call.result` | string (JSON) |
 
 ### Agent-invocation-only
 
+`invoke_agent` spans carry the agent input and output as the standard structured content attributes (subject to the content-capture config, same size/truncation policy as generations):
+
 | Attribute | Type |
 |---|---|
-| `genai.agent.output` | string (the final task result, JSON-stringified if non-string) |
+| `gen_ai.input.messages` | string (JSON, structured message array — from `AgentInvocationStart.input`) |
+| `gen_ai.output.messages` | string (JSON, structured message array — from `recorder.setOutput(Message[])`) |
 
 ### Agent-creation-only
 
-`create_agent` spans carry the agent-identity attributes (`gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.agent.version`, `gen_ai.agent.description`) and `gen_ai.operation.name = "create_agent"`. They do NOT carry `gen_ai.conversation.id` / `user.id` / `genai.agent.task` — those are per-invocation, not per-agent.
+`create_agent` spans carry the agent-identity attributes (`gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.agent.version`, `gen_ai.agent.description`), `gen_ai.provider.name` / `gen_ai.request.model` when set, and `gen_ai.operation.name = "create_agent"`. They do NOT carry `gen_ai.conversation.id` / `user.id` / input/output messages — those are per-invocation, not per-agent.
 
 ### Errors
 
 | Attribute | Type | Values |
 |---|---|---|
-| `error.type` | string | `provider_call_error` / `mapping_error` / `tool_execution_error` / `validation_error` / `blob_store_error` |
+| `error.type` | string | `provider_call_error` / `mapping_error` / `tool_execution_error` / `validation_error` |
 | `error.category` | string | `timeout` / `rate_limit` / `auth_error` / `server_error` / `client_error` / `sdk_error` |
 
-## Span events (content capture)
+## Content capture (structured attributes)
 
-Emitted when `ContentCapture.useEvents` is `true` (default) and the operation is not `metadata_only`.
+Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only`.
 
-| Event | Emitted by |
-|---|---|
-| `gen_ai.content.prompt` | system prompt + each input message |
-| `gen_ai.content.completion` | each output message (text + thinking parts) |
-| `gen_ai.content.tool_call` | each tool-call part in the output |
-| `gen_ai.content.tool_result` | each tool-result part in the input |
+| Attribute | Type | Where |
+|---|---|---|
+| `gen_ai.system_instructions` | string (JSON) | generation spans, when a system prompt is set |
+| `gen_ai.input.messages` | string (JSON) | generation and `invoke_agent` spans |
+| `gen_ai.output.messages` | string (JSON) | generation and `invoke_agent` spans |
 
-Each event carries:
-
-| Event attribute | Type |
-|---|---|
-| `gen_ai.content.content` | string (the actual text/JSON, possibly truncated) |
-| `gen_ai.content.role` | string |
-| `gen_ai.content.index` | int |
-| `gen_ai.content.truncated` | bool (when set) |
-| `gen_ai.content.original_size_bytes` | int (when truncated) |
-| `gen_ai.content.truncation_strategy` | string (when truncated) |
-| `gen_ai.content.uri` | string (when offloaded to a `BlobStore`) |
+Size policy: unbounded by default — matching OpenTelemetry's own default and deferring to `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend. When `ContentCapture.maxContentLength` is set to a finite value, the JSON is trimmed at the string-leaf level so it stays valid JSON (content-bearing keys only — `content` / `arguments` / `result` / `text`; structural keys like `role` / `type` / `id` are preserved), and `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Metrics (histograms)
 

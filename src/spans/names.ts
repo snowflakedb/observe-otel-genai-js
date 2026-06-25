@@ -34,11 +34,13 @@ export function toolSpanName(toolName: string) {
 }
 
 export function agentSpanName(agentName: string) {
-  const name = agentName.trim() || 'unknown';
+  const name = agentName.trim();
+  if (name === '') return OP_INVOKE_AGENT;
   return `${OP_INVOKE_AGENT} ${name}`;
 }
 
 export function agentCreateSpanName(agentName: string) {
-  const name = agentName.trim() || 'unknown';
+  const name = agentName.trim();
+  if (name === '') return OP_CREATE_AGENT;
   return `${OP_CREATE_AGENT} ${name}`;
 }

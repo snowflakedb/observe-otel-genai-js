@@ -17,7 +17,6 @@ import {
   ATTR_AGENT_DESCRIPTION,
   ATTR_AGENT_ID,
   ATTR_AGENT_NAME,
-  ATTR_AGENT_TASK,
   ATTR_AGENT_VERSION,
   ATTR_CONVERSATION_ID,
   ATTR_CONVERSATION_TITLE,
@@ -243,7 +242,8 @@ export function applyAgentAttributes(span: Span, start: AgentInvocationStart) {
   setStr(span, ATTR_AGENT_ID, start.agentId);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
   setStr(span, ATTR_AGENT_DESCRIPTION, start.agentDescription);
-  setStr(span, ATTR_AGENT_TASK, start.task);
+  setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
+  setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
   setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
   setStr(span, ATTR_USER_ID, start.userId);
 
@@ -267,6 +267,8 @@ export function applyAgentCreationAttributes(span: Span, start: AgentCreationSta
   setStr(span, ATTR_AGENT_ID, start.agentId);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
   setStr(span, ATTR_AGENT_DESCRIPTION, start.agentDescription);
+  setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
+  setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
 }
 
 function parentRefToString(ref: unknown): string {

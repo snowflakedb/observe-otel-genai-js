@@ -1,4 +1,5 @@
 import type { ParentGenerationRef } from './generation.js';
+import type { Message } from './message.js';
 
 /**
  * Seed fields used when invoke_agent recording starts. Wraps an agent's
@@ -10,8 +11,15 @@ export interface AgentInvocationStart {
   agentId?: string;
   agentVersion?: string;
   agentDescription?: string;
-  /** Short description of what the agent was asked to do. */
-  task?: string;
+  /**
+   * The agent's input as structured chat messages. Emitted as the standard
+   * `gen_ai.input.messages` attribute (subject to content-capture config).
+   */
+  input?: Message[];
+  /** Model provider backing the agent (emitted as `gen_ai.provider.name`). */
+  requestProvider?: string;
+  /** Model the agent requests (emitted as `gen_ai.request.model`). */
+  requestModel?: string;
   conversationId?: string;
   userId?: string;
   parentGenerationIds?: ParentGenerationRef[];
@@ -35,6 +43,10 @@ export interface AgentCreationStart {
   agentId?: string;
   agentVersion?: string;
   agentDescription?: string;
+  /** Model provider backing the agent (emitted as `gen_ai.provider.name`). */
+  requestProvider?: string;
+  /** Model the agent is configured to use (emitted as `gen_ai.request.model`). */
+  requestModel?: string;
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
   startedAt?: Date | number;

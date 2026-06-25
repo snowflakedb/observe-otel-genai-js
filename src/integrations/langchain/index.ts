@@ -30,6 +30,7 @@ import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
+import { assistantTextMessage, type Message } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
@@ -219,7 +220,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     const rec = this.chainRunMap.get(runId);
     if (!rec) return;
     this.chainRunMap.delete(runId);
-    rec.setOutput(output);
+    rec.setOutput(chainOutputToMessages(output));
     await rec.end();
   }
 
@@ -235,6 +236,34 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/**
+ * Converts a LangChain chain output into a single assistant message for the
+ * `gen_ai.output.messages` attribute. A string `output`/`text` field is used
+ * verbatim when present; otherwise the whole value is JSON-encoded. Returns an
+ * empty array when there is nothing renderable.
+ */
+function chainOutputToMessages(output: ChainValues | undefined): Message[] {
+  if (output == null) return [];
+  let text: string;
+  if (typeof output === 'string') {
+    text = output;
+  } else {
+    const candidate =
+      (output as Record<string, unknown>).output ?? (output as Record<string, unknown>).text;
+    if (typeof candidate === 'string') {
+      text = candidate;
+    } else {
+      try {
+        text = JSON.stringify(output);
+      } catch {
+        return [];
+      }
+    }
+  }
+  if (text === '') return [];
+  return [assistantTextMessage(text)];
+}
 
 function modelFromSerialized(llm: Serialized, extraParams?: Record<string, unknown>): ModelHint {
   // LangChain's `Serialized` shape varies; we look for common patterns.

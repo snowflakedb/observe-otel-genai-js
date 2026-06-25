@@ -16,6 +16,7 @@
 
 import type { Span } from '@opentelemetry/api';
 import type { Generation } from '../models/generation.js';
+import type { Message } from '../models/message.js';
 import { ATTR_INPUT_MESSAGES, ATTR_OUTPUT_MESSAGES, ATTR_SYSTEM_INSTRUCTIONS } from '../semconv.js';
 import { type ContentCapture, isContentCapped } from './capture.js';
 import {
@@ -41,6 +42,29 @@ export function emitGenerationContent(
   if (system.length > 0) applyStructuredAttribute(span, ATTR_SYSTEM_INSTRUCTIONS, system, capture);
   if (input.length > 0) applyStructuredAttribute(span, ATTR_INPUT_MESSAGES, input, capture);
   if (output.length > 0) applyStructuredAttribute(span, ATTR_OUTPUT_MESSAGES, output, capture);
+}
+
+/**
+ * Emits an agent invocation's content onto `span` as structured
+ * `gen_ai.input.messages` / `gen_ai.output.messages` attributes. Shares the
+ * generation size/truncation policy so a configured `maxContentLength` applies
+ * uniformly across span types.
+ */
+export function emitAgentContent(
+  span: Span,
+  input: readonly Message[] | undefined,
+  output: readonly Message[] | undefined,
+  capture: ContentCapture,
+): void {
+  if (!capture.enabled) return;
+
+  const inputMessages = toSemconvInputMessages(input);
+  const outputMessages = toSemconvOutputMessages(output);
+
+  if (inputMessages.length > 0)
+    applyStructuredAttribute(span, ATTR_INPUT_MESSAGES, inputMessages, capture);
+  if (outputMessages.length > 0)
+    applyStructuredAttribute(span, ATTR_OUTPUT_MESSAGES, outputMessages, capture);
 }
 
 /**

@@ -14,7 +14,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Distribution**: published as `@genai-otel/core` with a separate `@genai-otel/core/bootstrap` entry point so the core has zero `@opentelemetry/sdk-*` deps.
 - **Span context activation**: `tracer.startSpan(...)` for fluent recorders (does NOT activate). `tracer.startActiveSpan(...)` for `invokeAgent(seed, async () => {...})` callback variant so nested calls auto-parent.
 - **Multi-agent fan-in DAG**: OTel span links + fallback `genai.parent_generation_ids` attribute (the library maintains a bounded LRU + TTL map of generation_id → SpanContext for in-process resolution).
-- **Long prompt/response content**: span events with middle-truncation at 32 KB, optional `BlobStore` offload (`gen_ai.content.uri` on the event).
+- **Long prompt/response content**: emitted as structured span attributes (`gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`); unbounded by default, with an optional finite `maxContentLength` that trims at the string-leaf level while keeping valid JSON.
 - **Provider setup**: optional `bootstrapOtel(...)` helper in a separate submodule; core library has no `@opentelemetry/sdk-*` runtime dep.
 - **Export target**: any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...), endpoint + auth via standard `OTEL_EXPORTER_OTLP_*` env vars. No vendor-specific code.
 - **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `genai.conversation.turn_index` / `genai.conversation.turn_role` (library extensions; the spec only defines `gen_ai.conversation.id`).
@@ -22,7 +22,6 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.
 - **Tool content capture**: ON by default (`contentCaptureMode: 'no_tool_content'` is the global default — note: `no_tool_content` strips tool content, but `full` includes it; per-call override beats both).
 - **PII / secret redaction**: user-owned. The library exposes a `generationSanitizer` hook on `ClientConfig` that runs on the merged `Generation` before emission; callers plug in their own redaction logic.
-- **BlobStore adapters**: `BlobStore` Protocol + `LocalFsBlobStore` for v1. S3 / GCS deferred to v2.
 
 ## Out of scope for v1
 
@@ -84,8 +83,7 @@ Skip-on-zero rule: token-usage records skip emission when `value === 0` so `cach
 See [`docs/semconv-mapping.md`](semconv-mapping.md) for the exhaustive attribute list. Key behaviors:
 
 - Modes: `default` → `full` → `no_tool_content` → `metadata_only`. Resolution order is per-call > context > client default; `default` falls through to `no_tool_content` so tool args/results stay off the wire unless explicitly opted in.
-- Truncation: `middle` (default), `end`, `head_tail`. Truncation events carry `gen_ai.content.truncated=true`, `gen_ai.content.original_size_bytes`, `gen_ai.content.truncation_strategy`.
-- Offload: when `ContentCapture.blobStore` is configured and a payload exceeds `maxContentLength`, the body is uploaded and the span event carries `gen_ai.content.uri` pointing at it.
+- Truncation: `middle` (default), `end`, `head_tail` for plain string attributes. Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Multi-turn conversations
 

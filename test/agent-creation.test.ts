@@ -5,6 +5,8 @@ import {
   ATTR_AGENT_NAME,
   ATTR_AGENT_VERSION,
   ATTR_OPERATION_NAME,
+  ATTR_PROVIDER_NAME,
+  ATTR_REQUEST_MODEL,
   OP_CREATE_AGENT,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
@@ -24,6 +26,8 @@ describe('AgentCreationRecorder', () => {
       agentId: 'agent_001',
       agentVersion: '0.2.1',
       agentDescription: 'Breaks the user query into discrete steps.',
+      requestProvider: 'openai',
+      requestModel: 'gpt-4o',
     });
     await rec.end();
 
@@ -36,7 +40,16 @@ describe('AgentCreationRecorder', () => {
     expect(span?.attributes[ATTR_AGENT_DESCRIPTION]).toBe(
       'Breaks the user query into discrete steps.',
     );
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('openai');
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-4o');
     expect(span?.kind).toBe(0 /* INTERNAL */);
+  });
+
+  it('falls back to the bare operation name when agentName is blank', async () => {
+    const rec = h.client.createAgent({ agentName: '' });
+    await rec.end();
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.name).toBe('create_agent');
   });
 
   it('callback variant auto-parents nested spans under create_agent', async () => {

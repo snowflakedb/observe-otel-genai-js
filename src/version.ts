@@ -3,4 +3,4 @@
  * `trace.getTracer(name, version)` / `metrics.getMeter(name, version)`. Kept
  * in sync manually with `package.json#version`.
  */
-export const VERSION = '0.1.3';
+export const VERSION = '0.1.7';

@@ -159,7 +159,7 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleToolEnd` | `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
 | `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` |
-| `handleChainEnd` | `recorder.setOutput(output)`; `recorder.end()` |
+| `handleChainEnd` | `recorder.setOutput(assistantTextMessage(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
 
 Pass `captureChains: false` to skip chain instrumentation if you only want LLM + tool spans.
