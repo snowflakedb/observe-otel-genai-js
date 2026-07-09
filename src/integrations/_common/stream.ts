@@ -48,7 +48,14 @@ export function wrapProviderStream<S extends AsyncIterable<TChunk>, TChunk>(
   const finishOnce = async (fn: (() => Promise<void> | void) | undefined): Promise<void> => {
     if (recorderEnded) return;
     recorderEnded = true;
-    if (fn) await fn();
+    if (!fn) return;
+    try {
+      await fn();
+    } catch {
+      // Telemetry finalization (recorder.end(), exporter flush, etc.) must
+      // never surface into the user's stream consumption. Swallow so an
+      // export failure can't masquerade as a provider stream error.
+    }
   };
 
   const watchdog =
@@ -98,7 +105,10 @@ export function wrapProviderStream<S extends AsyncIterable<TChunk>, TChunk>(
                   await inner.return(value);
                 }
               } finally {
-                await finishOnce(options.onComplete);
+                // Early termination (consumer `break`s out of the loop). Treat
+                // as abandonment, not a clean completion, when the caller
+                // distinguishes the two; fall back to onComplete otherwise.
+                await finishOnce(options.onAbandoned ?? options.onComplete);
               }
               return { done: true, value: value as TChunk };
             },

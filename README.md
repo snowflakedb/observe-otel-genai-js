@@ -2,11 +2,11 @@
 
 A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) support. The core has no proprietary payloads, no library-owned network, and no background threads (the optional `bootstrap` submodule does run the standard OTel batch processors).
 
-> Design source of truth: [Lightweight OTel Wrapper for AI Agents — Blueprint](https://www.notion.so/35e770a806fc81a1ae29e780089785f4)
+> Design rationale and decisions: [`docs/blueprint.md`](docs/blueprint.md).
 
 ## What it is
 
-A thin recorder/lifecycle layer that emits **6 span kinds + 4 histograms** with the GenAI semantic-conventions attribute set. Drop it into any app that already uses OpenTelemetry and ship the resulting telemetry to whichever backend the host app's OTLP exporter targets (Observe, Tempo, Honeycomb, Jaeger, Datadog, ...).
+A thin recorder/lifecycle layer that emits **6 span kinds + 5 histograms** with the GenAI semantic-conventions attribute set. Drop it into any app that already uses OpenTelemetry and ship the resulting telemetry to whichever backend the host app's OTLP exporter targets (Observe, Tempo, Honeycomb, Jaeger, Datadog, ...).
 
 The library does **not**:
 

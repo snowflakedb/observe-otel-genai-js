@@ -1,6 +1,6 @@
 # Blueprint
 
-In-repo snapshot of the [Notion design doc](https://www.notion.so/35e770a806fc81a1ae29e780089785f4). Source-of-truth still lives in Notion; this file captures the version that shipped with v0.1.0 so the codebase is self-describing.
+The in-repo design record for this library. Captures the goal, locked-in decisions, scope, and the OTel surface so the codebase is self-describing.
 
 ## Goal
 
@@ -29,8 +29,11 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - Workflow steps, hooks, ratings, or any other vendor-specific ingest subsystems.
 - Image / audio / multi-modal operations.
 - Go and Python ports.
-- Framework adapters (LangChain, LangGraph, etc.) — additive in v2.
 - gRPC exporter — bootstrap helper ships OTLP/HTTP only; users can wire gRPC themselves.
+
+## Shipped since v0.1.0
+
+- Framework adapters: first-party OpenAI (`/openai`), Anthropic (`/anthropic`), LangChain / LangGraph (`/langchain`), and Vercel AI SDK (`/vercel-ai-sdk`) integrations, each behind an optional peer dependency.
 
 ## OTel API surface (~16 methods)
 
@@ -67,7 +70,7 @@ The library uses the following OTel API symbols. It does NOT import anything fro
 | Agent invocation | `invoke_agent <agent>` | INTERNAL | `invoke_agent` |
 | Agent creation | `create_agent <agent>` | INTERNAL | `create_agent` |
 
-## Metric emission (4 histograms)
+## Metric emission (5 histograms)
 
 | Name | Unit | Bucket family | Labels |
 |---|---|---|---|
@@ -75,6 +78,7 @@ The library uses the following OTel API symbols. It does NOT import anything fro
 | `gen_ai.client.token.usage` | token | powers-of-4, 1 → 67M | operation, provider, request_model, agent, **token.type** |
 | `gen_ai.client.time_to_first_token` | s | powers-of-2, 10ms → ~82s | provider, request_model, agent (streaming only) |
 | `gen_ai.client.tool_calls_per_operation` | count | default | provider, request_model, agent |
+| `gen_ai.client.tool_execution.duration` | s | powers-of-2, 10ms → ~82s | provider, request_model, **tool**, agent, error.type, error.category |
 
 Skip-on-zero rule: token-usage records skip emission when `value === 0` so `cache_read=0` does not bloat time-series cardinality.
 

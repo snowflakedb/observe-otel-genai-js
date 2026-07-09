@@ -3,8 +3,8 @@
  *
  * Two entry points:
  *  - `wrapOpenAI(client, openai)` returns a Proxy around the OpenAI client
- *    that auto-instruments `chat.completions.create`, `embeddings.create`,
- *    and `responses.create`. Drop-in replacement for the OpenAI client.
+ *    that auto-instruments `chat.completions.create` and `embeddings.create`.
+ *    Drop-in replacement for the OpenAI client.
  *  - Per-method helpers (`instrumentedChatCompletion`, `instrumentedEmbedding`)
  *    if you want to opt into instrumentation per call.
  *
@@ -15,6 +15,7 @@
 import type OpenAI from 'openai';
 
 import type { Client } from '../../client.js';
+import { ValidationError } from '../../errors.js';
 import type { GenerationStart } from '../../models/generation.js';
 import { OP_CHAT } from '../../semconv.js';
 import {
@@ -51,8 +52,16 @@ export async function instrumentedChatCompletion(
   options: OpenAIAdapterOptions = {},
 ): Promise<ChatCompletionsResult> {
   const resolved = resolveParams(params, options);
-  // OpenAI returns a Stream | ChatCompletion depending on `stream`. We assume
-  // the caller routed here for non-streaming.
+  // This helper returns a resolved ChatCompletion. Streaming params would make
+  // the underlying call return a Stream instead, breaking the declared return
+  // type — reject them and point callers at the streaming-aware proxy.
+  if ((resolved.params as { stream?: boolean }).stream === true) {
+    throw new ValidationError(
+      'instrumentedChatCompletion does not support streaming params (stream: true). ' +
+        'Use wrapOpenAI(client, openai) instead — it instruments the streamed chunks ' +
+        '(TTFT, final usage) and returns the provider stream unchanged.',
+    );
+  }
   return runChatCompletion(
     client,
     openai,
@@ -81,7 +90,7 @@ async function runChatCompletion(
     seed: params.seed ?? undefined,
     choiceCount: params.n ?? undefined,
     toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
-    ...identityFields(options),
+    ...identityFieldsFromOptions(options),
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -288,19 +297,4 @@ function normalizeStop(stop: unknown): string[] | undefined {
   if (typeof stop === 'string') return [stop];
   if (Array.isArray(stop)) return stop.filter((s): s is string => typeof s === 'string');
   return undefined;
-}
-
-function identityFields(
-  options: OpenAIAdapterOptions,
-): Pick<
-  GenerationStart,
-  | 'conversationId'
-  | 'conversationTitle'
-  | 'agentName'
-  | 'agentVersion'
-  | 'userId'
-  | 'turnIndex'
-  | 'turnRole'
-> {
-  return identityFieldsFromOptions(options);
 }

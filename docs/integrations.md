@@ -188,7 +188,7 @@ const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent
 const client = new Client();
 const openai = wrapOpenAI(client, new OpenAI());
 
-// every call from `openai` now produces a chat span + the four GenAI metrics
+// every call from `openai` now produces a chat span + the GenAI metrics
 // shipping via OTLP/HTTP to whichever backend OTEL_EXPORTER_OTLP_ENDPOINT points at.
 ```
 

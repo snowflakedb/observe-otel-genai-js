@@ -3,28 +3,15 @@
  * `index.ts` and the callback hooks in `hooks.ts`).
  */
 
-import type { ContentCaptureMode } from '../../content/capture.js';
-import type { GenerationStart, ModelRef, ParentGenerationRef } from '../../models/generation.js';
-import { identityFieldsFromOptions } from '../_common/metadata.js';
+import type { GenerationStart, ModelRef } from '../../models/generation.js';
+import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/metadata.js';
 
 /**
- * Metadata applied to the recorder created by every wrapper / hook. All
- * fields are optional; identity defaults still fall through to
- * `withConversationId(...)` context, then to `ClientConfig` defaults.
+ * Metadata applied to the recorder created by every wrapper / hook. Identical
+ * to the shared {@link AdapterCallOptions} — aliased so the Vercel adapter has
+ * a stable local name without a second source of truth to keep in sync.
  */
-export interface VercelAdapterOptions {
-  conversationId?: string;
-  conversationTitle?: string;
-  agentName?: string;
-  agentVersion?: string;
-  userId?: string;
-  turnIndex?: number;
-  turnRole?: string;
-  contentCapture?: ContentCaptureMode;
-  parentGenerationIds?: ParentGenerationRef[];
-  tags?: Record<string, string>;
-  metadata?: Record<string, unknown>;
-}
+export type VercelAdapterOptions = AdapterCallOptions;
 
 export function identityFields(
   options: VercelAdapterOptions,

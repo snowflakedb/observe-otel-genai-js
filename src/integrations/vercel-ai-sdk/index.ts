@@ -39,12 +39,11 @@ import {
 } from 'ai';
 
 import type { Client } from '../../client.js';
-import type { GenerationStart } from '../../models/generation.js';
 import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
 import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
-  identityFields as identityFieldsFromAdapterOptions,
+  identityFields,
   mapAiUsage,
   modelRefFromAi,
 } from './_model.js';
@@ -299,21 +298,6 @@ export async function wrapEmbedMany(
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
-
-function identityFields(
-  options: VercelAdapterOptions,
-): Pick<
-  GenerationStart,
-  | 'conversationId'
-  | 'conversationTitle'
-  | 'agentName'
-  | 'agentVersion'
-  | 'userId'
-  | 'turnIndex'
-  | 'turnRole'
-> {
-  return identityFieldsFromAdapterOptions(options);
-}
 
 function normalizeStopSequences(s: unknown): string[] | undefined {
   if (Array.isArray(s)) return s.filter((x): x is string => typeof x === 'string');

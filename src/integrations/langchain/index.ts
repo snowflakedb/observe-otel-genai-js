@@ -30,7 +30,7 @@ import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
-import { assistantTextMessage, type Message } from '../../models/message.js';
+import { type Message, assistantTextMessage } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
@@ -142,7 +142,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       stopReason: extractStopReason(output),
       responseId: extractResponseId(output),
     });
-    await entry.rec.end();
+    await safeEnd(entry.rec);
   }
 
   override async handleLLMError(err: unknown, runId: string): Promise<void> {
@@ -150,7 +150,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!entry) return;
     this.llmRunMap.delete(runId);
     entry.rec.setCallError(err);
-    await entry.rec.end();
+    await safeEnd(entry.rec);
   }
 
   // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!rec) return;
     this.toolRunMap.delete(runId);
     rec.setResult({ result: output });
-    await rec.end();
+    await safeEnd(rec);
   }
 
   override async handleToolError(err: unknown, runId: string): Promise<void> {
@@ -181,7 +181,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!rec) return;
     this.toolRunMap.delete(runId);
     rec.setExecError(err);
-    await rec.end();
+    await safeEnd(rec);
   }
 
   // ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!rec) return;
     this.chainRunMap.delete(runId);
     rec.setOutput(chainOutputToMessages(output));
-    await rec.end();
+    await safeEnd(rec);
   }
 
   override async handleChainError(err: unknown, runId: string): Promise<void> {
@@ -229,13 +229,26 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!rec) return;
     this.chainRunMap.delete(runId);
     rec.setError(err);
-    await rec.end();
+    await safeEnd(rec);
   }
 }
 
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/**
+ * Ends a recorder without ever letting a telemetry/export error escape into
+ * LangChain's callback runner (which, depending on version, may reject the
+ * user's `invoke`/`stream` call on a rejected async callback).
+ */
+async function safeEnd(rec: { end(): Promise<void> }): Promise<void> {
+  try {
+    await rec.end();
+  } catch {
+    /* ignore — instrumentation must not break the user's chain */
+  }
+}
 
 /**
  * Converts a LangChain chain output into a single assistant message for the

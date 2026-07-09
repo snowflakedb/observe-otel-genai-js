@@ -45,7 +45,11 @@ export function createMetadataAccessor<O extends AdapterCallOptions>(
   stripMetadata: <T>(params: T) => T;
   resolveParams: <T>(params: WithMetadata<T> | T, options: O) => { params: T; options: O };
 } {
-  const KEY = Symbol.for(symbolKey);
+  // Module-local Symbol (NOT Symbol.for): a globally-registered symbol would
+  // be shared across two co-loaded copies of this package (e.g. a hoisting
+  // miss in a monorepo), letting them clobber each other's per-call metadata.
+  // The string is only a debug description here.
+  const KEY = Symbol(symbolKey);
 
   function withMetadata<T extends object>(params: T, options: O): T {
     Object.defineProperty(params, KEY, {

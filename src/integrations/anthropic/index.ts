@@ -18,6 +18,7 @@ import type { GenerationStart } from '../../models/generation.js';
 import { OP_CHAT } from '../../semconv.js';
 import {
   type AdapterCallOptions,
+  type WithMetadata,
   createMetadataAccessor,
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
@@ -29,6 +30,7 @@ const accessor = createMetadataAccessor<AnthropicAdapterOptions>('@genai-otel/an
 export const withMetadata = accessor.withMetadata;
 const readMetadata = accessor.readMetadata;
 const stripMetadata = accessor.stripMetadata;
+const resolveParams = accessor.resolveParams;
 
 // -----------------------------------------------------------------------------
 // messages.create
@@ -40,10 +42,11 @@ type AnthropicMessage = Anthropic.Messages.Message;
 export async function instrumentedMessageCreate(
   client: Client,
   anthropic: Anthropic,
-  params: MessageCreateParams,
+  params: WithMetadata<MessageCreateParams> | MessageCreateParams,
   options: AnthropicAdapterOptions = {},
 ): Promise<AnthropicMessage | AsyncIterable<unknown>> {
-  return runMessageCreate(client, anthropic, params, options);
+  const resolved = resolveParams(params, options);
+  return runMessageCreate(client, anthropic, resolved.params, resolved.options);
 }
 
 async function runMessageCreate(
@@ -64,7 +67,7 @@ async function runMessageCreate(
       typeof params.system === 'string'
         ? params.system
         : extractSystemText(params.system as unknown[]),
-    ...identityFields(options),
+    ...identityFieldsFromOptions(options),
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -209,19 +212,4 @@ function extractSystemText(blocks: unknown[] | undefined): string | undefined {
     }
   }
   return out.length ? out.join('\n') : undefined;
-}
-
-function identityFields(
-  options: AnthropicAdapterOptions,
-): Pick<
-  GenerationStart,
-  | 'conversationId'
-  | 'conversationTitle'
-  | 'agentName'
-  | 'agentVersion'
-  | 'userId'
-  | 'turnIndex'
-  | 'turnRole'
-> {
-  return identityFieldsFromOptions(options);
 }

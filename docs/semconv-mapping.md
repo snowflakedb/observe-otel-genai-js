@@ -122,6 +122,7 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 | `gen_ai.client.token.usage` | token | powers-of-4 (1 → 67M) |
 | `gen_ai.client.time_to_first_token` | s | powers-of-2 (streaming only, gated on `setFirstTokenAt`) |
 | `gen_ai.client.tool_calls_per_operation` | count | default OTel buckets |
+| `gen_ai.client.tool_execution.duration` | s | powers-of-2 (10ms → ~82s) — isolates `gen_ai.tool.name` cardinality |
 
 `gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_creation`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
 

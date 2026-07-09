@@ -4,7 +4,44 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8] - 2026-07-01
+
+### Fixed
+- Streaming adapters no longer let a telemetry-finalization error surface into
+  the consumer's `for await` loop. `wrapProviderStream` now swallows errors
+  thrown by its `onComplete` / `onError` / `onAbandoned` callbacks (e.g. an
+  exporter flush failure inside `recorder.end()`), so instrumentation can never
+  break the user's OpenAI / Anthropic stream. Early stream termination
+  (consumer `break`) now routes to `onAbandoned` rather than being recorded as
+  a clean completion.
+- LangChain callback handlers wrap every `recorder.end()` in a guard so an
+  export error can't reject the user's `invoke` / `stream` call.
+- `instrumentedChatCompletion` (OpenAI) now throws `ValidationError` when called
+  with `stream: true` instead of returning a value that violates its declared
+  `Promise<ChatCompletion>` return type. Use `wrapOpenAI` for streaming.
+
+### Changed
+- `instrumentedMessageCreate` (Anthropic) now accepts `withMetadata(...)`-wrapped
+  params for parity with the OpenAI helper.
+- Internal: collapsed three duplicate `identityFields` wrappers onto the shared
+  `identityFieldsFromOptions`; `VercelAdapterOptions` is now an alias of
+  `AdapterCallOptions`; per-call metadata uses a module-local `Symbol` instead
+  of `Symbol.for` to avoid cross-version collisions. No public API change.
+
+### Added
+- `test/invariants.test.ts` enforces two design invariants in CI: the core
+  (`src/` outside `bootstrap/`) imports nothing from `@opentelemetry/sdk-*`,
+  the OTLP exporters, or `@opentelemetry/resources`; and `src/version.ts`
+  `VERSION` matches `package.json` `version`.
+- `SECURITY.md` with a private vulnerability-reporting policy; `repository`,
+  `homepage`, `bugs`, `author`, and `keywords` fields on `package.json`.
+
+### Docs
+- Corrected the metric count (4 to 5 histograms) and added the
+  `gen_ai.client.tool_execution.duration` row across the README, blueprint, and
+  semconv-mapping docs. Removed private design-doc links and un-staled the
+  blueprint's framework-adapter scope. Added a contributor-agreement placeholder
+  to `CONTRIBUTING.md` (pending OSPO).
 
 ## [0.1.7] - 2026-06-25
 

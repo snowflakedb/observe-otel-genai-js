@@ -35,7 +35,16 @@ pnpm run lint:fix     # biome check --write
   metric assertions.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
+## Contributor agreement
+
+A contributor agreement mechanism (DCO sign-off or CLA) is pending and will be
+finalized before contributions are accepted. Until it is in place, external PRs
+may be held; check back here or ask a maintainer for the current status.
+
 ## Reporting issues
+
+For security vulnerabilities, do **not** open a public issue — see
+[`SECURITY.md`](SECURITY.md) for private reporting.
 
 Open a GitHub issue with:
 

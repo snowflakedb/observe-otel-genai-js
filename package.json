@@ -1,35 +1,50 @@
 {
   "name": "@genai-otel/core",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
   "license": "MIT",
+  "author": "Snowflake Inc.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snowflake-eng/genai-otel.git"
+  },
+  "homepage": "https://github.com/snowflake-eng/genai-otel#readme",
+  "bugs": "https://github.com/snowflake-eng/genai-otel/issues",
+  "keywords": ["opentelemetry", "otel", "genai", "llm", "observability", "tracing", "ai-agents"],
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
     },
     "./bootstrap": {
       "types": "./dist/bootstrap/index.d.ts",
-      "import": "./dist/bootstrap/index.js"
+      "import": "./dist/bootstrap/index.js",
+      "require": "./dist/cjs/bootstrap/index.js"
     },
     "./vercel-ai-sdk": {
       "types": "./dist/integrations/vercel-ai-sdk/index.d.ts",
-      "import": "./dist/integrations/vercel-ai-sdk/index.js"
+      "import": "./dist/integrations/vercel-ai-sdk/index.js",
+      "require": "./dist/cjs/integrations/vercel-ai-sdk/index.js"
     },
     "./openai": {
       "types": "./dist/integrations/openai/index.d.ts",
-      "import": "./dist/integrations/openai/index.js"
+      "import": "./dist/integrations/openai/index.js",
+      "require": "./dist/cjs/integrations/openai/index.js"
     },
     "./anthropic": {
       "types": "./dist/integrations/anthropic/index.d.ts",
-      "import": "./dist/integrations/anthropic/index.js"
+      "import": "./dist/integrations/anthropic/index.js",
+      "require": "./dist/cjs/integrations/anthropic/index.js"
     },
     "./langchain": {
       "types": "./dist/integrations/langchain/index.d.ts",
-      "import": "./dist/integrations/langchain/index.js"
+      "import": "./dist/integrations/langchain/index.js",
+      "require": "./dist/cjs/integrations/langchain/index.js"
     }
   },
   "files": ["dist", "docs", "LICENSE", "README.md"],
@@ -40,7 +55,7 @@
   "packageManager": "pnpm@10.12.4",
   "scripts": {
     "clean": "rm -rf dist .test-dist",
-    "build": "pnpm run clean && tsc --project tsconfig.build.json",
+    "build": "pnpm run clean && tsc --project tsconfig.build.json && node ./scripts/build-cjs.mjs",
     "prepack": "pnpm run build",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "test": "vitest run",
@@ -117,6 +132,7 @@
     "@opentelemetry/semantic-conventions": "^1.30.0",
     "@types/node": "^22.0.0",
     "ai": "^6.0.0",
+    "esbuild": "^0.25.0",
     "openai": "^4.77.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
