@@ -18,10 +18,10 @@ import {
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
-// AI SDK v6 reports usage as a nested provider shape; the SDK flattens
+// AI SDK v7 reports usage as a nested provider shape; the SDK flattens
 // `inputTokens.total` / `outputTokens.total` into the top-level
 // `result.usage.inputTokens` / `.outputTokens` that the adapter reads.
-function v6Usage(inputTokens: number, outputTokens: number) {
+function v7Usage(inputTokens: number, outputTokens: number) {
   return {
     inputTokens: {
       total: inputTokens,
@@ -37,8 +37,8 @@ function v6Usage(inputTokens: number, outputTokens: number) {
   };
 }
 
-// v6 reports the provider finish reason as a structured object.
-function v6Finish(
+// v7 reports the provider finish reason as a structured object.
+function v7Finish(
   unified: 'stop' | 'length' | 'content-filter' | 'tool-calls' | 'error' | 'other',
 ) {
   return { unified, raw: unified };
@@ -59,8 +59,8 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
       modelId: 'mock-1',
       doGenerate: async () => ({
         content: [{ type: 'text', text: 'hello' }],
-        finishReason: v6Finish('stop'),
-        usage: v6Usage(9, 3),
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(9, 3),
         warnings: [],
         response: { id: 'aim-resp-1', modelId: 'mock-1-served', timestamp: new Date() },
       }),
@@ -125,8 +125,8 @@ describe('Vercel AI SDK adapter — wrapStreamText', () => {
             controller.enqueue({ type: 'text-end', id: '0' });
             controller.enqueue({
               type: 'finish',
-              finishReason: v6Finish('stop'),
-              usage: v6Usage(5, 2),
+              finishReason: v7Finish('stop'),
+              usage: v7Usage(5, 2),
             });
             controller.close();
           },
@@ -135,7 +135,7 @@ describe('Vercel AI SDK adapter — wrapStreamText', () => {
     });
 
     const stream = wrapStreamText(h.client, { model, prompt: 'hi' });
-    // Drain the text stream to ensure onChunk + onFinish run.
+    // Drain the text stream to ensure onChunk + onEnd run.
     // textStream is synchronous on a real StreamTextResult.
     for await (const _chunk of stream.textStream) {
       /* drain */

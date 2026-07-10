@@ -4,7 +4,7 @@
 
 | Adapter | Subpath | Peer dep |
 |---|---|---|
-| Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^6.0.0 |
+| Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
 | OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4.0.0 |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` ^0.30.0 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
@@ -35,7 +35,23 @@ for await (const chunk of await stream.textStream) {
 }
 ```
 
-`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onFinish`.
+`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onEnd` (renamed from `onFinish` in AI SDK v7).
+
+### Hooks
+
+`streamTextHooks` / `generateTextHooks` return callback bags to spread into `streamText` / `generateText`; they emit per-step generation spans (input messages, tool spans, usage) and work with `ToolLoopAgent` on v7. `generateObjectHooks` does the same for `generateObject` — spread its `onStepStart` / `onStepEnd` into the call to capture input messages (from the provider-format `promptMessages`), the raw object text output, and usage on a `generate_content` span.
+
+```ts
+import { generateObjectHooks } from '@genai-otel/core/vercel-ai-sdk';
+
+const res = await generateObject({
+  model: openai('gpt-4o'),
+  schema,
+  system: 'You generate query cards.',
+  messages,
+  ...generateObjectHooks(client, { agentName: 'query-card' }),
+});
+```
 
 ## OpenAI SDK
 

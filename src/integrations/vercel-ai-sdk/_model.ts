@@ -29,7 +29,7 @@ export function identityFields(
 }
 
 export function modelRefFromAi(model: unknown): ModelRef {
-  // LanguageModelV2/V3 (AI SDK v6) expose `provider` and `modelId` properties.
+  // LanguageModelV3 (AI SDK v7) exposes `provider` and `modelId` properties.
   const m = model as { provider?: string; modelId?: string };
   return {
     provider: m?.provider ?? 'unknown',
@@ -38,14 +38,14 @@ export function modelRefFromAi(model: unknown): ModelRef {
 }
 
 export function embedModelRefFromAi(model: unknown): ModelRef {
-  // EmbeddingModelV2/V3 has the same surface.
+  // EmbeddingModelV3 (AI SDK v7) has the same surface.
   return modelRefFromAi(model);
 }
 
 /**
- * Maps AI SDK usage (v5 or v6 top-level shape) to a partial `TokenUsage` object.
- * Handles both legacy `promptTokens`/`completionTokens` (v5) and
- * `inputTokens`/`outputTokens` (v6).
+ * Maps AI SDK usage (v7 top-level shape) to a partial `TokenUsage` object.
+ * Handles both the legacy `promptTokens`/`completionTokens` (v5) and
+ * current `inputTokens`/`outputTokens` (v6/v7) names.
  */
 export function mapAiUsage(usage: unknown):
   | {

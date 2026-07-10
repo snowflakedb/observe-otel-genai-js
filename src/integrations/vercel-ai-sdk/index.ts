@@ -19,10 +19,10 @@
  *     ...streamTextHooks(client, { agentName: 'demo' }),
  *   });
  *
- * Note: targets AI SDK v6 (`ai ^6.0.0`). v5/v6 renamed several params
- * (e.g. `maxTokens` -> `maxOutputTokens`) and usage fields
- * (`promptTokens`/`completionTokens` -> `inputTokens`/`outputTokens`); the
- * adapters duck-type both the legacy and current shapes so they stay tolerant.
+ * Note: targets AI SDK v7 (`ai ^7.0.0`). v7 uses `maxOutputTokens` and
+ * `inputTokens`/`outputTokens` usage fields, and renamed the final lifecycle
+ * callback `onFinish` -> `onEnd`; the adapters still duck-type the legacy
+ * (`maxTokens`, `promptTokens`/`completionTokens`) shapes so they stay tolerant.
  */
 
 import {
@@ -51,8 +51,8 @@ import {
 export type { VercelAdapterOptions };
 
 // Re-export hooks so they ship under the same subpath entry.
-export { generateTextHooks, streamTextHooks } from './hooks.js';
-export type { GenerateTextHooks, StreamTextHooks } from './hooks.js';
+export { generateObjectHooks, generateTextHooks, streamTextHooks } from './hooks.js';
+export type { GenerateObjectHooks, GenerateTextHooks, StreamTextHooks } from './hooks.js';
 
 // -----------------------------------------------------------------------------
 // generateText
@@ -112,7 +112,7 @@ type StreamTextResult = ReturnType<typeof streamText>;
 /**
  * Wraps `streamText`. Calls `streamText` eagerly so the returned object is the
  * real `StreamTextResult` (synchronous `textStream` / `usage` accessors per
- * the AI SDK contract). The recorder ends inside `onFinish` / `onError`.
+ * the AI SDK contract). The recorder ends inside `onEnd` / `onError`.
  */
 export function wrapStreamText(
   client: Client,
@@ -140,7 +140,7 @@ export function wrapStreamText(
 
   let firstTokenRecorded = false;
   const userOnChunk = params.onChunk;
-  const userOnFinish = params.onFinish;
+  const userOnEnd = params.onEnd;
   const userOnError = params.onError;
 
   return aiStreamText({
@@ -161,7 +161,7 @@ export function wrapStreamText(
       }
       return userOnError?.(event);
     },
-    onFinish: async (event) => {
+    onEnd: async (event) => {
       rec.setResult({
         responseId: event.response?.id,
         responseModel: event.response?.modelId,
@@ -173,7 +173,7 @@ export function wrapStreamText(
       } catch {
         /* ignore */
       }
-      return userOnFinish?.(event);
+      return userOnEnd?.(event);
     },
   } as StreamTextParams);
 }
@@ -185,6 +185,14 @@ export function wrapStreamText(
 type GenerateObjectParams = Parameters<typeof generateObject>[0];
 type GenerateObjectResult = Awaited<ReturnType<typeof generateObject>>;
 
+/**
+ * Wraps `generateObject`.
+ *
+ * Note: AI SDK deprecates `generateObject`/`streamObject` in favor of
+ * `generateText`/`streamText` with the `Output` structured-output API. This
+ * wrapper remains for callers still on `generateObject`; prefer
+ * {@link wrapGenerateText} + `Output` for new code.
+ */
 export async function wrapGenerateObject(
   client: Client,
   params: GenerateObjectParams,
@@ -304,7 +312,7 @@ function normalizeStopSequences(s: unknown): string[] | undefined {
   return undefined;
 }
 
-/** Reads `maxOutputTokens` (AI SDK v6) or legacy `maxTokens`. */
+/** Reads `maxOutputTokens` (AI SDK v7) or legacy `maxTokens`. */
 function readMaxTokens(p: {
   maxTokens?: number;
   maxOutputTokens?: number;

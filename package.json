@@ -1,6 +1,6 @@
 {
   "name": "@genai-otel/core",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
   "license": "MIT",
   "author": "Snowflake Inc.",
@@ -76,7 +76,7 @@
     "@opentelemetry/sdk-trace-base": "^2.0.0",
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0",
-    "ai": "^6.0.0",
+    "ai": "^7.0.0",
     "openai": "^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -131,7 +131,7 @@
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0",
     "@types/node": "^22.0.0",
-    "ai": "^6.0.0",
+    "ai": "^7.0.0",
     "esbuild": "^0.25.0",
     "openai": "^4.77.0",
     "tsx": "^4.19.0",

@@ -5,28 +5,35 @@
  * Designed to be spread directly into `streamText` / `generateText` call params.
  *
  * **Full path** (direct `streamText`/`generateText` calls):
- *   - `experimental_onStepStart`: open recorder with accurate start time + input messages
+ *   - `onStepStart`: open recorder with accurate start time + input messages
  *   - `onChunk`: TTFT on first text-delta
- *   - `experimental_onToolCallStart/Finish`: discrete `execute_tool` spans with timing
- *   - `onStepFinish`: set output/usage/stopReason, close recorder
+ *   - `onToolExecutionStart/End`: discrete `execute_tool` spans with timing
+ *   - `onStepEnd`: set output/usage/stopReason, close recorder
  *   - `onError`: close all open recorders with error status
  *
- * **Fallback path** (`ToolLoopAgent`, which only exposes `onStepFinish`):
- *   - `onStepFinish`: open+close generation recorder with synthetic step-boundary
+ * **Fallback path** (`onStepEnd` fires without a preceding `onStepStart`):
+ *   - `onStepEnd`: open+close generation recorder with synthetic step-boundary
  *     timing, then emit `execute_tool` spans from `step.toolCalls` + `step.content`
  *   - TTFT is not available; per-tool duration is not available
+ *
+ * Targets AI SDK v7 (`ai ^7.0.0`). In v7 these callbacks are first-class on
+ * `streamText`, `generateText`, AND `ToolLoopAgent` — so `onStepStart` now fires
+ * for agents too (in v6 agents ignored `experimental_onStepStart`, which dropped
+ * `gen_ai.input.messages` on agent spans). The fallback path is retained as a
+ * defensive measure but is rarely exercised on v7.
  */
 
 import type { Client } from '../../client.js';
 import {
   type Message,
   type Part,
+  assistantTextMessage,
   textPart,
   thinkingPart,
   toolCallPart,
   toolResultPart,
 } from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
+import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
 import { type VercelAdapterOptions, identityFields, mapAiUsage, modelRefFromAi } from './_model.js';
 
 // ---------------------------------------------------------------------------
@@ -53,11 +60,17 @@ interface AiModelMessage {
   content: string | AiContentPart[];
 }
 
+/**
+ * `onStepStart` event (AI SDK v7). Model info is flat (`provider`/`modelId`),
+ * and the system prompt arrives as `instructions` (may be a string or
+ * structured `SystemModelMessage`).
+ */
 interface AiStepStartEvent {
   stepNumber: number;
-  model: AiCallbackModel;
+  provider: string;
+  modelId: string;
   messages: AiModelMessage[];
-  system?: unknown;
+  instructions?: unknown;
 }
 
 interface AiToolCall {
@@ -66,20 +79,23 @@ interface AiToolCall {
   input: unknown;
 }
 
-interface AiToolCallStartEvent {
+/**
+ * `onToolExecutionStart` event (AI SDK v7). Carries the tool call and the
+ * messages that led to it; unlike v6 it does not expose `model` or `stepNumber`.
+ */
+interface AiToolExecutionStartEvent {
   toolCall: AiToolCall;
-  stepNumber?: number;
-  model?: AiCallbackModel;
 }
 
-interface AiToolCallFinishEvent {
+/**
+ * `onToolExecutionEnd` event (AI SDK v7). Success/error is discriminated via
+ * `toolOutput.type` (`'tool-result'` vs `'tool-error'`); duration is
+ * `toolExecutionMs`.
+ */
+interface AiToolExecutionEndEvent {
   toolCall: AiToolCall;
-  durationMs: number;
-  success: boolean;
-  output?: unknown;
-  error?: unknown;
-  stepNumber?: number;
-  model?: AiCallbackModel;
+  toolExecutionMs?: number;
+  toolOutput?: { type: 'tool-result'; output?: unknown } | { type: 'tool-error'; error?: unknown };
 }
 
 interface AiToolResult {
@@ -126,11 +142,11 @@ interface AiErrorEvent {
 
 /** Callback bag returned by {@link streamTextHooks} — spread into `streamText` params. */
 export interface StreamTextHooks {
-  experimental_onStepStart?: (event: AiStepStartEvent) => Promise<void> | void;
+  onStepStart?: (event: AiStepStartEvent) => Promise<void> | void;
   onChunk?: (event: AiChunkEvent) => Promise<void> | void;
-  experimental_onToolCallStart?: (event: AiToolCallStartEvent) => Promise<void> | void;
-  experimental_onToolCallFinish?: (event: AiToolCallFinishEvent) => Promise<void> | void;
-  onStepFinish: (event: AiStepFinishEvent) => Promise<void> | void;
+  onToolExecutionStart?: (event: AiToolExecutionStartEvent) => Promise<void> | void;
+  onToolExecutionEnd?: (event: AiToolExecutionEndEvent) => Promise<void> | void;
+  onStepEnd: (event: AiStepFinishEvent) => Promise<void> | void;
   onError?: (event: AiErrorEvent) => Promise<void> | void;
 }
 
@@ -148,7 +164,7 @@ interface StepState {
   rec: GenerationRec;
   startedAtMs: number;
   firstTokenSeen: boolean;
-  /** Tool call IDs already handled by `experimental_onToolCallFinish`. */
+  /** Tool call IDs already handled by `onToolExecutionEnd`. */
   closedToolCallIds: Set<string>;
 }
 
@@ -221,7 +237,7 @@ export function streamTextHooks(
 
   /**
    * Emits execute_tool spans for any tool calls in the step that were not
-   * already handled by `experimental_onToolCallFinish`. Uses synthetic timing
+   * already handled by `onToolExecutionEnd`. Uses synthetic timing
    * (step start as tool start — no per-tool duration available in this path).
    */
   async function recordToolsFromStep(state: StepState, event: AiStepFinishEvent): Promise<void> {
@@ -241,8 +257,8 @@ export function streamTextHooks(
     for (const tc of event.toolCalls) {
       if (state.closedToolCallIds.has(tc.toolCallId)) continue;
       const isError = toolErrors.has(tc.toolCallId);
-      // Reuse a recorder opened by `experimental_onToolCallStart` whose matching
-      // `onToolCallFinish` never fired (otherwise it would leak, and a second
+      // Reuse a recorder opened by `onToolExecutionStart` whose matching
+      // `onToolExecutionEnd` never fired (otherwise it would leak, and a second
       // synthetic recorder would double-record the same tool call). Fall back to
       // a synthetic recorder anchored at the step boundary when none is open.
       let toolRec = toolRecorders.get(tc.toolCallId);
@@ -299,11 +315,12 @@ export function streamTextHooks(
   // --- returned callbacks ---
 
   return {
-    experimental_onStepStart(event: AiStepStartEvent): void {
+    onStepStart(event: AiStepStartEvent): void {
       const startedAtMs = client.now();
       const inputMessages = mapModelMessages(event.messages);
-      const systemPrompt = typeof event.system === 'string' ? event.system : undefined;
-      openStepRec(event.stepNumber, event.model, startedAtMs, inputMessages, systemPrompt);
+      const systemPrompt = typeof event.instructions === 'string' ? event.instructions : undefined;
+      const model: AiCallbackModel = { provider: event.provider, modelId: event.modelId };
+      openStepRec(event.stepNumber, model, startedAtMs, inputMessages, systemPrompt);
     },
 
     onChunk(event: AiChunkEvent): void {
@@ -321,12 +338,12 @@ export function streamTextHooks(
       }
     },
 
-    experimental_onToolCallStart(event: AiToolCallStartEvent): void {
+    onToolExecutionStart(event: AiToolExecutionStartEvent): void {
+      // v7 `onToolExecutionStart` does not carry model info; requestModel /
+      // requestProvider are backfilled from the step-finish event if needed.
       const toolRec = client.startToolExecution({
         toolName: event.toolCall.toolName,
         toolCallId: event.toolCall.toolCallId,
-        requestModel: event.model?.modelId,
-        requestProvider: event.model?.provider,
         agentName: options.agentName,
         agentVersion: options.agentVersion,
         conversationId: options.conversationId,
@@ -335,25 +352,23 @@ export function streamTextHooks(
       toolRecorders.set(event.toolCall.toolCallId, toolRec);
     },
 
-    async experimental_onToolCallFinish(event: AiToolCallFinishEvent): Promise<void> {
+    async onToolExecutionEnd(event: AiToolExecutionEndEvent): Promise<void> {
       const toolRec = toolRecorders.get(event.toolCall.toolCallId);
       if (!toolRec) return;
       toolRecorders.delete(event.toolCall.toolCallId);
 
-      // Mark as handled so the onStepFinish fallback doesn't double-record
-      const targetStep = event.stepNumber;
-      if (targetStep !== undefined) {
-        stepStates.get(targetStep)?.closedToolCallIds.add(event.toolCall.toolCallId);
-      } else {
-        for (const [, state] of stepStates) {
-          state.closedToolCallIds.add(event.toolCall.toolCallId);
-        }
+      // v7 tool events carry no stepNumber — mark handled across all open steps
+      // so the onStepEnd fallback doesn't double-record.
+      for (const [, state] of stepStates) {
+        state.closedToolCallIds.add(event.toolCall.toolCallId);
       }
 
-      if (event.success) {
-        toolRec.setResult({ result: event.output });
-      } else {
-        toolRec.setExecError(event.error);
+      // Success/error is discriminated via toolOutput.type.
+      const out = event.toolOutput;
+      if (out && out.type === 'tool-error') {
+        toolRec.setExecError(out.error);
+      } else if (out && out.type === 'tool-result') {
+        toolRec.setResult({ result: out.output });
       }
       try {
         await toolRec.end();
@@ -362,10 +377,10 @@ export function streamTextHooks(
       }
     },
 
-    async onStepFinish(event: AiStepFinishEvent): Promise<void> {
+    async onStepEnd(event: AiStepFinishEvent): Promise<void> {
       let state = stepStates.get(event.stepNumber);
       if (!state) {
-        // experimental_onStepStart did not fire — open recorder with synthetic
+        // onStepStart did not fire — open recorder with synthetic
         // step-boundary timing (timestamp of when the previous step ended).
         state = openStepRec(event.stepNumber, event.model, prevStepEndedAt);
       }
@@ -387,7 +402,7 @@ export function streamTextHooks(
  * Returns a fresh stateful hooks object for one `generateText` invocation.
  *
  * Equivalent to {@link streamTextHooks} minus `onChunk` and `onError`, which
- * are stream-only in AI SDK v6.
+ * are stream-only in AI SDK v7.
  */
 export function generateTextHooks(
   client: Client,
@@ -395,6 +410,174 @@ export function generateTextHooks(
 ): GenerateTextHooks {
   const { onChunk: _onChunk, onError: _onError, ...rest } = streamTextHooks(client, options);
   return rest;
+}
+
+// ---------------------------------------------------------------------------
+// generateObject hooks
+// ---------------------------------------------------------------------------
+
+/** Provider-format message (AI SDK `LanguageModelV4Message`). */
+interface AiProviderMessage {
+  role: string;
+  content: string | AiProviderPart[];
+}
+
+interface AiProviderPart {
+  type: string;
+  text?: string;
+  toolName?: string;
+  toolCallId?: string;
+  input?: unknown;
+  output?: unknown;
+}
+
+/**
+ * `onStepStart` event for `generateObject` (AI SDK v7). Model info is flat;
+ * input arrives as `promptMessages` in provider format (`LanguageModelV4Prompt`),
+ * distinct from the `messages` shape used by streamText/generateText.
+ */
+interface AiObjectStepStartEvent {
+  stepNumber?: number;
+  provider: string;
+  modelId: string;
+  promptMessages?: AiProviderMessage[];
+}
+
+/** `onStepEnd` event for `generateObject` (AI SDK v7). */
+interface AiObjectStepEndEvent {
+  provider?: string;
+  modelId?: string;
+  objectText?: string;
+  finishReason?: string;
+  usage?: unknown;
+  response?: { id?: string; modelId?: string };
+}
+
+/** Callback bag returned by {@link generateObjectHooks} — spread into `generateObject` params. */
+export interface GenerateObjectHooks {
+  onStepStart?: (event: AiObjectStepStartEvent) => Promise<void> | void;
+  onStepEnd?: (event: AiObjectStepEndEvent) => Promise<void> | void;
+}
+
+/**
+ * Returns a fresh stateful hooks object for one `generateObject` invocation.
+ *
+ * `generateObject` is single-step (`stepNumber` always 0) with no tool calls or
+ * streaming, so this is simpler than {@link streamTextHooks}: one recorder,
+ * opened in `onStepStart` (capturing input from `promptMessages`) and closed in
+ * `onStepEnd` (output text, usage, stop reason).
+ *
+ * Each call produces an independent instance; do not reuse across calls.
+ */
+export function generateObjectHooks(
+  client: Client,
+  options: VercelAdapterOptions = {},
+): GenerateObjectHooks {
+  let rec: GenerationRec | undefined;
+
+  return {
+    onStepStart(event: AiObjectStepStartEvent): void {
+      const { messages, systemPrompt } = mapProviderPrompt(event.promptMessages ?? []);
+      rec = client.startStreamingGeneration({
+        model: modelRefFromAi({ provider: event.provider, modelId: event.modelId }),
+        operationName: OP_GENERATE_CONTENT,
+        ...identityFields(options),
+        startedAt: client.now(),
+        systemPrompt,
+        tags: options.tags,
+        metadata: options.metadata,
+        parentGenerationIds: options.parentGenerationIds,
+      });
+      if (messages.length > 0) rec.setResult({ input: messages });
+    },
+
+    async onStepEnd(event: AiObjectStepEndEvent): Promise<void> {
+      if (!rec) return;
+      const output =
+        typeof event.objectText === 'string' && event.objectText.length > 0
+          ? [assistantTextMessage(event.objectText)]
+          : undefined;
+      rec.setResult({
+        output,
+        usage: mapAiUsage(event.usage),
+        stopReason: event.finishReason,
+        responseId: event.response?.id,
+        responseModel: event.response?.modelId,
+      });
+      try {
+        await rec.end();
+      } catch {
+        /* ignore recorder flush errors */
+      }
+      rec = undefined;
+    },
+  };
+}
+
+/**
+ * Converts an AI SDK provider-format prompt (`LanguageModelV4Prompt`, used by
+ * generateObject step events) to genai-otel `Message[]` + `systemPrompt`.
+ * The `system` role carries a plain string (returned separately so it rides on
+ * the seed's `systemPrompt`); other roles carry provider part arrays.
+ */
+function mapProviderPrompt(prompt: AiProviderMessage[]): {
+  messages: Message[];
+  systemPrompt?: string;
+} {
+  const messages: Message[] = [];
+  const systemChunks: string[] = [];
+  for (const msg of prompt) {
+    if (msg.role === 'system') {
+      if (typeof msg.content === 'string') systemChunks.push(msg.content);
+      continue;
+    }
+    const role = normalizeRole(msg.role);
+    if (typeof msg.content === 'string') {
+      messages.push({ role, parts: [textPart(msg.content)] });
+      continue;
+    }
+    if (!Array.isArray(msg.content)) continue;
+    const parts = mapProviderParts(msg.content);
+    if (parts.length > 0) messages.push({ role, parts });
+  }
+  return {
+    messages,
+    systemPrompt: systemChunks.length > 0 ? systemChunks.join('\n\n') : undefined,
+  };
+}
+
+/** Converts provider-format content parts to genai-otel `Part[]`. */
+function mapProviderParts(content: AiProviderPart[]): Part[] {
+  const parts: Part[] = [];
+  for (const c of content) {
+    switch (c.type) {
+      case 'text':
+        if (typeof c.text === 'string') parts.push(textPart(c.text));
+        break;
+      case 'reasoning':
+        if (typeof c.text === 'string') parts.push(thinkingPart(c.text));
+        break;
+      case 'tool-call':
+        parts.push(
+          toolCallPart({
+            name: c.toolName ?? '',
+            id: c.toolCallId,
+            inputJson: jsonString(c.input),
+          }),
+        );
+        break;
+      case 'tool-result':
+        parts.push(
+          toolResultPart({
+            toolCallId: c.toolCallId,
+            name: c.toolName,
+            contentJson: jsonString(c.output),
+          }),
+        );
+        break;
+    }
+  }
+  return parts;
 }
 
 // ---------------------------------------------------------------------------

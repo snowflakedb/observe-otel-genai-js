@@ -106,7 +106,7 @@ See [`docs/integrations.md`](docs/integrations.md) for the per-adapter usage gui
 
 ### Notes
 
-- **Vercel AI SDK version**: the `vercel-ai-sdk` adapter targets AI SDK v6 (`ai ^6.0.0`). v6 uses `maxOutputTokens` and `inputTokens`/`outputTokens` usage fields; the wrapper duck-types the legacy v4 `maxTokens` and `promptTokens`/`completionTokens` names too, so it stays tolerant of older shapes.
+- **Vercel AI SDK version**: the `vercel-ai-sdk` adapter targets AI SDK v7 (`ai ^7.0.0`). v7 uses `maxOutputTokens` and `inputTokens`/`outputTokens` usage fields, and the final stream callback is `onEnd` (v6's `onFinish`); the wrapper duck-types the legacy `maxTokens` and `promptTokens`/`completionTokens` names too, so it stays tolerant of older shapes.
 - **Fluent-mode parenting**: `withConversationId(id)` and friends only set values on the library's own AsyncLocalStorage; they do NOT install an OTel context. A fluent-mode generation inside a `tracer.startActiveSpan(...)` block will auto-parent under that span (because OTel context is active), but two sibling fluent generations inside a bare `withConversationId(...)` block are siblings of the trace root, not of each other. Use the callback variant of `client.invokeAgent(seed, async (rec) => { ... })` when you need explicit parenting.
 
 ## Status
