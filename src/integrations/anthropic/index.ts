@@ -15,10 +15,17 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 import type { Client } from '../../client.js';
 import type { GenerationStart } from '../../models/generation.js';
+import {
+  type Message,
+  type Part,
+  textPart,
+  thinkingPart,
+  toolCallPart,
+  toolResultPart,
+} from '../../models/message.js';
 import { OP_CHAT } from '../../semconv.js';
 import {
   type AdapterCallOptions,
-  type WithMetadata,
   createMetadataAccessor,
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
@@ -42,7 +49,7 @@ type AnthropicMessage = Anthropic.Messages.Message;
 export async function instrumentedMessageCreate(
   client: Client,
   anthropic: Anthropic,
-  params: WithMetadata<MessageCreateParams> | MessageCreateParams,
+  params: MessageCreateParams,
   options: AnthropicAdapterOptions = {},
 ): Promise<AnthropicMessage | AsyncIterable<unknown>> {
   const resolved = resolveParams(params, options);
@@ -68,6 +75,7 @@ async function runMessageCreate(
         ? params.system
         : extractSystemText(params.system as unknown[]),
     ...identityFieldsFromOptions(options),
+    contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -75,11 +83,13 @@ async function runMessageCreate(
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapAnthropicInput(params.messages) });
     let firstTokenSeen = false;
     let finalUsage: AnthropicUsageShape | undefined;
     let finalModel: string | undefined;
     let finalStopReason: string | undefined;
     let finalId: string | undefined;
+    const blockAcc = new Map<number, AntBlockAcc>();
 
     let stream: AsyncIterable<Record<string, unknown>>;
     try {
@@ -92,11 +102,12 @@ async function runMessageCreate(
 
     return wrapProviderStream<typeof stream, Record<string, unknown>>(stream, {
       onChunk: (event) => {
-        if (!firstTokenSeen) {
+        const t = event.type as string | undefined;
+        // TTFT = first content token, not the `message_start` metadata event.
+        if (!firstTokenSeen && (t === 'content_block_start' || t === 'content_block_delta')) {
           firstTokenSeen = true;
           rec.setFirstTokenAt(Date.now());
         }
-        const t = event.type as string | undefined;
         if (t === 'message_start') {
           const msg = (event as { message?: AnthropicMessage }).message;
           if (msg) {
@@ -104,6 +115,34 @@ async function runMessageCreate(
             finalModel = msg.model;
             finalUsage = msg.usage as unknown as AnthropicUsageShape;
           }
+        }
+        if (t === 'content_block_start') {
+          const idx = (event as { index?: number }).index ?? 0;
+          const cb = (event as { content_block?: AntBlock }).content_block;
+          blockAcc.set(idx, {
+            type: cb?.type,
+            text: '',
+            thinking: '',
+            toolId: cb?.id,
+            toolName: cb?.name,
+            toolJson: '',
+          });
+        }
+        if (t === 'content_block_delta') {
+          const idx = (event as { index?: number }).index ?? 0;
+          const d = (event as { delta?: AntStreamDelta }).delta;
+          const entry = blockAcc.get(idx) ?? { text: '', thinking: '', toolJson: '' };
+          if (d?.type === 'text_delta' && typeof d.text === 'string') {
+            entry.text += d.text;
+            entry.type ??= 'text';
+          } else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+            entry.toolJson += d.partial_json;
+            entry.type ??= 'tool_use';
+          } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
+            entry.thinking += d.thinking;
+            entry.type ??= 'thinking';
+          }
+          blockAcc.set(idx, entry);
         }
         if (t === 'message_delta') {
           const delta = (event as { delta?: { stop_reason?: string } }).delta;
@@ -118,6 +157,7 @@ async function runMessageCreate(
           responseModel: finalModel,
           stopReason: finalStopReason,
           usage: mapAnthropicUsage(finalUsage),
+          output: buildAnthropicStreamOutput(blockAcc),
         });
         await rec.end();
       },
@@ -140,6 +180,8 @@ async function runMessageCreate(
       responseModel: result.model,
       stopReason: result.stop_reason ?? undefined,
       usage: mapAnthropicUsage(result.usage as unknown as AnthropicUsageShape),
+      input: mapAnthropicInput(params.messages),
+      output: mapAnthropicOutput((result as { content?: unknown }).content),
     });
     return result;
   } catch (err) {
@@ -212,4 +254,115 @@ function extractSystemText(blocks: unknown[] | undefined): string | undefined {
     }
   }
   return out.length ? out.join('\n') : undefined;
+}
+
+// -----------------------------------------------------------------------------
+// Content mapping (Anthropic messages/blocks -> genai-otel Message[])
+//
+// System instructions ride on the separate `system` param (-> systemPrompt ->
+// gen_ai.system_instructions), so they are not part of this message mapping.
+// Image/document blocks are not modeled and are skipped.
+// -----------------------------------------------------------------------------
+
+interface AntBlock {
+  type?: string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+}
+interface AntMessageParam {
+  role?: string;
+  content?: string | AntBlock[];
+}
+interface AntStreamDelta {
+  type?: string;
+  text?: string;
+  partial_json?: string;
+  thinking?: string;
+}
+interface AntBlockAcc {
+  type?: string;
+  text: string;
+  thinking: string;
+  toolId?: string;
+  toolName?: string;
+  toolJson: string;
+}
+
+function jsonOrUndef(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function blockToParts(b: AntBlock): Part[] {
+  if (!b || typeof b !== 'object') return [];
+  switch (b.type) {
+    case 'text':
+      return typeof b.text === 'string' && b.text ? [textPart(b.text)] : [];
+    case 'thinking':
+      return typeof b.thinking === 'string' && b.thinking ? [thinkingPart(b.thinking)] : [];
+    case 'tool_use':
+      return [toolCallPart({ name: b.name ?? '', id: b.id, inputJson: jsonOrUndef(b.input) })];
+    case 'tool_result':
+      return [
+        toolResultPart({
+          toolCallId: b.tool_use_id,
+          content: typeof b.content === 'string' ? b.content : undefined,
+          contentJson:
+            b.content != null && typeof b.content !== 'string' ? jsonOrUndef(b.content) : undefined,
+          isError: b.is_error,
+        }),
+      ];
+    default:
+      return [];
+  }
+}
+
+function mapAnthropicInput(messages: unknown): Message[] {
+  if (!Array.isArray(messages)) return [];
+  const out: Message[] = [];
+  for (const raw of messages as AntMessageParam[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const role = raw.role === 'assistant' ? 'assistant' : 'user';
+    const parts: Part[] = [];
+    if (typeof raw.content === 'string') {
+      if (raw.content) parts.push(textPart(raw.content));
+    } else if (Array.isArray(raw.content)) {
+      for (const b of raw.content) parts.push(...blockToParts(b));
+    }
+    if (parts.length > 0) out.push({ role, parts });
+  }
+  return out;
+}
+
+function mapAnthropicOutput(content: unknown): Message[] {
+  if (!Array.isArray(content)) return [];
+  const parts: Part[] = [];
+  for (const b of content as AntBlock[]) parts.push(...blockToParts(b));
+  if (parts.length === 0) return [];
+  return [{ role: 'assistant', parts }];
+}
+
+function buildAnthropicStreamOutput(blocks: Map<number, AntBlockAcc>): Message[] {
+  const parts: Part[] = [];
+  for (const [, b] of [...blocks.entries()].sort((a, c) => a[0] - c[0])) {
+    if (b.type === 'text' && b.text) parts.push(textPart(b.text));
+    else if (b.type === 'thinking' && b.thinking) parts.push(thinkingPart(b.thinking));
+    else if (b.type === 'tool_use')
+      parts.push(
+        toolCallPart({ name: b.toolName ?? '', id: b.toolId, inputJson: b.toolJson || undefined }),
+      );
+  }
+  if (parts.length === 0) return [];
+  return [{ role: 'assistant', parts }];
 }

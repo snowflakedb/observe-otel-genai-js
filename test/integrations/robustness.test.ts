@@ -8,7 +8,7 @@
  */
 
 import type OpenAI from 'openai';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ValidationError } from '../../src/errors.js';
 import { wrapProviderStream } from '../../src/integrations/_common/stream.js';
@@ -99,6 +99,59 @@ describe('wrapProviderStream — telemetry never breaks the consumer', () => {
 
     expect(completed).toBe(true);
     expect(abandoned).toBe(false);
+  });
+});
+
+describe('wrapProviderStream — watchdog for never-consumed streams', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires onAbandoned exactly once when the stream is never iterated', async () => {
+    let abandoned = 0;
+    let completed = 0;
+    async function* gen() {
+      yield 1;
+    }
+    // Wrap but never iterate — the watchdog must end the recorder.
+    wrapProviderStream(gen(), {
+      watchdogMs: 1000,
+      onAbandoned: () => {
+        abandoned += 1;
+      },
+      onComplete: () => {
+        completed += 1;
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(abandoned).toBe(1);
+    expect(completed).toBe(0);
+
+    // No second fire on further time.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(abandoned).toBe(1);
+  });
+
+  it('cancels the watchdog once iteration starts (no false abandonment)', async () => {
+    let abandoned = 0;
+    async function* gen() {
+      yield 1;
+      yield 2;
+    }
+    const wrapped = wrapProviderStream(gen(), {
+      watchdogMs: 1000,
+      onAbandoned: () => {
+        abandoned += 1;
+      },
+    });
+
+    await drain(wrapped);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(abandoned).toBe(0);
   });
 });
 

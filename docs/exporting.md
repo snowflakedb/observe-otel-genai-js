@@ -60,6 +60,63 @@ A row should appear within seconds.
 - **Bucket boundaries on histograms:** your backend should render the advisory boundaries correctly. If dashboards don't look right, see [`docs/semconv-mapping.md`](semconv-mapping.md) for the canonical bucket families.
 - **`service.name` routing:** most backends group data by service. Set `OTEL_SERVICE_NAME` per environment so dev/staging/prod stay separate.
 
+## Redacting content
+
+The library captures prompt/completion content by default (see
+[integrations.md](integrations.md#content-capture)). There are two layers of
+control:
+
+1. **Coarse, built-in:** `contentCaptureMode`. Set `metadata_only` to drop all
+   content across every span type (generation, agent, tool, embedding), or
+   `no_tool_content` (the default) to keep prompts/completions but strip tool
+   args/results. This needs no extra code.
+
+2. **Fine-grained:** a redacting `SpanProcessor`. Because content is emitted as
+   standard span attributes, a processor can scrub or drop it uniformly for
+   every span type before export — the OTel-native place for field-level
+   redaction. The library intentionally ships no in-SDK redaction hook.
+
+```ts
+import type { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+
+const CONTENT_ATTRS = [
+  'gen_ai.input.messages',
+  'gen_ai.output.messages',
+  'gen_ai.system_instructions',
+  'gen_ai.tool.call.arguments',
+  'gen_ai.tool.call.result',
+  'gen_ai.embeddings.input_texts',
+];
+
+/**
+ * Scrubs content attributes in place before the batch exporter serializes them.
+ * Content is JSON-encoded, so `redact` runs over the encoded string — good for
+ * pattern-based scrubbing (emails, card numbers, tokens). Register this BEFORE
+ * the exporting processor so the mutation is visible at export time.
+ */
+class RedactingSpanProcessor implements SpanProcessor {
+  constructor(private readonly redact: (value: string) => string) {}
+  onStart(): void {}
+  onEnd(span: ReadableSpan): void {
+    const attrs = span.attributes as Record<string, unknown>;
+    for (const key of CONTENT_ATTRS) {
+      if (typeof attrs[key] === 'string') attrs[key] = this.redact(attrs[key] as string);
+    }
+  }
+  async forceFlush(): Promise<void> {}
+  async shutdown(): Promise<void> {}
+}
+
+// Example: strip anything that looks like an email or a 16-digit card number.
+const redactor = new RedactingSpanProcessor((v) =>
+  v
+    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[redacted-email]')
+    .replace(/\b\d{16}\b/g, '[redacted-card]'),
+);
+// Register `redactor` on your NodeTracerProvider ahead of the OTLP exporting
+// processor (BatchSpanProcessor).
+```
+
 ## Resource detectors
 
 For cloud / Kubernetes deployments, install `@opentelemetry/resource-detector-{aws,gcp,k8s}` and pass detected attributes into `bootstrapOtel`'s `extraResourceAttributes`. This auto-populates `cloud.provider`, `k8s.pod.name`, `host.name`, etc. on every span.

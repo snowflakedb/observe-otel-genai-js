@@ -1,3 +1,4 @@
+import type { ContentCaptureMode } from '../content/capture.js';
 import type { OperationName, OutputType } from '../semconv.js';
 import type { Message } from './message.js';
 import type { TokenUsage } from './usage.js';
@@ -77,6 +78,13 @@ export interface GenerationStart {
   /** Override `gen_ai.operation.name`. Defaults to `chat` for v1. */
   operationName?: OperationName;
   systemPrompt?: string;
+
+  /**
+   * Per-call content-capture override. Resolution order at recording time:
+   * this per-call value -> ambient context -> client default. `'default'`
+   * (or unset) falls through.
+   */
+  contentCapture?: ContentCaptureMode;
 
   // Request controls
   maxTokens?: number;

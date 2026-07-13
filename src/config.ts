@@ -2,16 +2,6 @@ import type { Meter, Tracer } from '@opentelemetry/api';
 import type { ContentCapture, ContentCaptureMode } from './content/capture.js';
 import { defaultContentCapture } from './content/capture.js';
 import type { ErrorClassifier } from './errors/classify.js';
-import type { Generation } from './models/generation.js';
-
-/**
- * Pluggable sanitizer hook. Runs at `recorder.end()` time, after seed/result
- * merge but before span attribute emission. Returning a new `Generation` is
- * encouraged; mutating in place is supported. Throw to fall back to
- * `metadata_only` for that recording.
- */
-export type GenerationSanitizer = (generation: Generation) => Generation | Promise<Generation>;
-
 /**
  * Optional logger interface. Compatible with `console` so most users can pass
  * that in directly.
@@ -78,9 +68,6 @@ export interface ClientConfig {
   /** Truncation / blob-store / use-events configuration. */
   contentCapture?: ContentCapture;
 
-  /** Sanitizer applied to the merged `Generation` before emission. */
-  generationSanitizer?: GenerationSanitizer;
-
   /** Custom error classifier (overrides the built-in HTTP-status sniffer). */
   errorClassifier?: ErrorClassifier;
 
@@ -110,7 +97,6 @@ export interface ResolvedClientConfig {
   contentCaptureMode: ContentCaptureMode;
   contentCapture: ContentCapture;
 
-  generationSanitizer?: GenerationSanitizer;
   errorClassifier?: ErrorClassifier;
 
   embeddingCapture: EmbeddingCaptureConfig;
@@ -164,7 +150,6 @@ export function resolveConfig(input?: ClientConfig): ResolvedClientConfig {
     tags: { ...base.tags, ...(input.tags ?? {}) },
     contentCaptureMode: input.contentCaptureMode ?? base.contentCaptureMode,
     contentCapture: { ...base.contentCapture, ...(input.contentCapture ?? {}) },
-    generationSanitizer: input.generationSanitizer,
     errorClassifier: input.errorClassifier,
     embeddingCapture: { ...base.embeddingCapture, ...(input.embeddingCapture ?? {}) },
     spanLinkMap: { ...base.spanLinkMap, ...(input.spanLinkMap ?? {}) },

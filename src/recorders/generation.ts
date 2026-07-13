@@ -88,26 +88,11 @@ export class GenerationRecorder extends RecorderBase {
     const isMetadataOnly = mode === 'metadata_only';
 
     // 1. Merge seed + result into the final generation payload.
-    let generation = this.mergeSeedAndResult(completedAtMs);
+    const generation = this.mergeSeedAndResult(completedAtMs);
 
-    // 2. Apply optional sanitizer (Generation only). Fall back to metadata-only
-    //    on failure to avoid leaking unsanitized content.
-    let effectiveMode: ContentCaptureMode = mode;
-    if (!isMetadataOnly && this.host.config.generationSanitizer) {
-      try {
-        generation = await this.host.config.generationSanitizer(generation);
-      } catch (err) {
-        this.host.config.logger.warn?.(
-          'genai-otel: generation sanitizer threw, falling back to metadata_only',
-          err,
-        );
-        effectiveMode = 'metadata_only';
-      }
-    }
+    const stripped = isMetadataOnly;
 
-    const stripped = effectiveMode === 'metadata_only';
-
-    // 3. Update span name to reflect final operation + model.
+    // 2. Update span name to reflect final operation + model.
     this.span.updateName(
       generationSpanName(
         generation.operationName ?? OP_CHAT,
@@ -115,7 +100,7 @@ export class GenerationRecorder extends RecorderBase {
       ),
     );
 
-    // 4. Emit content as structured span attributes.
+    // 3. Emit content as structured span attributes.
     if (!stripped && captureConfig.enabled) {
       emitGenerationContent(this.span, generation, captureConfig);
     } else if (stripped) {
@@ -127,7 +112,7 @@ export class GenerationRecorder extends RecorderBase {
       generation.output = [];
     }
 
-    // 5. Apply the full attribute set (overwrites seed values).
+    // 4. Apply the full attribute set (overwrites seed values).
     applyGenerationAttributes(this.span, {
       ...generation,
       // model may be a partial; rebuild a complete ref so attribute helpers
@@ -142,11 +127,11 @@ export class GenerationRecorder extends RecorderBase {
       this.span.setAttribute(ATTR_CONVERSATION_TITLE, '');
     }
 
-    // 6. Privacy-gated exception recording.
+    // 5. Privacy-gated exception recording.
     this.recordExceptionIfAny(this.callError, stripped);
     this.recordExceptionIfAny(this.mappingError, stripped);
 
-    // 7. Status + error metric labels.
+    // 6. Status + error metric labels.
     let classified: import('./base.js').ClassifiedError;
     if (this.callError != null) {
       classified = this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped);
@@ -160,15 +145,15 @@ export class GenerationRecorder extends RecorderBase {
     }
     this.setSpanStatus(classified);
 
-    // 8. Record histograms.
+    // 7. Record histograms.
     this.recordMetrics(generation, completedAtMs, classified);
 
-    // 9. Capture trace/span ids onto the result for downstream correlation.
+    // 8. Capture trace/span ids onto the result for downstream correlation.
     const spanCtx = this.span.spanContext();
     generation.traceId = spanCtx.traceId;
     generation.spanId = spanCtx.spanId;
 
-    // 10. End the span with the explicit completion time.
+    // 9. End the span with the explicit completion time.
     this.span.end(new Date(completedAtMs));
     this.lastGeneration = generation;
   }

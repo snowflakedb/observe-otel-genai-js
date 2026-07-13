@@ -84,6 +84,28 @@ OTEL_DEPLOYMENT_ENVIRONMENT_NAME=dev
 
 For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/exporting.md).
 
+## Content capture and privacy
+
+Prompt and completion **content is captured by default** — the input/output
+messages are emitted as structured `gen_ai.input.messages` /
+`gen_ai.output.messages` span attributes (client default mode
+`no_tool_content`: prompts and completions on, tool args/results off). This
+matches OpenTelemetry's own unbounded-attribute default and keeps traces useful
+out of the box, but it means conversation content leaves your process on every
+span.
+
+To restrict what is captured:
+
+- **Turn content off:** `new Client({ contentCaptureMode: 'metadata_only' })` —
+  strips content from every span type (generation, agent, tool, embedding).
+  Also settable per call (`contentCapture`) and ambiently
+  (`withContentCaptureMode`).
+- **Cap size:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
+  trims long content while keeping the emitted JSON valid.
+- **Redact fields:** register a redacting `SpanProcessor` at bootstrap. Content
+  is user-owned and redacted at the OTel layer — the library ships no in-SDK
+  sanitizer. See the recipe in [`docs/exporting.md`](docs/exporting.md#redacting-content).
+
 ## Framework integrations
 
 First-party adapters live at their own subpath exports. Each peer dep is optional.

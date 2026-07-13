@@ -79,6 +79,32 @@ describe('LangChain adapter — LLM lifecycle', () => {
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
 
+  it('captures structured input + output via handleChatModelStart', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const system = { _getType: () => 'system', content: 'be nice' };
+    const human = { _getType: () => 'human', content: 'hi there' };
+    await handler.handleChatModelStart!(llmSerialized as any, [[system, human] as any], 'run-chat');
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [{ text: 'hello', message: { _getType: () => 'ai', content: 'hello' } } as any],
+        ],
+        llmOutput: { tokenUsage: { prompt_tokens: 4, completion_tokens: 1 } },
+      },
+      'run-chat',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input).toHaveLength(2);
+    expect(input[0].role).toBe('system');
+    expect(input[1].role).toBe('user');
+    expect(input[1].parts[0].content).toBe('hi there');
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].role).toBe('assistant');
+    expect(output[0].parts[0].content).toBe('hello');
+  });
+
   it('captures TTFT on first non-empty token', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleLLMStart!(llmSerialized as any, ['hi'], 'run-stream');

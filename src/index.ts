@@ -14,7 +14,6 @@ export {
   resolveConfig,
   type ClientConfig,
   type EmbeddingCaptureConfig,
-  type GenerationSanitizer,
   type Logger,
   type ResolvedClientConfig,
   type SpanLinkMapConfig,

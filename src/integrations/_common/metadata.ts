@@ -27,11 +27,6 @@ export interface AdapterCallOptions {
   metadata?: Record<string, unknown>;
 }
 
-export interface WithMetadata<T> {
-  params: T;
-  options: AdapterCallOptions;
-}
-
 /**
  * Creates a metadata accessor pair scoped to a unique Symbol per provider.
  * Each provider gets its own Symbol so OpenAI and Anthropic params can't
@@ -43,7 +38,7 @@ export function createMetadataAccessor<O extends AdapterCallOptions>(
   withMetadata: <T extends object>(params: T, options: O) => T;
   readMetadata: (params: unknown) => O;
   stripMetadata: <T>(params: T) => T;
-  resolveParams: <T>(params: WithMetadata<T> | T, options: O) => { params: T; options: O };
+  resolveParams: <T>(params: T, options: O) => { params: T; options: O };
 } {
   // Module-local Symbol (NOT Symbol.for): a globally-registered symbol would
   // be shared across two co-loaded copies of this package (e.g. a hoisting
@@ -76,17 +71,14 @@ export function createMetadataAccessor<O extends AdapterCallOptions>(
     return params;
   }
 
-  function resolveParams<T>(params: WithMetadata<T> | T, options: O): { params: T; options: O } {
-    if (
-      params &&
-      typeof params === 'object' &&
-      'params' in (params as object) &&
-      'options' in (params as object)
-    ) {
-      const w = params as WithMetadata<T>;
-      return { params: w.params, options: { ...w.options, ...options } as O };
-    }
-    return { params: params as T, options };
+  function resolveParams<T>(params: T, options: O): { params: T; options: O } {
+    // Merge any metadata attached in-place via withMetadata(params, opts), then
+    // strip the brand so it never reaches the provider wire request. Using the
+    // symbol brand (not structural key-matching on `params`/`options`) means a
+    // native provider params object is never misread as a metadata wrapper.
+    const attached = readMetadata(params);
+    stripMetadata(params);
+    return { params, options: { ...attached, ...options } };
   }
 
   return { withMetadata, readMetadata, stripMetadata, resolveParams };

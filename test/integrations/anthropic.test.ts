@@ -76,6 +76,31 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
   });
 
+  it('captures input + output messages as structured attributes', async () => {
+    const fake = makeFakeAnthropic(async () => ({
+      id: 'msg_content',
+      model: 'claude',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hi back' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
+
+    await instrumentedMessageCreate(h.client, fake, {
+      model: 'claude',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input[0].role).toBe('user');
+    expect(input[0].parts[0].content).toBe('hi');
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].role).toBe('assistant');
+    expect(output[0].parts[0].content).toBe('hi back');
+  });
+
   it('captures system prompt from string', async () => {
     const fake = makeFakeAnthropic(async () => ({
       id: 'msg_sys',
@@ -150,6 +175,8 @@ describe('Anthropic adapter — streaming', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(12);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(1);
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].parts[0].content).toBe('hi');
   });
 });
 

@@ -1,3 +1,4 @@
+import type { ContentCaptureMode } from '../content/capture.js';
 import type { ModelRef } from './generation.js';
 
 /**
@@ -10,6 +11,8 @@ export interface EmbeddingStart {
   dimensions?: number;
   /** e.g. `"float"`, `"base64"`. */
   encodingFormat?: string;
+  /** Per-call content-capture override (see `GenerationStart.contentCapture`). */
+  contentCapture?: ContentCaptureMode;
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
   startedAt?: Date | number;

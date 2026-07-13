@@ -317,5 +317,5 @@ function readMaxTokens(p: {
   maxTokens?: number;
   maxOutputTokens?: number;
 }): number | undefined {
-  return p.maxTokens ?? p.maxOutputTokens;
+  return p.maxOutputTokens ?? p.maxTokens;
 }

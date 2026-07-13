@@ -17,10 +17,16 @@ import type OpenAI from 'openai';
 import type { Client } from '../../client.js';
 import { ValidationError } from '../../errors.js';
 import type { GenerationStart } from '../../models/generation.js';
+import {
+  type Message,
+  type Part,
+  textPart,
+  toolCallPart,
+  toolResultPart,
+} from '../../models/message.js';
 import { OP_CHAT } from '../../semconv.js';
 import {
   type AdapterCallOptions,
-  type WithMetadata,
   createMetadataAccessor,
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
@@ -48,7 +54,7 @@ type ChatCompletionsResult = OpenAI.Chat.Completions.ChatCompletion;
 export async function instrumentedChatCompletion(
   client: Client,
   openai: OpenAI,
-  params: WithMetadata<ChatCompletionsCreateParams> | ChatCompletionsCreateParams,
+  params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions = {},
 ): Promise<ChatCompletionsResult> {
   const resolved = resolveParams(params, options);
@@ -81,7 +87,9 @@ async function runChatCompletion(
   const seed: GenerationStart = {
     model: { provider: 'openai', name: params.model },
     operationName: OP_CHAT,
-    maxTokens: (params as { max_tokens?: number }).max_tokens,
+    maxTokens:
+      (params as { max_completion_tokens?: number }).max_completion_tokens ??
+      (params as { max_tokens?: number }).max_tokens,
     temperature: params.temperature ?? undefined,
     topP: params.top_p ?? undefined,
     frequencyPenalty: params.frequency_penalty ?? undefined,
@@ -91,6 +99,7 @@ async function runChatCompletion(
     choiceCount: params.n ?? undefined,
     toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
     ...identityFieldsFromOptions(options),
+    contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -98,11 +107,14 @@ async function runChatCompletion(
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapOpenAIInput(params.messages) });
     let firstTokenSeen = false;
     let finalUsage: ChatUsageShape | undefined;
     let finalModel: string | undefined;
     let finalFinishReason: string | undefined;
     let finalId: string | undefined;
+    let outputText = '';
+    const toolAcc = new Map<number, { id?: string; name?: string; args: string }>();
 
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     try {
@@ -126,6 +138,20 @@ async function runChatCompletion(
         if (chunk.id) finalId = chunk.id;
         const finish = chunk.choices?.[0]?.finish_reason;
         if (finish) finalFinishReason = finish;
+        const delta = chunk.choices?.[0]?.delta as OAStreamDelta | undefined;
+        if (delta) {
+          if (typeof delta.content === 'string') outputText += delta.content;
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              const entry = toolAcc.get(idx) ?? { args: '' };
+              if (tc.id) entry.id = tc.id;
+              if (tc.function?.name) entry.name = tc.function.name;
+              if (typeof tc.function?.arguments === 'string') entry.args += tc.function.arguments;
+              toolAcc.set(idx, entry);
+            }
+          }
+        }
       },
       onComplete: async () => {
         rec.setResult({
@@ -133,6 +159,7 @@ async function runChatCompletion(
           responseModel: finalModel,
           stopReason: finalFinishReason,
           usage: mapUsage(finalUsage),
+          output: buildStreamOutputMessages(outputText, toolAcc),
         });
         await rec.end();
       },
@@ -155,6 +182,8 @@ async function runChatCompletion(
       responseModel: result.model,
       stopReason: result.choices?.[0]?.finish_reason,
       usage: mapUsage(result.usage),
+      input: mapOpenAIInput(params.messages),
+      output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
     });
     return result;
   } catch (err) {
@@ -297,4 +326,120 @@ function normalizeStop(stop: unknown): string[] | undefined {
   if (typeof stop === 'string') return [stop];
   if (Array.isArray(stop)) return stop.filter((s): s is string => typeof s === 'string');
   return undefined;
+}
+
+// -----------------------------------------------------------------------------
+// Content mapping (chat messages -> genai-otel Message[])
+//
+// Note: OpenAI carries system instructions inline in the `messages` array (part
+// of the chat history), so they map to `gen_ai.input.messages` with role
+// `system` rather than to `gen_ai.system_instructions`. Non-text content parts
+// (image/audio/file) are not modeled and are skipped.
+// -----------------------------------------------------------------------------
+
+interface OAContentPart {
+  type?: string;
+  text?: string;
+}
+interface OAToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+interface OAMessage {
+  role?: string;
+  content?: string | OAContentPart[] | null;
+  tool_calls?: OAToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+interface OAStreamToolCall extends OAToolCall {
+  index?: number;
+}
+interface OAStreamDelta {
+  content?: string | null;
+  tool_calls?: OAStreamToolCall[];
+}
+
+function normalizeOpenAIRole(role: string | undefined): Message['role'] {
+  switch (role) {
+    case 'system':
+    case 'developer':
+      return 'system';
+    case 'assistant':
+      return 'assistant';
+    case 'tool':
+    case 'function':
+      return 'tool';
+    default:
+      return 'user';
+  }
+}
+
+function contentToText(content: string | OAContentPart[] | null | undefined): string | undefined {
+  if (typeof content === 'string') return content || undefined;
+  if (Array.isArray(content)) {
+    let s = '';
+    for (const p of content) if (p?.type === 'text' && typeof p.text === 'string') s += p.text;
+    return s || undefined;
+  }
+  return undefined;
+}
+
+function messageBodyParts(raw: OAMessage): Part[] {
+  const parts: Part[] = [];
+  const text = contentToText(raw.content);
+  if (text) parts.push(textPart(text));
+  if (Array.isArray(raw.tool_calls)) {
+    for (const tc of raw.tool_calls) {
+      parts.push(
+        toolCallPart({
+          name: tc.function?.name ?? '',
+          id: tc.id,
+          inputJson: tc.function?.arguments,
+        }),
+      );
+    }
+  }
+  return parts;
+}
+
+function mapOpenAIInput(messages: unknown): Message[] {
+  if (!Array.isArray(messages)) return [];
+  const out: Message[] = [];
+  for (const raw of messages as OAMessage[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const role = normalizeOpenAIRole(raw.role);
+    if (role === 'tool') {
+      out.push({
+        role: 'tool',
+        parts: [
+          toolResultPart({ toolCallId: raw.tool_call_id, content: contentToText(raw.content) }),
+        ],
+      });
+      continue;
+    }
+    const parts = messageBodyParts(raw);
+    if (parts.length > 0) out.push(raw.name ? { role, parts, name: raw.name } : { role, parts });
+  }
+  return out;
+}
+
+function mapOpenAIOutputMessage(message: OAMessage | undefined): Message[] {
+  if (!message) return [];
+  const parts = messageBodyParts(message);
+  if (parts.length === 0) return [];
+  return [{ role: 'assistant', parts }];
+}
+
+function buildStreamOutputMessages(
+  text: string,
+  toolAcc: Map<number, { id?: string; name?: string; args: string }>,
+): Message[] {
+  const parts: Part[] = [];
+  if (text) parts.push(textPart(text));
+  for (const [, tc] of [...toolAcc.entries()].sort((a, b) => a[0] - b[0])) {
+    parts.push(toolCallPart({ name: tc.name ?? '', id: tc.id, inputJson: tc.args || undefined }));
+  }
+  if (parts.length === 0) return [];
+  return [{ role: 'assistant', parts }];
 }

@@ -25,12 +25,21 @@
 
 import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import type { Serialized } from '@langchain/core/load/serializable';
+import type { BaseMessage } from '@langchain/core/messages';
 import type { LLMResult } from '@langchain/core/outputs';
 import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
-import { type Message, assistantTextMessage } from '../../models/message.js';
+import {
+  type Message,
+  type Part,
+  assistantTextMessage,
+  textPart,
+  toolCallPart,
+  toolResultPart,
+  userTextMessage,
+} from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
@@ -43,6 +52,8 @@ export interface GenAIOtelCallbackHandlerOptions {
   conversationId?: string;
   conversationTitle?: string;
   userId?: string;
+  turnIndex?: number;
+  turnRole?: string;
   contentCapture?: ContentCaptureMode;
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
@@ -106,11 +117,31 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     runId: string,
     _parentRunId?: string,
     extraParams?: Record<string, unknown>,
-    _tags?: string[],
-    _metadata?: Record<string, unknown>,
-    _runName?: string,
   ): Promise<void> {
-    const model = modelFromSerialized(llm, extraParams);
+    // Raw string-completion path (also the fallback LangChain uses for chat
+    // models when a handler has no `handleChatModelStart`). Each prompt becomes
+    // a user message.
+    const input = prompts
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .map((p) => userTextMessage(p));
+    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId);
+  }
+
+  override async handleChatModelStart(
+    llm: Serialized,
+    messages: BaseMessage[][],
+    runId: string,
+    _parentRunId?: string,
+    extraParams?: Record<string, unknown>,
+  ): Promise<void> {
+    // Chat-model path: structured messages with real roles. System messages are
+    // part of the provided chat history, so they map to input.messages (role
+    // `system`) rather than to gen_ai.system_instructions.
+    const input = mapBaseMessages(messages[0] ?? []);
+    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId);
+  }
+
+  private openGeneration(model: ModelHint, input: Message[], runId: string): void {
     const rec = this.client.startGeneration({
       model,
       agentName: this.defaults.agentName,
@@ -118,10 +149,13 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       conversationId: this.defaults.conversationId,
       conversationTitle: this.defaults.conversationTitle,
       userId: this.defaults.userId,
-      systemPrompt: prompts.length > 1 ? prompts[0] : undefined,
+      turnIndex: this.defaults.turnIndex,
+      turnRole: this.defaults.turnRole,
+      contentCapture: this.defaults.contentCapture,
       tags: this.defaults.tags,
       metadata: this.defaults.metadata,
     });
+    if (input.length > 0) rec.setResult({ input });
     this.llmRunMap.set(runId, { rec, firstTokenSeen: false });
   }
 
@@ -141,6 +175,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       usage: mapLangChainUsage(output.llmOutput),
       stopReason: extractStopReason(output),
       responseId: extractResponseId(output),
+      output: mapLangChainOutput(output),
     });
     await safeEnd(entry.rec);
   }
@@ -163,6 +198,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       agentName: this.defaults.agentName,
       agentVersion: this.defaults.agentVersion,
       conversationId: this.defaults.conversationId,
+      contentCapture: this.defaults.contentCapture,
     });
     rec.setResult({ arguments: input });
     this.toolRunMap.set(runId, rec);
@@ -231,6 +267,31 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     rec.setError(err);
     await safeEnd(rec);
   }
+
+  /**
+   * Ends any recorders still open (LLM / tool / chain runs whose end/error
+   * callback never fired — e.g. an abandoned `.stream()` or a runner exception
+   * between start and end). Call on shutdown when a single handler instance is
+   * reused across many requests, to avoid leaked spans and unbounded map growth.
+   */
+  async dispose(): Promise<void> {
+    const err = new Error('genai-otel: LangChain handler disposed with an open run');
+    for (const { rec } of this.llmRunMap.values()) {
+      rec.setCallError(err);
+      await safeEnd(rec);
+    }
+    this.llmRunMap.clear();
+    for (const rec of this.toolRunMap.values()) {
+      rec.setExecError(err);
+      await safeEnd(rec);
+    }
+    this.toolRunMap.clear();
+    for (const rec of this.chainRunMap.values()) {
+      rec.setError(err);
+      await safeEnd(rec);
+    }
+    this.chainRunMap.clear();
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -276,6 +337,105 @@ function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   }
   if (text === '') return [];
   return [assistantTextMessage(text)];
+}
+
+// -----------------------------------------------------------------------------
+// Message mapping (LangChain BaseMessage -> genai-otel Message[])
+// -----------------------------------------------------------------------------
+
+interface LCBaseMessage {
+  _getType?: () => string;
+  content?: unknown;
+  tool_calls?: Array<{ id?: string; name?: string; args?: unknown }>;
+  tool_call_id?: string;
+}
+
+function lcRole(t: string | undefined): Message['role'] {
+  switch (t) {
+    case 'human':
+      return 'user';
+    case 'ai':
+      return 'assistant';
+    case 'system':
+    case 'developer':
+      return 'system';
+    case 'tool':
+    case 'function':
+      return 'tool';
+    default:
+      return 'user';
+  }
+}
+
+function lcContentText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content || undefined;
+  if (Array.isArray(content)) {
+    let s = '';
+    for (const p of content) {
+      if (p && typeof p === 'object' && (p as { type?: string }).type === 'text') {
+        const t = (p as { text?: string }).text;
+        if (typeof t === 'string') s += t;
+      }
+    }
+    return s || undefined;
+  }
+  return undefined;
+}
+
+function baseMessageParts(msg: LCBaseMessage): Part[] {
+  const parts: Part[] = [];
+  const text = lcContentText(msg.content);
+  if (text) parts.push(textPart(text));
+  if (Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      parts.push(toolCallPart({ name: tc.name ?? '', id: tc.id, inputJson: lcJson(tc.args) }));
+    }
+  }
+  return parts;
+}
+
+function mapBaseMessages(messages: readonly unknown[]): Message[] {
+  const out: Message[] = [];
+  for (const raw of messages) {
+    if (!raw || typeof raw !== 'object') continue;
+    const msg = raw as LCBaseMessage;
+    const role = lcRole(typeof msg._getType === 'function' ? msg._getType() : undefined);
+    if (role === 'tool') {
+      out.push({
+        role: 'tool',
+        parts: [
+          toolResultPart({ toolCallId: msg.tool_call_id, content: lcContentText(msg.content) }),
+        ],
+      });
+      continue;
+    }
+    const parts = baseMessageParts(msg);
+    if (parts.length > 0) out.push({ role, parts });
+  }
+  return out;
+}
+
+/** Maps an `LLMResult`'s first generation to an assistant output message. */
+function mapLangChainOutput(output: LLMResult): Message[] {
+  const gens = output.generations?.[0];
+  if (!gens || gens.length === 0) return [];
+  const first = gens[0] as { text?: string; message?: LCBaseMessage };
+  if (first.message) {
+    const parts = baseMessageParts(first.message);
+    if (parts.length > 0) return [{ role: 'assistant', parts }];
+  }
+  if (typeof first.text === 'string' && first.text) return [assistantTextMessage(first.text)];
+  return [];
+}
+
+function lcJson(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function modelFromSerialized(llm: Serialized, extraParams?: Record<string, unknown>): ModelHint {

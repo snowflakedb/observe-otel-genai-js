@@ -5,15 +5,40 @@
 | Adapter | Subpath | Peer dep |
 |---|---|---|
 | Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
-| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4.0.0 |
-| Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` ^0.30.0 |
+| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 |
+| Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30 <1 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
 
 All peer deps are declared optional — the core install does not pull them in.
 
+## Content capture
+
+Every adapter captures prompt and completion **content** — the input and output
+messages — as structured `gen_ai.input.messages` / `gen_ai.output.messages` span
+attributes. This is ON by default (client default mode `no_tool_content`:
+prompts and completions are captured; tool args/results are stripped).
+
+Control it globally on the `Client` (`contentCaptureMode`), per call (the
+`contentCapture` option accepted by every adapter), or ambiently
+(`withContentCaptureMode`). Modes: `full` (all content incl. tool args/results),
+`no_tool_content` (default), `metadata_only` (no content at all — honored by
+every span type: generation, agent, tool, embedding). For fine-grained,
+field-level redaction, register a redacting `SpanProcessor` at bootstrap — see
+[exporting.md](exporting.md#redacting-content).
+
+### Adapter capability matrix
+
+| Capability | Vercel | OpenAI | Anthropic | LangChain |
+|---|---|---|---|---|
+| input / output messages | yes | yes | yes | yes |
+| separate `execute_tool` spans | yes | no (tool calls ride on messages) | no (tool calls ride on messages) | yes |
+| TTFT on streaming | yes | yes | yes | yes (`handleLLMNewToken`) |
+| per-call metadata | hooks / options | `withMetadata` | `withMetadata` | handler options |
+| `invoke_agent` spans | via hooks | — | — | via chains |
+
 ## Vercel AI SDK
 
-Wraps `generateText`, `streamText`, `generateObject`, `embed`, `embedMany` so each call runs inside a `@genai-otel/core` recorder. Maps `usage`, `finishReason`, and `response.id` / `response.modelId` onto the standard `Generation` shape.
+Wraps `generateText`, `streamText`, `generateObject`, `embed`, `embedMany` so each call runs inside a `@genai-otel/core` recorder. Maps `usage`, `finishReason`, `response.id` / `response.modelId`, and the input/output messages onto the standard `Generation` shape.
 
 ```ts
 import { Client } from '@genai-otel/core';
@@ -35,7 +60,7 @@ for await (const chunk of await stream.textStream) {
 }
 ```
 
-`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onEnd` (renamed from `onFinish` in AI SDK v7).
+`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onEnd` (v7's rename of v6's `onFinish`). The lower-level `streamTextHooks` capture usage per step via `onStepEnd` instead.
 
 ### Hooks
 
@@ -103,7 +128,7 @@ Same shape as the OpenAI adapter, with mappings for Anthropic-specific fields:
 - `usage.cache_creation_input_tokens` → `gen_ai.usage.cache_creation.input_tokens`
 - `usage.cache_read_input_tokens` → `gen_ai.usage.cache_read.input_tokens`
 - `stop_reason` → `gen_ai.response.finish_reasons`
-- `content[*]` blocks (text/thinking/tool_use/tool_result) → content events
+- `content[*]` blocks (text/thinking/tool_use/tool_result) → structured `gen_ai.input.messages` / `gen_ai.output.messages` attributes
 
 ```ts
 import Anthropic from '@anthropic-ai/sdk';
@@ -167,18 +192,19 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 
 | LangChain event | Recorder action |
 |---|---|
-| `handleLLMStart` | `client.startGeneration({ model, ... })` (provider inferred from the `Serialized.id` path) |
+| `handleLLMStart` (raw completions / chat fallback) | `client.startGeneration({ model, ... })` + input messages from the prompt strings |
+| `handleChatModelStart` (chat models) | `client.startGeneration(...)` + structured input messages (real roles) from `BaseMessage[]` |
 | `handleLLMNewToken` (first non-empty) | `recorder.setFirstTokenAt(now)` |
-| `handleLLMEnd` | `recorder.setResult({ usage, stopReason, responseId })`; `recorder.end()` |
+| `handleLLMEnd` | `recorder.setResult({ usage, stopReason, responseId, output })`; `recorder.end()` |
 | `handleLLMError` | `recorder.setCallError(err)`; `recorder.end()` |
 | `handleToolStart` | `client.startToolExecution({ toolName })`; `recorder.setResult({ arguments })` |
 | `handleToolEnd` | `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
 | `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` |
-| `handleChainEnd` | `recorder.setOutput(assistantTextMessage(output))`; `recorder.end()` |
+| `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
 
-Pass `captureChains: false` to skip chain instrumentation if you only want LLM + tool spans.
+Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 
 ### LangGraph
 

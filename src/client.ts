@@ -36,7 +36,6 @@ import {
   defaultConfig,
   resolveConfig,
 } from './config.js';
-import type { ContentCapture, ContentCaptureMode } from './content/capture.js';
 import {
   agentNameFromContext,
   agentVersionFromContext,
@@ -146,7 +145,7 @@ export class Client implements RecorderHostContext {
       model: { provider: seed.model.provider, name: seed.model.name },
     });
 
-    return new GenerationRecorder(this, span, seed, startedAtMs, perCallContentCapture(seed));
+    return new GenerationRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
   }
 
   // ---------------------------------------------------------------------------
@@ -165,7 +164,7 @@ export class Client implements RecorderHostContext {
     });
     applyEmbeddingStartAttributes(span, seed);
 
-    return new EmbeddingRecorder(this, span, seed, startedAtMs, 'default');
+    return new EmbeddingRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
   }
 
   // ---------------------------------------------------------------------------
@@ -491,13 +490,6 @@ export class Client implements RecorderHostContext {
 // -----------------------------------------------------------------------------
 // Utilities
 // -----------------------------------------------------------------------------
-
-function perCallContentCapture(seed: GenerationStart): ContentCaptureMode {
-  const cc = (seed as unknown as { contentCapture?: ContentCaptureMode | ContentCapture })
-    .contentCapture;
-  if (typeof cc === 'string') return cc;
-  return 'default';
-}
 
 function toMs(value: Date | number | undefined): number | undefined {
   if (value == null) return undefined;

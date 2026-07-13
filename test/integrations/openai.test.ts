@@ -96,6 +96,35 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
 
+  it('captures input + output messages as structured attributes', async () => {
+    const fake = makeFakeOpenAI({
+      chat: async () => ({
+        id: 'c-content',
+        model: 'gpt-4o',
+        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'hello back' } }],
+        usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+      }),
+    });
+
+    await instrumentedChatCompletion(h.client, fake, {
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: 'be terse' },
+        { role: 'user', content: 'hi' },
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input).toHaveLength(2);
+    expect(input[0].role).toBe('system');
+    expect(input[1].role).toBe('user');
+    expect(input[1].parts[0].content).toBe('hi');
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].role).toBe('assistant');
+    expect(output[0].parts[0].content).toBe('hello back');
+  });
+
   it('records provider errors as provider_call_error', async () => {
     const fake = makeFakeOpenAI({
       chat: async () => {
@@ -160,6 +189,8 @@ describe('OpenAI adapter — streaming chat', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-4o-stream');
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].parts[0].content).toBe('hi there');
   });
 });
 

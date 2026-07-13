@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-13
+
+### Added
+- Prompt/completion **content parity** across all adapters. The OpenAI,
+  Anthropic, and LangChain adapters now emit `gen_ai.input.messages` /
+  `gen_ai.output.messages` (previously only the Vercel adapter did). OpenAI and
+  Anthropic map request messages and response content/tool-calls on both the
+  sync and streaming paths; LangChain gains a `handleChatModelStart` override
+  that captures structured chat messages with real roles (and `handleLLMEnd`
+  now records output).
+- `contentCapture` per-call override is now threaded through every adapter and
+  the `GenerationStart` / `EmbeddingStart` seeds (previously accepted but
+  silently ignored by the OpenAI/Anthropic/LangChain paths).
+- LangChain adapter: `turnIndex` / `turnRole` options for parity with the other
+  adapters, and a `dispose()` method that ends any still-open runs on shutdown
+  (guards against leaked spans / unbounded map growth on long-lived handlers).
+
+### Fixed
+- OpenAI adapter reads `max_completion_tokens` (o1/o3 and openai SDK v5+) in
+  addition to the legacy `max_tokens`.
+- Anthropic streaming TTFT is now recorded on the first content token
+  (`content_block_start` / `content_block_delta`) rather than the `message_start`
+  metadata event, which under-reported time-to-first-token.
+- Vercel adapter `maxTokens` mapping now prefers v7's `maxOutputTokens` over the
+  legacy `maxTokens` alias.
+
+### Changed
+- Widened peer ranges: `openai` `^4 || ^5 || ^6`, `@anthropic-ai/sdk` `>=0.30 <1`.
+- `src/version.ts` is now generated from `package.json#version` by
+  `scripts/sync-version.mjs` (runs on `prebuild` / `pretest`) instead of being
+  hand-synced.
+- Internal: per-call metadata resolution (`resolveParams`) now keys off the
+  non-enumerable symbol brand set by `withMetadata` instead of structural
+  `{ params, options }` key-matching, so a native provider params object can no
+  longer be misread as a metadata wrapper. Removed the vestigial `WithMetadata`
+  wrapper type from adapter signatures.
+
+### Removed
+- **Breaking:** removed the `generationSanitizer` hook and the `GenerationSanitizer`
+  type from `ClientConfig`. It only sanitized generation spans, silently leaving
+  agent, tool, and embedding span content unredacted — a false-confidence gap.
+  Redaction is now purely OpenTelemetry-native: use `contentCaptureMode`
+  (`metadata_only` / `no_tool_content`) for coarse cross-span control, and a
+  redacting `SpanProcessor` at bootstrap for fine-grained scrubbing of any span
+  before export. See `docs/exporting.md`.
+
+## [0.1.10] - 2026-07-10
+
+### Changed
+- Vercel AI SDK adapter targets AI SDK v7 (`ai ^7.0.0`): callback renames
+  (`onFinish`→`onEnd`, `experimental_onStepStart`→`onStepStart`, etc.) and the
+  v7 event shapes. Added `generateObjectHooks` for instrumenting
+  `generateObject` calls. The adapter still duck-types the legacy v5/v6 field
+  names so it tolerates older shapes.
+
 ## [0.1.8] - 2026-07-01
 
 ### Fixed

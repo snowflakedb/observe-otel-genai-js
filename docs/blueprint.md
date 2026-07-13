@@ -21,7 +21,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Agent-task span hierarchy**: first-class `invokeAgent(...)` Client method + `AgentInvocationRecorder` matching OTel GenAI semconv `gen_ai.operation.name = "invoke_agent"`.
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.
 - **Tool content capture**: ON by default (`contentCaptureMode: 'no_tool_content'` is the global default — note: `no_tool_content` strips tool content, but `full` includes it; per-call override beats both).
-- **PII / secret redaction**: user-owned. The library exposes a `generationSanitizer` hook on `ClientConfig` that runs on the merged `Generation` before emission; callers plug in their own redaction logic.
+- **PII / secret redaction**: user-owned, at the OpenTelemetry layer. Use `contentCaptureMode` (`metadata_only` / `no_tool_content`) as the coarse cross-span control, and register a redacting `SpanProcessor` at bootstrap for fine-grained scrubbing of any span attribute before export. The library ships no built-in redactor and no in-SDK sanitizer hook. See [exporting.md](exporting.md) for the recipe.
 
 ## Out of scope for v1
 
@@ -43,12 +43,11 @@ The library uses the following OTel API symbols. It does NOT import anything fro
 |---|---|
 | `trace.getTracer(name)` | `Client.constructor` |
 | `metrics.getMeter(name)` | `Client.constructor` |
-| `Meter.createHistogram(name, opts)` | `GenAIMetrics.constructor` (4 calls) |
+| `Meter.createHistogram(name, opts)` | `GenAIMetrics.constructor` (5 calls) |
 | `Tracer.startSpan(name, opts)` | per recorder start (fluent variant) |
 | `Tracer.startActiveSpan(name, opts, fn)` | `invokeAgent(seed, fn)` callback variant |
 | `Span.setAttribute(k, v)` | start + end |
 | `Span.updateName(name)` | `recorder.end()` |
-| `Span.addEvent(name, attrs)` | content capture path |
 | `Span.recordException(err)` | `recorder.end()` on error |
 | `Span.setStatus({ code, message })` | `recorder.end()` |
 | `Span.end(endTime)` | `recorder.end()` |
