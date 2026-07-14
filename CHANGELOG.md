@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-07-14
+
+### Added
+- Vercel adapter: `agentTurn(client, start, options?, callerHooks?)` — a
+  streaming-aware `invoke_agent` lifecycle handle. Bundles the documented manual
+  pattern (fluent recorder + `withActiveContext` + spread-safe hooks + an
+  idempotent closer) into one `AgentTurn`: `{ recorder, hooks, run(fn),
+  end({output?, error?}), [Symbol.asyncDispose] }`. `input` accepts AI SDK
+  `ModelMessage[]` (mapped internally via `toAgentInputMessages`) or genai-otel
+  `Message[]`. `end()` is idempotent (first call wins; `error` beats `output`;
+  a string `output` is wrapped via `assistantTextMessage`), and the handle
+  supports `await using` for leak-safe scope exit. Composes existing primitives
+  only — no new span emission logic.
+
 ## [0.2.1] - 2026-07-14
 
 ### Added

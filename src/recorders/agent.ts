@@ -13,6 +13,9 @@
  * the call returns, so the callback variant would end the span too early — use
  * the fluent variant together with `rec.withActiveContext(fn)` to parent the
  * stream's spans, then call `rec.end()` from the stream's onFinish/onError.
+ * The Vercel adapter's `agentTurn` helper bundles that pattern (recorder +
+ * active-context runner + spread-safe hooks + idempotent closer) into one
+ * handle — prefer it when instrumenting a streaming AI SDK agent.
  */
 
 import type { Span } from '@opentelemetry/api';

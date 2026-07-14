@@ -50,6 +50,9 @@ import {
 
 export type { VercelAdapterOptions };
 
+// Re-export the agentTurn handle (streaming-aware invoke_agent lifecycle).
+export { type AgentTurn, agentTurn } from './agent.js';
+
 // Re-export hooks so they ship under the same subpath entry.
 export {
   generateObjectHooks,

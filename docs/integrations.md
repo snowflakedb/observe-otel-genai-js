@@ -78,6 +78,33 @@ const res = await generateObject({
 });
 ```
 
+### Streaming agents: `agentTurn`
+
+For a streaming agent the turn completes asynchronously after `stream()` returns, so the `invokeAgent(seed, fn)` callback form would end the `invoke_agent` span too early. `agentTurn` bundles the documented manual pattern — fluent recorder + `withActiveContext` + spread-safe hooks + an idempotent closer — into one handle. Open it in `stream()`, hold the handle, and call `end()` from the stream's `onFinish` / `onError`.
+
+```ts
+import { agentTurn } from '@genai-otel/core/vercel-ai-sdk';
+
+const turn = agentTurn(client, { agentName: 'o11y', input: messages }, { agentName: 'o11y' });
+// messages may be AI SDK ModelMessage[] (mapped internally) or genai-otel Message[].
+
+const result = turn.run(() =>
+  agent.stream({
+    messages,
+    onStepStart: turn.hooks.onStepStart,
+    onToolExecutionStart: turn.hooks.onToolExecutionStart,
+    onToolExecutionEnd: turn.hooks.onToolExecutionEnd,
+    onStepEnd: turn.hooks.onStepEnd,
+  }),
+);
+
+// later, from the stream's completion callbacks:
+//   onFinish: () => turn.end({ output: finalText })
+//   onError:  (e) => turn.end({ error: e })
+```
+
+`end()` is idempotent (first call wins; `error` beats `output`; a string `output` is wrapped via `assistantTextMessage`). The handle also supports `await using` — the turn ends on scope exit if the caller forgets. Pass the caller's own step callbacks as the fourth arg (`agentTurn(client, start, options, callerHooks)`) to compose them with telemetry. `ToolLoopAgent.stream` accepts only the step/tool callbacks — `onChunk` / `onError` are direct-`streamText` only — so wire the four explicitly rather than spreading the whole bag.
+
 ## OpenAI SDK
 
 Two ways to use it. The proxy variant is one-line.
