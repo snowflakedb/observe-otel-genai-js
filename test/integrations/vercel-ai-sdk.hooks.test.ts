@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { generateTextHooks, streamTextHooks } from '../../src/integrations/vercel-ai-sdk/index.js';
+import {
+  generateTextHooks,
+  mergeHooks,
+  streamTextHooks,
+  toAgentInputMessages,
+} from '../../src/integrations/vercel-ai-sdk/index.js';
 import {
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
@@ -490,5 +495,141 @@ describe('streamTextHooks — tool recorder lifecycle', () => {
     expect(toolSpans.length).toBe(1); // reused open recorder — neither leaked nor duplicated
     expect(toolSpans[0]?.attributes[ATTR_TOOL_NAME]).toBe('search');
     expect(toolSpans[0]?.status.code).not.toBe(2 /* ERROR */);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: toAgentInputMessages (public ModelMessage[] -> Message[] mapper)
+// ---------------------------------------------------------------------------
+
+describe('toAgentInputMessages', () => {
+  it('skips system messages and maps string content to a text part', () => {
+    const out = toAgentInputMessages([
+      { role: 'system', content: 'you are helpful' },
+      { role: 'user', content: 'hello' },
+    ] as never);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.role).toBe('user');
+    expect(out[0]?.parts).toEqual([{ kind: 'text', text: 'hello' }]);
+  });
+
+  it('maps array content parts (text / reasoning / tool-call / tool-result)', () => {
+    const out = toAgentInputMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'thinking out loud' },
+          { type: 'reasoning', text: 'internal' },
+          { type: 'tool-call', toolName: 'search', toolCallId: 'tc-1', input: { q: 'otel' } },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'tool-result', toolName: 'search', toolCallId: 'tc-1', output: 'hit' }],
+      },
+    ] as never);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]?.role).toBe('assistant');
+    expect(out[0]?.parts.map((p) => p.kind)).toEqual(['text', 'thinking', 'tool_call']);
+    expect(out[1]?.role).toBe('tool');
+    expect(out[1]?.parts[0]?.kind).toBe('tool_result');
+  });
+
+  it('coerces unknown roles to user', () => {
+    const out = toAgentInputMessages([{ role: 'developer', content: 'x' }] as never);
+    expect(out[0]?.role).toBe('user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: caller-hook composition (mergeHooks + callerHooks 3rd arg)
+// ---------------------------------------------------------------------------
+
+describe('streamTextHooks — caller-hook composition', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('runs the SDK onStepEnd before the caller onStepEnd, and both fire', async () => {
+    const order: string[] = [];
+    const hooks = streamTextHooks(
+      h.client,
+      { agentName: 'compose' },
+      {
+        onStepEnd: async () => {
+          order.push('caller');
+        },
+      },
+    );
+
+    hooks.onStepStart?.(stepStartEvent({ messages: [{ role: 'user', content: 'hi' }] }));
+    await hooks.onStepEnd(makeStepFinishEvent({ text: 'ok', inputTokens: 3, outputTokens: 1 }));
+
+    // SDK telemetry still emitted...
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(3);
+    // ...and the caller callback ran after the SDK closed the span.
+    expect(order).toEqual(['caller']);
+  });
+
+  it('composes onStepStart (both handlers invoked)', async () => {
+    let callerStarts = 0;
+    const hooks = streamTextHooks(
+      h.client,
+      {},
+      {
+        onStepStart: () => {
+          callerStarts++;
+        },
+      },
+    );
+
+    hooks.onStepStart?.(stepStartEvent({}));
+    await hooks.onStepEnd(makeStepFinishEvent({}));
+
+    expect(callerStarts).toBe(1);
+    expect(h.spans.getFinishedSpans().length).toBe(1);
+  });
+
+  it('leaves the bag unchanged when no caller hooks are supplied', async () => {
+    const hooks = streamTextHooks(h.client, {});
+    hooks.onStepStart?.(stepStartEvent({}));
+    await hooks.onStepEnd(makeStepFinishEvent({ inputTokens: 5 }));
+    expect(h.spans.getFinishedSpans().length).toBe(1);
+  });
+
+  it('mergeHooks passes through a caller-only callback (no SDK counterpart)', async () => {
+    let errors = 0;
+    const merged = mergeHooks(streamTextHooks(h.client, {}), {
+      onError: () => {
+        errors++;
+      },
+    });
+    await merged.onError?.({ error: new Error('boom') });
+    expect(errors).toBe(1);
+  });
+
+  it('runs the caller handler even when the telemetry handler throws', async () => {
+    let callerRan = false;
+    const merged = mergeHooks(
+      {
+        onStepEnd: () => {
+          throw new Error('telemetry blew up');
+        },
+      } as never,
+      {
+        onStepEnd: () => {
+          callerRan = true;
+        },
+      },
+    );
+    await expect(merged.onStepEnd(makeStepFinishEvent({}))).resolves.toBeUndefined();
+    expect(callerRan).toBe(true);
   });
 });

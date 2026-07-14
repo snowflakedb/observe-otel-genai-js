@@ -51,7 +51,13 @@ import {
 export type { VercelAdapterOptions };
 
 // Re-export hooks so they ship under the same subpath entry.
-export { generateObjectHooks, generateTextHooks, streamTextHooks } from './hooks.js';
+export {
+  generateObjectHooks,
+  generateTextHooks,
+  mergeHooks,
+  streamTextHooks,
+  toAgentInputMessages,
+} from './hooks.js';
 export type { GenerateObjectHooks, GenerateTextHooks, StreamTextHooks } from './hooks.js';
 
 // -----------------------------------------------------------------------------

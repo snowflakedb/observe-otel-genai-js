@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-14
+
+### Added
+- Vercel adapter: `toAgentInputMessages(messages)` — a public mapper that
+  converts AI SDK `ModelMessage[]` (the `streamText` / `generateText` input
+  shape) to genai-otel `Message[]`, suitable for `gen_ai.input.messages` on a
+  manually-authored `invoke_agent` span. System messages are skipped per the
+  GenAI semantic conventions (they ride on the agent/generation `systemPrompt`).
+- Vercel adapter: `mergeHooks(sdk, caller)` plus an optional `callerHooks` third
+  argument on `streamTextHooks` / `generateTextHooks`, so a caller's own AI SDK
+  callbacks compose with the telemetry callbacks instead of clobbering them when
+  spread into `streamText` / `generateText`. The telemetry handler runs first
+  and defensively — a throw from it is swallowed so instrumentation can never
+  break the caller's handler — then the caller's handler runs and its errors
+  propagate. Handlers present on only one side pass through unchanged.
+
 ## [0.2.0] - 2026-07-13
 
 ### Added

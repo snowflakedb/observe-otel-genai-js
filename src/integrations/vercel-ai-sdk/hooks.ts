@@ -23,6 +23,7 @@
  * defensive measure but is rarely exercised on v7.
  */
 
+import type { ModelMessage } from 'ai';
 import type { Client } from '../../client.js';
 import {
   type Message,
@@ -153,6 +154,51 @@ export interface StreamTextHooks {
 /** Callback bag returned by {@link generateTextHooks} — spread into `generateText` params. */
 export type GenerateTextHooks = Omit<StreamTextHooks, 'onChunk' | 'onError'>;
 
+/**
+ * Composes a telemetry handler with a caller's handler for the same callback.
+ * The telemetry handler runs first and defensively — a throw from it is
+ * swallowed so instrumentation can never break the caller's own handler — then
+ * the caller's handler runs and its errors propagate (it's their app logic).
+ * If only one side is present it passes through unchanged.
+ */
+function composeHandlers<E>(
+  telemetry: ((event: E) => Promise<void> | void) | undefined,
+  caller: ((event: E) => Promise<void> | void) | undefined,
+): ((event: E) => Promise<void> | void) | undefined {
+  if (!telemetry) return caller;
+  if (!caller) return telemetry;
+  return async (event: E) => {
+    try {
+      await telemetry(event);
+    } catch {
+      /* telemetry must not break the caller's handler */
+    }
+    await caller(event);
+  };
+}
+
+/**
+ * Composes two hook bags into one that is safe to spread into `streamText` /
+ * `generateText` params. For every callback, the telemetry (`sdk`) handler runs
+ * first (defensively — see {@link composeHandlers}), then the `caller`'s
+ * handler. Handlers present in only one bag pass through unchanged.
+ */
+export function mergeHooks(
+  sdk: StreamTextHooks,
+  caller: Partial<StreamTextHooks>,
+): StreamTextHooks {
+  return {
+    onStepStart: composeHandlers(sdk.onStepStart, caller.onStepStart),
+    onChunk: composeHandlers(sdk.onChunk, caller.onChunk),
+    onToolExecutionStart: composeHandlers(sdk.onToolExecutionStart, caller.onToolExecutionStart),
+    onToolExecutionEnd: composeHandlers(sdk.onToolExecutionEnd, caller.onToolExecutionEnd),
+    // `onStepEnd` is required on the bag; `sdk.onStepEnd` is always present, so
+    // the composition is never undefined (the cast just re-states that).
+    onStepEnd: composeHandlers(sdk.onStepEnd, caller.onStepEnd) as StreamTextHooks['onStepEnd'],
+    onError: composeHandlers(sdk.onError, caller.onError),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Internal per-call state
 // ---------------------------------------------------------------------------
@@ -181,6 +227,7 @@ interface StepState {
 export function streamTextHooks(
   client: Client,
   options: VercelAdapterOptions = {},
+  callerHooks?: Partial<StreamTextHooks>,
 ): StreamTextHooks {
   const callStartedAt = client.now();
   const stepStates = new Map<number, StepState>();
@@ -314,7 +361,7 @@ export function streamTextHooks(
 
   // --- returned callbacks ---
 
-  return {
+  const bag: StreamTextHooks = {
     onStepStart(event: AiStepStartEvent): void {
       const startedAtMs = client.now();
       const inputMessages = mapModelMessages(event.messages);
@@ -396,6 +443,8 @@ export function streamTextHooks(
       await closeAllWithError(event.error);
     },
   };
+
+  return callerHooks ? mergeHooks(bag, callerHooks) : bag;
 }
 
 /**
@@ -407,8 +456,13 @@ export function streamTextHooks(
 export function generateTextHooks(
   client: Client,
   options: VercelAdapterOptions = {},
+  callerHooks?: Partial<GenerateTextHooks>,
 ): GenerateTextHooks {
-  const { onChunk: _onChunk, onError: _onError, ...rest } = streamTextHooks(client, options);
+  const {
+    onChunk: _onChunk,
+    onError: _onError,
+    ...rest
+  } = streamTextHooks(client, options, callerHooks);
   return rest;
 }
 
@@ -602,6 +656,17 @@ function mapModelMessages(messages: AiModelMessage[]): Message[] {
     if (parts.length > 0) result.push({ role, parts });
   }
   return result;
+}
+
+/**
+ * Maps AI SDK `ModelMessage[]` (the `streamText` / `generateText` input shape)
+ * to genai-otel `Message[]`, suitable for `AgentInvocationStart.input` /
+ * `gen_ai.input.messages` on an `invoke_agent` span. System messages are
+ * skipped — they belong on the agent/generation `systemPrompt`, not
+ * `input.messages`, per the GenAI semantic conventions.
+ */
+export function toAgentInputMessages(messages: ModelMessage[]): Message[] {
+  return mapModelMessages(messages as unknown as AiModelMessage[]);
 }
 
 /**
