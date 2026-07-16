@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-15
+
+### Added
+- Vercel adapter: `genaiTelemetryIntegration(client, options?)` — an AI SDK v7
+  `Telemetry` integration. Register once via `registerTelemetry(...)` and every
+  `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in the
+  process emits genai-otel spans (`invoke_agent` → `chat` → `execute_tool`) with
+  no per-call-site wiring. Per-turn identity is derived from each operation's
+  `functionId` + `runtimeContext` via `options.deriveOptions`; `options`
+  `emitOperationSpan` (`boolean | (event) => boolean`, default `true`) controls
+  whether the `invoke_agent` operation span is emitted. Operation correlation
+  uses the AI SDK `callId` on every lifecycle event; span parenting composes the
+  existing `RecorderBase.withActiveContext` primitive (no AsyncLocalStorage).
+  Model-call failures are attributed to the owning operation via
+  `executeLanguageModelCall` (the only error signal carrying a `callId`).
+- Vercel adapter: `defaultDeriveOptions`, plus `DeriveOptions` /
+  `DeriveOptionsEvent` / `GenaiTelemetryOptions` types.
+
+### Changed
+- Vercel adapter: extracted the shared event-shape interfaces and message
+  mappers into an internal `_map.ts` module, now consumed by the `Telemetry`
+  integration.
+
+### Removed
+- Vercel adapter: the per-call hook-bag API — `streamTextHooks`,
+  `generateTextHooks`, `generateObjectHooks`, `mergeHooks`, `agentTurn` (and the
+  `StreamTextHooks` / `GenerateTextHooks` / `GenerateObjectHooks` / `AgentTurn`
+  types) — is removed, fully superseded by `genaiTelemetryIntegration`. The
+  standalone function wrappers (`wrapGenerateText` / `wrapStreamText` /
+  `wrapGenerateObject` / `wrapEmbed` / `wrapEmbedMany`) and the
+  `toAgentInputMessages` mapper remain.
+
 ## [0.2.2] - 2026-07-14
 
 ### Added

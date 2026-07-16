@@ -60,50 +60,30 @@ for await (const chunk of await stream.textStream) {
 }
 ```
 
-`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onEnd` (v7's rename of v6's `onFinish`). The lower-level `streamTextHooks` capture usage per step via `onStepEnd` instead.
+`wrapStreamText` records TTFT via the AI SDK's `onChunk` hook and final usage via `onEnd` (v7's rename of v6's `onFinish`).
 
-### Hooks
+### Telemetry integration (recommended)
 
-`streamTextHooks` / `generateTextHooks` return callback bags to spread into `streamText` / `generateText`; they emit per-step generation spans (input messages, tool spans, usage) and work with `ToolLoopAgent` on v7. `generateObjectHooks` does the same for `generateObject` — spread its `onStepStart` / `onStepEnd` into the call to capture input messages (from the provider-format `promptMessages`), the raw object text output, and usage on a `generate_content` span.
-
-```ts
-import { generateObjectHooks } from '@genai-otel/core/vercel-ai-sdk';
-
-const res = await generateObject({
-  model: openai('gpt-4o'),
-  schema,
-  system: 'You generate query cards.',
-  messages,
-  ...generateObjectHooks(client, { agentName: 'query-card' }),
-});
-```
-
-### Streaming agents: `agentTurn`
-
-For a streaming agent the turn completes asynchronously after `stream()` returns, so the `invokeAgent(seed, fn)` callback form would end the `invoke_agent` span too early. `agentTurn` bundles the documented manual pattern — fluent recorder + `withActiveContext` + spread-safe hooks + an idempotent closer — into one handle. Open it in `stream()`, hold the handle, and call `end()` from the stream's `onFinish` / `onError`.
+`genaiTelemetryIntegration(client, options?)` is an AI SDK v7 `Telemetry` integration. Register it once via `registerTelemetry(...)` and every `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in the process emits genai-otel spans (`invoke_agent` → `chat` → `execute_tool`) — no per-call-site wiring, and it handles streaming agents automatically (the `invoke_agent` span opens on operation start and closes on completion). Per-turn identity is derived from each operation's `functionId` + `runtimeContext` via `options.deriveOptions`; expose the fields you need with `telemetry.includeRuntimeContext`.
 
 ```ts
-import { agentTurn } from '@genai-otel/core/vercel-ai-sdk';
+import { registerTelemetry } from 'ai';
+import { genaiTelemetryIntegration } from '@genai-otel/core/vercel-ai-sdk';
 
-const turn = agentTurn(client, { agentName: 'o11y', input: messages }, { agentName: 'o11y' });
-// messages may be AI SDK ModelMessage[] (mapped internally) or genai-otel Message[].
-
-const result = turn.run(() =>
-  agent.stream({
-    messages,
-    onStepStart: turn.hooks.onStepStart,
-    onToolExecutionStart: turn.hooks.onToolExecutionStart,
-    onToolExecutionEnd: turn.hooks.onToolExecutionEnd,
-    onStepEnd: turn.hooks.onStepEnd,
+registerTelemetry(
+  genaiTelemetryIntegration(client, {
+    deriveOptions: (event) => {
+      const rc = (event.runtimeContext ?? {}) as Record<string, unknown>;
+      return { agentName: event.functionId ?? 'agent', userId: rc.userId as string | undefined };
+    },
   }),
 );
 
-// later, from the stream's completion callbacks:
-//   onFinish: () => turn.end({ output: finalText })
-//   onError:  (e) => turn.end({ error: e })
+// Thereafter, plain calls are instrumented:
+await generateObject({ model: openai('gpt-4o'), schema, system, messages, telemetry: { functionId: 'query-card' } });
 ```
 
-`end()` is idempotent (first call wins; `error` beats `output`; a string `output` is wrapped via `assistantTextMessage`). The handle also supports `await using` — the turn ends on scope exit if the caller forgets. Pass the caller's own step callbacks as the fourth arg (`agentTurn(client, start, options, callerHooks)`) to compose them with telemetry. `ToolLoopAgent.stream` accepts only the step/tool callbacks — `onChunk` / `onError` are direct-`streamText` only — so wire the four explicitly rather than spreading the whole bag.
+`options.emitOperationSpan` (`boolean | (event) => boolean`, default `true`) controls whether the `invoke_agent` operation span wraps the steps. Correlation across concurrent calls uses the AI SDK `callId` on every lifecycle event; span parenting composes `RecorderBase.withActiveContext`. Model-call failures are attributed to the owning operation via `executeLanguageModelCall` (the only error signal carrying a `callId`).
 
 ## OpenAI SDK
 

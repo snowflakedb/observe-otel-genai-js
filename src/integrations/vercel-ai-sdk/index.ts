@@ -3,21 +3,21 @@
  *
  * Provides two integration styles:
  *
- * 1. **Hooks** (recommended) — call `streamTextHooks` / `generateTextHooks` and
- *    spread the returned callbacks into your `streamText` / `generateText` params.
- *    Supports per-step generation spans, TTFT, and discrete `execute_tool` spans.
+ * 1. **Telemetry integration** (recommended) — `genaiTelemetryIntegration(client)`
+ *    registered once via the AI SDK's `registerTelemetry(...)`. Every
+ *    `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in
+ *    the process then emits genai-otel spans (`invoke_agent` → `chat` →
+ *    `execute_tool`) with no per-call-site wiring.
  *
- * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap
- *    the top-level AI SDK call and emit a single generation span per invocation.
+ * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap a
+ *    single top-level AI SDK call and emit one generation span per invocation,
+ *    without global registration.
  *
- * Usage (hooks):
- *   import { streamTextHooks } from '@genai-otel/core/vercel-ai-sdk';
+ * Usage (integration):
+ *   import { registerTelemetry } from 'ai';
+ *   import { genaiTelemetryIntegration } from '@genai-otel/core/vercel-ai-sdk';
  *
- *   const result = streamText({
- *     model: openai('gpt-4o'),
- *     prompt: 'What is OpenTelemetry?',
- *     ...streamTextHooks(client, { agentName: 'demo' }),
- *   });
+ *   registerTelemetry(genaiTelemetryIntegration(client, { deriveOptions }));
  *
  * Note: targets AI SDK v7 (`ai ^7.0.0`). v7 uses `maxOutputTokens` and
  * `inputTokens`/`outputTokens` usage fields, and renamed the final lifecycle
@@ -40,6 +40,7 @@ import {
 
 import type { Client } from '../../client.js';
 import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
+import { toAgentInputMessages } from './_map.js';
 import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
@@ -50,18 +51,18 @@ import {
 
 export type { VercelAdapterOptions };
 
-// Re-export the agentTurn handle (streaming-aware invoke_agent lifecycle).
-export { type AgentTurn, agentTurn } from './agent.js';
-
-// Re-export hooks so they ship under the same subpath entry.
+// Re-export the v7 Telemetry integration (register once via registerTelemetry).
 export {
-  generateObjectHooks,
-  generateTextHooks,
-  mergeHooks,
-  streamTextHooks,
-  toAgentInputMessages,
-} from './hooks.js';
-export type { GenerateObjectHooks, GenerateTextHooks, StreamTextHooks } from './hooks.js';
+  type DeriveOptions,
+  type DeriveOptionsEvent,
+  type GenaiTelemetryOptions,
+  defaultDeriveOptions,
+  genaiTelemetryIntegration,
+} from './integration.js';
+
+// Public mapper: AI SDK `ModelMessage[]` -> genai-otel `Message[]` (for callers
+// authoring their own `invoke_agent` spans / `gen_ai.input.messages`).
+export { toAgentInputMessages };
 
 // -----------------------------------------------------------------------------
 // generateText
