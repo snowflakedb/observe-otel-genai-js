@@ -112,7 +112,7 @@ Prompt/response content is emitted as structured span attributes following the O
 | `gen_ai.input.messages` | string (JSON) | generation and `invoke_agent` spans |
 | `gen_ai.output.messages` | string (JSON) | generation and `invoke_agent` spans |
 
-Size policy: unbounded by default — matching OpenTelemetry's own default and deferring to `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend. When `ContentCapture.maxContentLength` is set to a finite value, the JSON is trimmed at the string-leaf level so it stays valid JSON (content-bearing keys only — `content` / `arguments` / `result` / `text`; structural keys like `role` / `type` / `id` are preserved), and `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
+Size policy: unbounded by default — matching OpenTelemetry's own default and deferring to `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend. When `ContentCapture.maxContentLength` is set to a finite value, the JSON is trimmed at the string-leaf level so it stays valid JSON (content-bearing keys only — `content` / `arguments` / `response` / `text`; structural keys like `role` / `type` / `id` are preserved), and `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Metrics (histograms)
 

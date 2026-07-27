@@ -36,6 +36,7 @@ import { RecorderBase, type RecorderHostContext } from './base.js';
 export class AgentInvocationRecorder extends RecorderBase {
   private readonly seed: AgentInvocationStart;
   private outputMessages: Message[] | undefined;
+  private stopReason: string | undefined;
 
   constructor(
     host: RecorderHostContext,
@@ -58,6 +59,15 @@ export class AgentInvocationRecorder extends RecorderBase {
     this.outputMessages = messages;
   }
 
+  /**
+   * Records the finish reason for the agent's final turn (e.g. the AI SDK's
+   * `finishReason`). Used to populate the semconv-required `finish_reason` on
+   * `gen_ai.output.messages`; when unset it is derived from error state.
+   */
+  setStopReason(reason: string | undefined): void {
+    this.stopReason = reason;
+  }
+
   /** Alias for setCallError matching the AgentInvocationRecorder docs. */
   setError(err: unknown): void {
     this.setCallError(err);
@@ -73,7 +83,14 @@ export class AgentInvocationRecorder extends RecorderBase {
     applyAgentAttributes(this.span, this.seed);
 
     if (!stripped && captureConfig.enabled) {
-      emitAgentContent(this.span, this.seed.input, this.outputMessages, captureConfig);
+      emitAgentContent(
+        this.span,
+        this.seed.input,
+        this.outputMessages,
+        captureConfig,
+        this.stopReason,
+        this.callError != null,
+      );
     }
 
     this.recordExceptionIfAny(this.callError, stripped);

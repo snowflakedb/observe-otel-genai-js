@@ -57,6 +57,7 @@ export {
   type TruncationStrategy,
 } from './content/capture.js';
 export {
+  resolveFinishReason,
   toSemconvInputMessages,
   toSemconvOutputMessages,
   toSystemInstructions,

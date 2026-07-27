@@ -20,6 +20,7 @@ import type { Message } from '../models/message.js';
 import { ATTR_INPUT_MESSAGES, ATTR_OUTPUT_MESSAGES, ATTR_SYSTEM_INSTRUCTIONS } from '../semconv.js';
 import { type ContentCapture, isContentCapped } from './capture.js';
 import {
+  resolveFinishReason,
   toSemconvInputMessages,
   toSemconvOutputMessages,
   toSystemInstructions,
@@ -36,7 +37,10 @@ export function emitGenerationContent(
   if (!capture.enabled) return;
 
   const input = toSemconvInputMessages(generation.input);
-  const output = toSemconvOutputMessages(generation.output, generation.stopReason || undefined);
+  const output = toSemconvOutputMessages(
+    generation.output,
+    resolveFinishReason(generation.stopReason, Boolean(generation.callError)),
+  );
   const system = toSystemInstructions(generation.systemPrompt);
 
   if (system.length > 0) applyStructuredAttribute(span, ATTR_SYSTEM_INSTRUCTIONS, system, capture);
@@ -55,11 +59,13 @@ export function emitAgentContent(
   input: readonly Message[] | undefined,
   output: readonly Message[] | undefined,
   capture: ContentCapture,
+  stopReason: string | undefined,
+  hadError: boolean,
 ): void {
   if (!capture.enabled) return;
 
   const inputMessages = toSemconvInputMessages(input);
-  const outputMessages = toSemconvOutputMessages(output);
+  const outputMessages = toSemconvOutputMessages(output, resolveFinishReason(stopReason, hadError));
 
   if (inputMessages.length > 0)
     applyStructuredAttribute(span, ATTR_INPUT_MESSAGES, inputMessages, capture);
@@ -103,7 +109,7 @@ interface StringLeaf {
  * content and may be trimmed. Structural strings — `role`, `type`, `id`,
  * `name`, `finish_reason` — are never trimmed so the message shape stays intact.
  */
-const CONTENT_KEYS = new Set(['content', 'arguments', 'result', 'text']);
+const CONTENT_KEYS = new Set(['content', 'arguments', 'response', 'text']);
 
 /** Collects trimmable string leaves (content-bearing only), with in-place setters. */
 function collectStringLeaves(node: unknown, leaves: StringLeaf[], inContent: boolean): void {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveFinishReason,
   toSemconvInputMessages,
   toSemconvOutputMessages,
   toSystemInstructions,
@@ -59,7 +60,7 @@ describe('messages-schema: toSemconvInputMessages', () => {
     expect(m?.parts[0]).toEqual({ type: 'tool_call', name: 't', arguments: 'not json' });
   });
 
-  it('maps tool_result parts to {type:tool_call_response, id, result}', () => {
+  it('maps tool_result parts to {type:tool_call_response, id, response}', () => {
     const msgs: Message[] = [
       {
         role: 'tool',
@@ -69,7 +70,19 @@ describe('messages-schema: toSemconvInputMessages', () => {
     expect(toSemconvInputMessages(msgs)).toEqual([
       {
         role: 'tool',
-        parts: [{ type: 'tool_call_response', id: 'call_1', result: 'rainy' }],
+        parts: [{ type: 'tool_call_response', id: 'call_1', response: 'rainy' }],
+      },
+    ]);
+  });
+
+  it('emits response:null when a tool_result has no value (spec requires response)', () => {
+    const msgs: Message[] = [
+      { role: 'tool', parts: [{ kind: 'tool_result', toolResult: { toolCallId: 'call_1' } }] },
+    ];
+    expect(toSemconvInputMessages(msgs)).toEqual([
+      {
+        role: 'tool',
+        parts: [{ type: 'tool_call_response', id: 'call_1', response: null }],
       },
     ]);
   });
@@ -102,10 +115,24 @@ describe('messages-schema: toSemconvOutputMessages', () => {
     ]);
   });
 
-  it('omits finish_reason when not provided', () => {
+  it('derives finish_reason from error state when not provided', () => {
     const msgs: Message[] = [{ role: 'assistant', parts: [{ kind: 'text', text: 'a' }] }];
-    const [m] = toSemconvOutputMessages(msgs);
-    expect(m).toEqual({ role: 'assistant', parts: [{ type: 'text', content: 'a' }] });
+    expect(toSemconvOutputMessages(msgs, resolveFinishReason(undefined, false))).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'a' }], finish_reason: 'stop' },
+    ]);
+    expect(toSemconvOutputMessages(msgs, resolveFinishReason(undefined, true))).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'a' }], finish_reason: 'error' },
+    ]);
+  });
+});
+
+describe('messages-schema: resolveFinishReason', () => {
+  it('prefers the real reason, else derives from error state', () => {
+    expect(resolveFinishReason('length', false)).toBe('length');
+    expect(resolveFinishReason('length', true)).toBe('length');
+    expect(resolveFinishReason(undefined, false)).toBe('stop');
+    expect(resolveFinishReason('', false)).toBe('stop');
+    expect(resolveFinishReason(undefined, true)).toBe('error');
   });
 });
 

@@ -274,6 +274,7 @@ class GenaiTelemetry {
       const output = mapStepContent(event.content);
       if (output.length > 0) op.agent.setOutput(output);
     }
+    if (op.agent && event.finishReason) op.agent.setStopReason(event.finishReason);
     await this.closeOp(event.callId, op);
   }
 

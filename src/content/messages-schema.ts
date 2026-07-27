@@ -16,7 +16,7 @@
  *   text        -> { type: 'text', content }
  *   thinking    -> { type: 'reasoning', content }
  *   tool_call   -> { type: 'tool_call', id?, name, arguments }
- *   tool_result -> { type: 'tool_call_response', id?, result }
+ *   tool_result -> { type: 'tool_call_response', id?, response }
  */
 
 import type { Message, Part } from '../models/message.js';
@@ -28,7 +28,7 @@ export interface SemconvPart {
   id?: string;
   name?: string;
   arguments?: unknown;
-  result?: unknown;
+  response?: unknown;
 }
 
 /** A semconv input/output message. `finish_reason` is set on output choices. */
@@ -78,11 +78,13 @@ function partToSemconv(part: Part): SemconvPart | undefined {
     case 'tool_result': {
       const res = part.toolResult;
       if (!res) return undefined;
-      const out: SemconvPart = { type: 'tool_call_response' };
+      // `response` is required on the semconv ToolCallResponsePart, so always
+      // emit it — falling back to null when no result value is available.
+      const out: SemconvPart = { type: 'tool_call_response', response: null };
       if (res.toolCallId) out.id = res.toolCallId;
       // Prefer structured content when present; fall back to free-form text.
       const result = res.contentJson != null ? parseJsonOrRaw(res.contentJson) : res.content;
-      if (result !== undefined) out.result = result;
+      if (result !== undefined) out.response = result;
       return out;
     }
     default:
@@ -108,22 +110,33 @@ export function toSemconvInputMessages(messages: readonly Message[] | undefined)
 
 /**
  * Converts model output into the `gen_ai.output.messages` shape. Each message
- * is one choice/candidate. `finishReason`, when provided, is attached to every
- * output message (the library models a single stop reason per generation).
+ * is one choice/candidate. `finishReason` is required by the semconv on every
+ * output message and is attached to all of them (the library models a single
+ * stop reason per generation). Callers resolve it via `resolveFinishReason`.
  */
 export function toSemconvOutputMessages(
   messages: readonly Message[] | undefined,
-  finishReason?: string,
+  finishReason: string,
 ): SemconvMessage[] {
   if (!messages || messages.length === 0) return [];
   const out: SemconvMessage[] = [];
   for (const m of messages) {
     const mapped = messageToSemconv(m);
     if (!mapped) continue;
-    if (finishReason) mapped.finish_reason = finishReason;
+    mapped.finish_reason = finishReason;
     out.push(mapped);
   }
   return out;
+}
+
+/**
+ * Resolves the semconv `finish_reason`, which is required on every output
+ * message. Uses the real provider reason when known; otherwise derives it from
+ * error state — `error` when the operation failed, `stop` otherwise.
+ */
+export function resolveFinishReason(realReason: string | undefined, hadError: boolean): string {
+  if (realReason && realReason.length > 0) return realReason;
+  return hadError ? 'error' : 'stop';
 }
 
 /**
