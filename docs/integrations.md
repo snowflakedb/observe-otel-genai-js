@@ -211,6 +211,8 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
 
+Spans nest into one trace: a single run produces one connected trace — an `invoke_agent` root with `chat` / `execute_tool` spans beneath it — rather than a set of disconnected root spans.
+
 Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 
 ### LangGraph
@@ -218,10 +220,15 @@ Options: `captureChains: false` skips chain instrumentation (LLM + tool spans on
 The LangChain adapter works for LangGraph too — LangGraph reuses LangChain's callback system. Just register the same handler:
 
 ```ts
-await graph.invoke(input, { callbacks: [handler] });
+await graph.invoke(input, {
+  callbacks: [handler],
+  configurable: { thread_id: 'session-42' },
+});
 ```
 
-Each graph node becomes a chain run; `invokeAgent` spans naturally form the agent-level groupings.
+The top-level graph invocation is the `invoke_agent` span, and the `chat` / `execute_tool` spans nest under it as one connected trace.
+
+When you run a graph with a checkpointer you pass a `thread_id` in `configurable`; the handler reads it from the run metadata and sets `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. An explicit `conversationId` on the handler takes precedence over `thread_id`.
 
 ## Composing with `bootstrapOtel`
 
