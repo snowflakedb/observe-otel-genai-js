@@ -296,7 +296,7 @@ describe('LangChain adapter — span nesting', () => {
 
     const spans = h.spans.getFinishedSpans();
     expect(spans.length).toBe(1);
-    expect(spans[0].parentSpanContext?.spanId).toBeUndefined();
+    expect(spans[0]!.parentSpanContext?.spanId).toBeUndefined();
   });
 });
 
@@ -348,7 +348,7 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     );
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
 
-    const span = h.spans.getFinishedSpans()[0];
+    const span = h.spans.getFinishedSpans()[0]!;
     expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('explicit');
   });
 
@@ -357,7 +357,7 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1');
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
 
-    const span = h.spans.getFinishedSpans()[0];
+    const span = h.spans.getFinishedSpans()[0]!;
     expect(span.attributes[ATTR_CONVERSATION_ID]).toBeUndefined();
   });
 });
