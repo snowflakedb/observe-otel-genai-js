@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
+  Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream
+  security patches. CI now tests Node 22 (Maintenance LTS) and 24 (Active LTS),
+  replacing the previous 20/22 matrix.
+
 ## [0.3.0] - 2026-07-15
 
 ### Added
