@@ -10,8 +10,9 @@ pnpm install
 pnpm run build
 ```
 
-Node 20+ is required. The project uses pnpm (version pinned via
-`packageManager` in `package.json` — Corepack will pick it up automatically).
+Node 22+ is required (`engines.node` in `package.json`); CI covers Node 22 and
+24. The project uses pnpm (version pinned via `packageManager` in
+`package.json` — Corepack will pick it up automatically).
 
 ## Running tests
 
