@@ -47,7 +47,11 @@ describe('AgentInvocationRecorder', () => {
     ]);
     const output = JSON.parse(span!.attributes[ATTR_OUTPUT_MESSAGES] as string);
     expect(output).toEqual([
-      { role: 'assistant', parts: [{ type: 'text', content: 'hello there' }], finish_reason: 'stop' },
+      {
+        role: 'assistant',
+        parts: [{ type: 'text', content: 'hello there' }],
+        finish_reason: 'stop',
+      },
     ]);
   });
 
