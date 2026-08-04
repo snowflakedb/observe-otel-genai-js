@@ -116,9 +116,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   // ---------------------------------------------------------------------------
 
   /** The recorder owning this run's span, if any (LLM / tool / chain). */
-  private recorderForRun(
-    runId: string,
-  ): { withActiveContext<T>(fn: () => T): T } | undefined {
+  private recorderForRun(runId: string): { withActiveContext<T>(fn: () => T): T } | undefined {
     const llm = this.llmRunMap.get(runId);
     if (llm) return llm.rec;
     return this.toolRunMap.get(runId) ?? this.chainRunMap.get(runId);
@@ -150,7 +148,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
    *  `gen_ai.conversation.id`. A handler-configured conversationId wins. */
   private conversationId(metadata?: Record<string, unknown>): string | undefined {
     if (this.defaults.conversationId) return this.defaults.conversationId;
-    const t = metadata?.['thread_id'];
+    const t = metadata?.thread_id;
     return typeof t === 'string' && t.length > 0 ? t : undefined;
   }
 
@@ -214,7 +212,8 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
       }),
-    );    if (input.length > 0) rec.setResult({ input });
+    );
+    if (input.length > 0) rec.setResult({ input });
     this.llmRunMap.set(runId, { rec, firstTokenSeen: false });
   }
 
@@ -270,7 +269,8 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         conversationId: this.conversationId(metadata),
         contentCapture: this.defaults.contentCapture,
       }),
-    );    rec.setResult({ arguments: input });
+    );
+    rec.setResult({ arguments: input });
     this.toolRunMap.set(runId, rec);
   }
 
@@ -326,7 +326,8 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
       }),
-    );    this.chainRunMap.set(runId, rec);
+    );
+    this.chainRunMap.set(runId, rec);
   }
 
   override async handleChainEnd(output: ChainValues, runId: string): Promise<void> {

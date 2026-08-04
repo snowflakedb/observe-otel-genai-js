@@ -313,14 +313,7 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
 
   it('maps thread_id to gen_ai.conversation.id on chat, tool and chain spans', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
-    await handler.handleChainStart!(
-      chainSerialized as never,
-      {} as never,
-      'c1',
-      undefined,
-      [],
-      md,
-    );
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1', undefined, [], md);
     await handler.handleChatModelStart!(
       llmSerialized as never,
       [[]] as never,
