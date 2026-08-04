@@ -16,12 +16,17 @@ Node 20+ is required. The project uses pnpm (version pinned via
 ## Running tests
 
 ```bash
-pnpm run test         # full suite once
+pnpm run test         # lint + typecheck + full suite once (the pre-PR gate)
+pnpm run test:unit    # vitest only, skipping lint and typecheck
 pnpm run test:watch   # rerun on changes
 pnpm run typecheck    # tsc --noEmit
 pnpm run lint         # biome check
 pnpm run lint:fix     # biome check --write
 ```
+
+`pnpm run test` runs the checks in cheapest-first order and stops at the first
+failure, so a lint or type error surfaces without waiting on the suite. Use
+`pnpm run test:unit` or `pnpm run test:watch` for the tight inner loop.
 
 ## Conventions
 
@@ -55,5 +60,5 @@ Open a GitHub issue with:
 ## Submitting changes
 
 - Open a PR against `main`.
-- Run `pnpm run lint && pnpm run typecheck && pnpm run test` locally first.
+- Run `pnpm run test` locally first — it covers lint, typecheck, and the suite.
 - Update `CHANGELOG.md` under `[Unreleased]`.
