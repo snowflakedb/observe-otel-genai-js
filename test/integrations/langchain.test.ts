@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_CONVERSATION_ID,
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
@@ -212,5 +213,158 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
     );
     await handler.handleChainEnd!({ answer: 'ok' } as never, 'chain-skip');
     expect(h.spans.getFinishedSpans().length).toBe(0);
+  });
+});
+
+describe('LangChain adapter — span nesting', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** name → { spanId, parentSpanId } for every finished span. */
+  function byName() {
+    const out = new Map<string, { id: string; parent?: string }>();
+    for (const s of h.spans.getFinishedSpans()) {
+      out.set(s.name, { id: s.spanContext().spanId, parent: s.parentSpanContext?.spanId });
+    }
+    return out;
+  }
+
+  it('parents a chat span under the chain that started it', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'nest' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'c1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.length).toBe(2);
+    // one trace, chat nested under invoke_agent
+    expect(new Set(spans.map((s) => s.spanContext().traceId)).size).toBe(1);
+    const map = byName();
+    const agent = [...map.entries()].find(([n]) => n.startsWith('invoke_agent'))![1];
+    const chat = [...map.entries()].find(([n]) => n.startsWith('chat'))![1];
+    expect(agent.parent).toBeUndefined();
+    expect(chat.parent).toBe(agent.id);
+  });
+
+  it('walks past suppressed intermediate chains to the nearest ancestor span', async () => {
+    // LangGraph shape: root chain (span) → node chain (suppressed) → llm / tool.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'root');
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'node', 'root');
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'node');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'node');
+    await handler.handleToolEnd!('ok' as never, 't1');
+    await handler.handleChainEnd!({} as never, 'node');
+    await handler.handleChainEnd!({} as never, 'root');
+
+    const spans = h.spans.getFinishedSpans();
+    // node chain is suppressed, so 3 spans: invoke_agent + chat + execute_tool
+    expect(spans.length).toBe(3);
+    expect(new Set(spans.map((s) => s.spanContext().traceId)).size).toBe(1);
+    const map = byName();
+    const agent = [...map.entries()].find(([n]) => n.startsWith('invoke_agent'))![1];
+    const chat = [...map.entries()].find(([n]) => n.startsWith('chat'))![1];
+    const toolSpan = [...map.entries()].find(([n]) => n.startsWith('execute_tool'))![1];
+    expect(chat.parent).toBe(agent.id);
+    expect(toolSpan.parent).toBe(agent.id);
+  });
+
+  it('nests the legacy handleLLMStart path too', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleLLMStart!(llmSerialized as never, ['prompt'], 'l1', 'c1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    const map = byName();
+    const agent = [...map.entries()].find(([n]) => n.startsWith('invoke_agent'))![1];
+    const chat = [...map.entries()].find(([n]) => n.startsWith('chat'))![1];
+    expect(chat.parent).toBe(agent.id);
+  });
+
+  it('leaves a span with no ancestor as a root', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.length).toBe(1);
+    expect(spans[0].parentSpanContext?.spanId).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — conversation id from LangGraph thread_id', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  const md = { thread_id: 'thread-42' };
+
+  it('maps thread_id to gen_ai.conversation.id on chat, tool and chain spans', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      chainSerialized as never,
+      {} as never,
+      'c1',
+      undefined,
+      [],
+      md,
+    );
+    await handler.handleChatModelStart!(
+      llmSerialized as never,
+      [[]] as never,
+      'l1',
+      'c1',
+      {},
+      [],
+      md,
+    );
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'c1', [], md);
+    await handler.handleToolEnd!('ok' as never, 't1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.length).toBe(3);
+    for (const s of spans) {
+      expect(s.attributes[ATTR_CONVERSATION_ID]).toBe('thread-42');
+    }
+  });
+
+  it('prefers an explicitly configured conversationId over thread_id', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, conversationId: 'explicit' });
+    await handler.handleChatModelStart!(
+      llmSerialized as never,
+      [[]] as never,
+      'l1',
+      undefined,
+      {},
+      [],
+      md,
+    );
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+
+    const span = h.spans.getFinishedSpans()[0];
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('explicit');
+  });
+
+  it('omits conversation.id when neither is provided', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+
+    const span = h.spans.getFinishedSpans()[0];
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBeUndefined();
   });
 });
