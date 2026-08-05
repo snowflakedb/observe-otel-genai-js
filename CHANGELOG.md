@@ -11,6 +11,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chain recorder opened its own root span, so one agent run produced N
   disconnected single-span traces; a run now emits one connected trace
   (`invoke_agent` → `chat` / `execute_tool`).
+- LangChain adapter: keep retriever runs in the run tree. Retrievers emit no
+  span (no retrieval recorder yet), and without their `runId` recorded, a RAG
+  chain's LLM call dead-ended the ancestor walk and started a new root trace.
+  `handleRetrieverStart` / `End` / `Error` now record the parent edge so the
+  trace stays connected (though an LLM call inside a retriever parents under
+  `invoke_agent`, not a retrieval span).
+- LangChain adapter: emit `gen_ai.input.messages` on the `invoke_agent` span,
+  which previously showed output but no input. A `messages` array (LangGraph)
+  uses the `BaseMessage` mapping, a string or a string `input` / `question` /
+  `text` field becomes one user message, and any other shape is JSON-encoded.
 
 ### Added
 - LangChain adapter: map LangGraph's `thread_id` (from `config.configurable`) to

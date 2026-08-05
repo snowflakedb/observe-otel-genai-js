@@ -14,6 +14,7 @@ import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
@@ -44,6 +45,13 @@ const chainSerialized = {
   lc: 1,
   type: 'constructor',
   id: ['langchain', 'chains', 'RetrievalQA'],
+  kwargs: {},
+};
+
+const retrieverSerialized = {
+  lc: 1,
+  type: 'constructor',
+  id: ['langchain', 'retrievers', 'VectorStoreRetriever'],
   kwargs: {},
 };
 
@@ -359,5 +367,137 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
 
     const span = h.spans.getFinishedSpans()[0]!;
     expect(span.attributes[ATTR_CONVERSATION_ID]).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — retriever run-tree topology', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('walks past a retriever to the nearest ancestor span', async () => {
+    // RAG shape: chain (span) → retriever (no span) → llm.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'r1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    const spans = h.spans.getFinishedSpans();
+    // retriever gets no span of its own: invoke_agent + chat only
+    expect(spans.length).toBe(2);
+    expect(new Set(spans.map((s) => s.spanContext().traceId)).size).toBe(1);
+    const agent = spans.find((s) => s.name.startsWith('invoke_agent'))!;
+    const chat = spans.find((s) => s.name.startsWith('chat'))!;
+    expect(agent.parentSpanContext?.spanId).toBeUndefined();
+    expect(chat.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+  });
+
+  it('walks past a retriever nested under a suppressed chain', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'root');
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'node', 'root');
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'node');
+    await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'r1');
+    await handler.handleToolEnd!('ok' as never, 't1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+    await handler.handleChainEnd!({} as never, 'node');
+    await handler.handleChainEnd!({} as never, 'root');
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.length).toBe(2);
+    const agent = spans.find((s) => s.name.startsWith('invoke_agent'))!;
+    const toolSpan = spans.find((s) => s.name.startsWith('execute_tool'))!;
+    expect(toolSpan.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+  });
+
+  it('forgets the retriever edge once the retriever errors', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
+    await handler.handleRetrieverError!(new Error('boom') as never, 'r1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    // Only the agent span; a later run reusing 'r1' as a parent finds no
+    // ancestor and starts its own root rather than attaching to a stale edge.
+    expect(h.spans.getFinishedSpans().length).toBe(1);
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'r1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    const chat = h.spans.getFinishedSpans().find((s) => s.name.startsWith('chat'))!;
+    expect(chat.parentSpanContext?.spanId).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — chain input messages on the agent span', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** Parsed gen_ai.input.messages off the single invoke_agent span. */
+  function agentInput(): unknown {
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('invoke_agent'))!;
+    const raw = span.attributes[ATTR_INPUT_MESSAGES];
+    return raw === undefined ? undefined : JSON.parse(raw as string);
+  }
+
+  it('maps a LangGraph `messages` channel through the BaseMessage mapping', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const inputs = {
+      messages: [
+        { _getType: () => 'system', content: 'be brief' },
+        { _getType: () => 'human', content: 'what is 2+2?' },
+      ],
+    };
+    await handler.handleChainStart!(chainSerialized as never, inputs as never, 'c1');
+    await handler.handleChainEnd!({ output: '4' } as never, 'c1');
+
+    expect(agentInput()).toEqual([
+      { role: 'system', parts: [{ type: 'text', content: 'be brief' }] },
+      { role: 'user', parts: [{ type: 'text', content: 'what is 2+2?' }] },
+    ]);
+  });
+
+  it('maps a string `input` field to one user message', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, { input: 'hello' } as never, 'c1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    expect(agentInput()).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'hello' }] }]);
+  });
+
+  it('maps RetrievalQA-style `question` too', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, { question: 'why?' } as never, 'c1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    expect(agentInput()).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'why?' }] }]);
+  });
+
+  it('falls back to JSON for an unrecognized shape', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, { foo: 42 } as never, 'c1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    expect(agentInput()).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: '{"foo":42}' }] },
+    ]);
+  });
+
+  it('emits no input messages for an empty input', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    expect(agentInput()).toBeUndefined();
   });
 });

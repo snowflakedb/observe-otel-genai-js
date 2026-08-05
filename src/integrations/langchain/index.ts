@@ -17,6 +17,9 @@
  *  - `handleToolEnd`   → `recorder.setResult({ result })` + `recorder.end()`.
  *  - `handleToolError` → `recorder.setExecError(err)` + `recorder.end()`.
  *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` lifecycle.
+ *  - `handleRetrieverStart`/`End`/`Error` → no span yet (no retrieval recorder);
+ *                        records the run-tree edge so descendant spans still
+ *                        parent under the agent.
  *
  * Use:
  *   const handler = new GenAIOtelCallbackHandler({ client });
@@ -298,7 +301,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
 
   override async handleChainStart(
     chain: Serialized,
-    _inputs: ChainValues,
+    inputs: ChainValues,
     runId: string,
     parentRunId?: string,
     _tags?: string[],
@@ -321,6 +324,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         agentName:
           this.defaults.agentName ?? runName ?? toolNameFromSerialized(chain) ?? 'langchain-chain',
         agentVersion: this.defaults.agentVersion,
+        input: chainInputToMessages(inputs),
         conversationId: this.conversationId(metadata),
         userId: this.defaults.userId,
         tags: this.defaults.tags,
@@ -346,6 +350,32 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     this.chainRunMap.delete(runId);
     rec.setError(err);
     await safeEnd(rec);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retriever lifecycle (run-tree topology only — no span)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * No span is emitted for retrievers yet. The run is still tracked in the
+   * run tree so that `nearestRecorder` can walk up through it to the real
+   * ancestor span rather than starting a new root trace.
+   */
+  override async handleRetrieverStart(
+    _retriever: Serialized,
+    _query: string,
+    runId: string,
+    parentRunId?: string,
+  ): Promise<void> {
+    this.runParent.set(runId, parentRunId);
+  }
+
+  override async handleRetrieverEnd(_documents: unknown[], runId: string): Promise<void> {
+    this.runParent.delete(runId);
+  }
+
+  override async handleRetrieverError(_err: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
   }
 
   /**
@@ -390,6 +420,39 @@ async function safeEnd(rec: { end(): Promise<void> }): Promise<void> {
   } catch {
     /* ignore — instrumentation must not break the user's chain */
   }
+}
+
+/**
+ * Converts a LangChain chain input into `gen_ai.input.messages`.
+ *
+ * A `messages` array (LangGraph et al.) uses the `BaseMessage` mapping; a
+ * string, or a string `input`/`question`/`text` field, becomes one user
+ * message; any other shape is JSON-encoded. Empty input returns `[]`.
+ */
+function chainInputToMessages(inputs: ChainValues | undefined): Message[] {
+  if (inputs == null) return [];
+  if (typeof inputs === 'string') return inputs === '' ? [] : [userTextMessage(inputs)];
+  if (typeof inputs !== 'object') return [];
+
+  const rec = inputs as Record<string, unknown>;
+  if (Array.isArray(rec.messages)) {
+    const mapped = mapBaseMessages(rec.messages);
+    if (mapped.length > 0) return mapped;
+  }
+
+  const candidate = rec.input ?? rec.question ?? rec.text;
+  if (typeof candidate === 'string') return candidate === '' ? [] : [userTextMessage(candidate)];
+
+  // Nothing recognizable: fall back to the whole payload, but don't emit a
+  // message for an empty one (`{}` / `[]` is noise, not input).
+  if (Object.keys(rec).length === 0) return [];
+  let text: string;
+  try {
+    text = JSON.stringify(inputs);
+  } catch {
+    return [];
+  }
+  return text === '' ? [] : [userTextMessage(text)];
 }
 
 /**

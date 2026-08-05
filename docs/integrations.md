@@ -207,11 +207,16 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleToolStart` | `client.startToolExecution({ toolName })`; `recorder.setResult({ arguments })` |
 | `handleToolEnd` | `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
-| `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` |
+| `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` + input messages from `chainInputToMessages(inputs)` |
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
+| `handleRetrieverStart` / `End` / `Error` | no span yet — records the `runId → parentRunId` edge only, so spans beneath a retriever still parent under the agent |
 
-Spans nest into one trace: a single run produces one connected trace — an `invoke_agent` root with `chat` / `execute_tool` spans beneath it — rather than a set of disconnected root spans.
+All spans nest into one trace: an `invoke_agent` root with `chat` / `execute_tool` spans beneath it. Runs with no span of their own (suppressed nested chains, retrievers) stay in the run tree as pass-through nodes so their descendants still parent under the nearest real ancestor.
+
+Retrievers are a pass-through only because this library has no retrieval recorder yet — the semconv does define a `retrieval` span. Until it lands, an LLM call made inside a retriever parents directly under `invoke_agent`.
+
+The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a `messages` array uses the `BaseMessage` mapping, a string or a string `input` / `question` / `text` field becomes one user message, any other shape is JSON-encoded, and empty input emits nothing.
 
 Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 
