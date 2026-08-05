@@ -50,7 +50,7 @@
   "files": ["dist", "docs", "LICENSE", "README.md"],
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.12.4",
   "scripts": {
@@ -61,7 +61,8 @@
     "build": "pnpm run clean && tsc --project tsconfig.build.json && node ./scripts/build-cjs.mjs",
     "prepack": "pnpm run build",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "pnpm run lint && pnpm run typecheck && pnpm run test:unit",
+    "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:ci": "vitest run --reporter=verbose",
     "lint": "biome check .",

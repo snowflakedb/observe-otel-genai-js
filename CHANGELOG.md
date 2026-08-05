@@ -22,6 +22,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   uses the `BaseMessage` mapping, a string or a string `input` / `question` /
   `text` field becomes one user message, and any other shape is JSON-encoded.
 
+### Changed
+- Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
+  Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream
+  security patches. CI now tests Node 22 (Maintenance LTS) and 24 (Active LTS),
+  replacing the previous 20/22 matrix.
+
 ### Added
 - LangChain adapter: map LangGraph's `thread_id` (from `config.configurable`) to
   `gen_ai.conversation.id` on every span in the run, so the turns of a

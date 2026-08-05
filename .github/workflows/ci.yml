@@ -13,13 +13,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -56,3 +54,25 @@ jobs:
           test -f dist/integrations/langchain/index.js
           test -f dist/integrations/langchain/index.d.ts
           echo "All export entry points present."
+
+  # Single stable check for branch-protection to require. Gating on the matrix
+  # jobs directly means the required-check names ("Test (Node 22)", ...) are
+  # literal strings in the ruleset that silently go stale whenever the matrix
+  # changes — and a required check that never reports blocks merges forever.
+  # Requiring only this job keeps the matrix free to change.
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: test
+    # `always()` is load-bearing: without it this job is *skipped* when the
+    # matrix fails, and GitHub counts a skipped required check as passing.
+    # Because it always runs, the result must be asserted explicitly.
+    if: always()
+    steps:
+      - name: Verify all matrix jobs succeeded
+        run: |
+          echo "test result: ${{ needs.test.result }}"
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::One or more Test (Node ...) jobs did not succeed."
+            exit 1
+          fi
