@@ -9,8 +9,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - LangChain adapter: map LangGraph's `thread_id` (from `config.configurable`) to
   `gen_ai.conversation.id` on every span in the run, so the turns of a
-  multi-turn or checkpointed graph share one id. A `conversationId` set on the
-  handler wins.
+  multi-turn or checkpointed graph share one id. A user-provided id wins:
+  precedence is the handler `conversationId`, then `withConversationId(...)`,
+  then `thread_id`.
 
 ### Changed
 - Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).

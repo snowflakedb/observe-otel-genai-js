@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { withConversationId } from '../../src/context.js';
 import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index.js';
 import {
   ATTR_AGENT_NAME,
@@ -358,6 +359,25 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
 
     const span = h.spans.getFinishedSpans()[0]!;
     expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('explicit');
+  });
+
+  it('prefers a withConversationId ambient override over thread_id', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await withConversationId('ambient', async () => {
+      await handler.handleChatModelStart!(
+        llmSerialized as never,
+        [[]] as never,
+        'l1',
+        undefined,
+        {},
+        [],
+        md,
+      );
+      await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    });
+
+    const span = h.spans.getFinishedSpans()[0]!;
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('ambient');
   });
 
   it('omits conversation.id when neither is provided', async () => {

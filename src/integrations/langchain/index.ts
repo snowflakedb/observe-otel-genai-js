@@ -34,6 +34,7 @@ import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
+import { conversationIdFromContext } from '../../context.js';
 import {
   type Message,
   type Part,
@@ -147,10 +148,12 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     return anc ? anc.withActiveContext(start) : start();
   }
 
-  /** LangGraph's `thread_id` (from config.configurable) → the semconv
-   *  `gen_ai.conversation.id`. A handler-configured conversationId wins. */
+  /** `gen_ai.conversation.id`, preferring a user-provided id over LangGraph's
+   *  `thread_id`: handler config, then `withConversationId(...)`, then `thread_id`. */
   private conversationId(metadata?: Record<string, unknown>): string | undefined {
     if (this.defaults.conversationId) return this.defaults.conversationId;
+    const fromContext = conversationIdFromContext();
+    if (fromContext && fromContext.length > 0) return fromContext;
     const t = metadata?.thread_id;
     return typeof t === 'string' && t.length > 0 ? t : undefined;
   }
