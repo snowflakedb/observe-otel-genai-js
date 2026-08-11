@@ -14,6 +14,7 @@ import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index
 import {
   ATTR_AGENT_NAME,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_TOOL_NAME,
@@ -212,5 +213,72 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
     );
     await handler.handleChainEnd!({ answer: 'ok' } as never, 'chain-skip');
     expect(h.spans.getFinishedSpans().length).toBe(0);
+  });
+});
+
+describe('LangChain adapter — chain output messages on the agent span', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** Parsed gen_ai.output.messages off the single invoke_agent span. */
+  function agentOutput(): unknown {
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('invoke_agent'))!;
+    const raw = span.attributes[ATTR_OUTPUT_MESSAGES];
+    return raw === undefined ? undefined : JSON.parse(raw as string);
+  }
+
+  it('maps a LangGraph `messages` channel to the final assistant message', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    // Final graph state carries the whole conversation; only the last message
+    // is the agent's answer — the human turn is already captured as input.
+    const output = {
+      messages: [
+        { _getType: () => 'human', content: 'what is 2+2?' },
+        { _getType: () => 'ai', content: '4' },
+      ],
+    };
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!(output as never, 'c1');
+
+    expect(agentOutput()).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: '4' }], finish_reason: 'stop' },
+    ]);
+  });
+
+  it('maps a string `output` field to one assistant message', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!({ output: 'done' } as never, 'c1');
+
+    expect(agentOutput()).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'done' }], finish_reason: 'stop' },
+    ]);
+  });
+
+  it('falls back to JSON for an unrecognized shape', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!({ foo: 42 } as never, 'c1');
+
+    expect(agentOutput()).toEqual([
+      {
+        role: 'assistant',
+        parts: [{ type: 'text', content: '{"foo":42}' }],
+        finish_reason: 'stop',
+      },
+    ]);
+  });
+
+  it('emits no output messages for an empty output', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!({} as never, 'c1');
+
+    expect(agentOutput()).toBeUndefined();
   });
 });

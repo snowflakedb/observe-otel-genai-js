@@ -312,31 +312,38 @@ async function safeEnd(rec: { end(): Promise<void> }): Promise<void> {
 }
 
 /**
- * Converts a LangChain chain output into a single assistant message for the
- * `gen_ai.output.messages` attribute. A string `output`/`text` field is used
- * verbatim when present; otherwise the whole value is JSON-encoded. Returns an
- * empty array when there is nothing renderable.
+ * Converts a LangChain chain output into `gen_ai.output.messages`.
+ *
+ * A `messages` array (LangGraph et al.) returns the whole conversation, so we
+ * map only its last entry — the agent's answer; the rest is history already
+ * captured as input. Otherwise a string, or a string `output`/`text` field,
+ * becomes one assistant message; any other shape is JSON-encoded. Empty output
+ * returns `[]`.
  */
 function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   if (output == null) return [];
-  let text: string;
-  if (typeof output === 'string') {
-    text = output;
-  } else {
-    const candidate =
-      (output as Record<string, unknown>).output ?? (output as Record<string, unknown>).text;
-    if (typeof candidate === 'string') {
-      text = candidate;
-    } else {
-      try {
-        text = JSON.stringify(output);
-      } catch {
-        return [];
-      }
-    }
+  if (typeof output === 'string') return output === '' ? [] : [assistantTextMessage(output)];
+  if (typeof output !== 'object') return [];
+
+  const rec = output as Record<string, unknown>;
+  if (Array.isArray(rec.messages) && rec.messages.length > 0) {
+    const mapped = mapBaseMessages([rec.messages[rec.messages.length - 1]]);
+    if (mapped.length > 0) return mapped;
   }
-  if (text === '') return [];
-  return [assistantTextMessage(text)];
+
+  const candidate = rec.output ?? rec.text;
+  if (typeof candidate === 'string') {
+    return candidate === '' ? [] : [assistantTextMessage(candidate)];
+  }
+
+  if (Object.keys(rec).length === 0) return [];
+  let text: string;
+  try {
+    text = JSON.stringify(output);
+  } catch {
+    return [];
+  }
+  return text === '' ? [] : [assistantTextMessage(text)];
 }
 
 // -----------------------------------------------------------------------------
