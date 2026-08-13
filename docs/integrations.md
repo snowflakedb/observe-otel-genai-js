@@ -233,7 +233,7 @@ await graph.invoke(input, {
 
 The top-level graph invocation is the `invoke_agent` span, and the `chat` / `execute_tool` spans nest under it as one connected trace.
 
-When you run a graph with a checkpointer you pass a `thread_id` in `configurable`; the handler reads it from the run metadata and sets `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. A user-provided id wins over `thread_id`; precedence is the handler `conversationId`, then `withConversationId(...)`, then `thread_id`.
+With a checkpointer, the `thread_id` you pass in `configurable` is read from the run metadata and set as `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. Precedence: the handler `conversationId`, then the per-run `thread_id`.
 
 ## Composing with `bootstrapOtel`
 

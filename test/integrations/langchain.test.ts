@@ -8,6 +8,7 @@
  * right arguments, the resulting spans will be correct.
  */
 
+import { RunnableLambda } from '@langchain/core/runnables';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { withConversationId } from '../../src/context.js';
@@ -17,6 +18,7 @@ import {
   ATTR_CONVERSATION_ID,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_TOOL_NAME,
@@ -223,6 +225,37 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
     await handler.handleChainEnd!({ answer: 'ok' } as never, 'chain-skip');
     expect(h.spans.getFinishedSpans().length).toBe(0);
   });
+
+  it('applies handler contentCapture to the invoke_agent span', async () => {
+    // A default harness captures agent input/output messages, so a bare handler
+    // would emit them. `contentCapture: 'metadata_only'` on the handler must
+    // strip them from the invoke_agent span too — not just from generation and
+    // tool spans.
+    const bare = new GenAIOtelCallbackHandler({ client: h.client });
+    await bare.handleChainStart!(
+      chainSerialized as never,
+      { question: 'secret question' } as never,
+      'chain-bare',
+    );
+    await bare.handleChainEnd!({ answer: 'secret answer' } as never, 'chain-bare');
+    const bareSpan = h.spans.getFinishedSpans()[0]!;
+    expect(bareSpan.attributes[ATTR_INPUT_MESSAGES]).toBeDefined();
+    expect(bareSpan.attributes[ATTR_OUTPUT_MESSAGES]).toBeDefined();
+
+    const guarded = new GenAIOtelCallbackHandler({
+      client: h.client,
+      contentCapture: 'metadata_only',
+    });
+    await guarded.handleChainStart!(
+      chainSerialized as never,
+      { question: 'secret question' } as never,
+      'chain-guarded',
+    );
+    await guarded.handleChainEnd!({ answer: 'secret answer' } as never, 'chain-guarded');
+    const guardedSpan = h.spans.getFinishedSpans()[1]!;
+    expect(guardedSpan.attributes[ATTR_INPUT_MESSAGES]).toBeUndefined();
+    expect(guardedSpan.attributes[ATTR_OUTPUT_MESSAGES]).toBeUndefined();
+  });
 });
 
 describe('LangChain adapter — span nesting', () => {
@@ -361,7 +394,11 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('explicit');
   });
 
-  it('prefers a withConversationId ambient override over thread_id', async () => {
+  it('ignores the withConversationId ambient context, using per-run thread_id', async () => {
+    // The handler must not read request-local AsyncLocalStorage inside a
+    // callback: LangChain runs callbacks on a shared, serialized background
+    // queue, so a reused handler would resolve the wrong run's ambient store
+    // under concurrency. Per-run `thread_id` is the source of truth.
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await withConversationId('ambient', async () => {
       await handler.handleChatModelStart!(
@@ -377,7 +414,76 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     });
 
     const span = h.spans.getFinishedSpans()[0]!;
-    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('ambient');
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('thread-42');
+  });
+
+  it('keeps per-run thread_id isolated when handle* is driven concurrently', async () => {
+    // Regression (direct-call form): a single handler shared across two
+    // concurrent runs under different ambient contexts must tag each span with
+    // its own run's thread_id, never the ambient value.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+
+    const runA = withConversationId('ambient-A', async () => {
+      await handler.handleChatModelStart!(
+        llmSerialized as never,
+        [[]] as never,
+        'run-A',
+        undefined,
+        {},
+        [],
+        { thread_id: 'thread-A' },
+      );
+      await handler.handleLLMEnd!({ generations: [[{ text: 'a' }]] } as never, 'run-A');
+    });
+    const runB = withConversationId('ambient-B', async () => {
+      await handler.handleChatModelStart!(
+        llmSerialized as never,
+        [[]] as never,
+        'run-B',
+        undefined,
+        {},
+        [],
+        { thread_id: 'thread-B' },
+      );
+      await handler.handleLLMEnd!({ generations: [[{ text: 'b' }]] } as never, 'run-B');
+    });
+    await Promise.all([runA, runB]);
+
+    const byId = new Map(
+      h.spans
+        .getFinishedSpans()
+        .map((s) => [s.attributes[ATTR_CONVERSATION_ID] as string, s] as const),
+    );
+    expect([...byId.keys()].sort()).toEqual(['thread-A', 'thread-B']);
+  });
+
+  it('keeps conversation ids isolated across concurrent real RunnableLambda invokes', async () => {
+    // Regression (real callback-manager form): this is the scenario the review
+    // flagged. Driving through `RunnableLambda.invoke` runs the callbacks on
+    // LangChain's shared, serialized background queue — the exact place where an
+    // ambient AsyncLocalStorage read cross-contaminated concurrent runs (both
+    // spans previously received whichever run started queue processing). With
+    // the ambient read removed, each run's per-run `thread_id` is authoritative.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'concurrent' });
+    const echo = RunnableLambda.from(async (input: { q: string }) => {
+      await new Promise((r) => setTimeout(r, 5));
+      return { answer: input.q };
+    });
+
+    const runA = withConversationId('ambient-A', () =>
+      echo.invoke({ q: 'a' }, { callbacks: [handler], metadata: { thread_id: 'thread-A' } }),
+    );
+    const runB = withConversationId('ambient-B', () =>
+      echo.invoke({ q: 'b' }, { callbacks: [handler], metadata: { thread_id: 'thread-B' } }),
+    );
+    await Promise.all([runA, runB]);
+
+    const ids = h.spans
+      .getFinishedSpans()
+      .filter((s) => s.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_AGENT)
+      .map((s) => s.attributes[ATTR_CONVERSATION_ID] as string)
+      .sort();
+    expect(ids).toEqual(['thread-A', 'thread-B']);
   });
 
   it('omits conversation.id when neither is provided', async () => {

@@ -34,7 +34,6 @@ import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
-import { conversationIdFromContext } from '../../context.js';
 import {
   type Message,
   type Part,
@@ -148,12 +147,10 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     return anc ? anc.withActiveContext(start) : start();
   }
 
-  /** `gen_ai.conversation.id`, preferring a user-provided id over LangGraph's
-   *  `thread_id`: handler config, then `withConversationId(...)`, then `thread_id`. */
+  /** `gen_ai.conversation.id`: handler `conversationId`, else the run's
+   *  `thread_id` (from `configurable.thread_id` via a checkpointer). */
   private conversationId(metadata?: Record<string, unknown>): string | undefined {
     if (this.defaults.conversationId) return this.defaults.conversationId;
-    const fromContext = conversationIdFromContext();
-    if (fromContext && fromContext.length > 0) return fromContext;
     const t = metadata?.thread_id;
     return typeof t === 'string' && t.length > 0 ? t : undefined;
   }
@@ -330,6 +327,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         input: chainInputToMessages(inputs),
         conversationId: this.conversationId(metadata),
         userId: this.defaults.userId,
+        contentCapture: this.defaults.contentCapture,
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
       }),
