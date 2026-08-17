@@ -316,9 +316,10 @@ async function safeEnd(rec: { end(): Promise<void> }): Promise<void> {
  *
  * A `messages` array (LangGraph et al.) returns the whole conversation, so we
  * map only its last entry — the agent's answer; the rest is history already
- * captured as input. Otherwise a string, or a string `output`/`text` field,
- * becomes one assistant message; any other shape is JSON-encoded. Empty output
- * returns `[]`.
+ * captured as input. Once `messages` is present we never JSON-encode the rest
+ * of the graph state (empty / unrenderable → `[]`). Otherwise a string, or a
+ * string `output`/`text` field, becomes one assistant message; any other shape
+ * is JSON-encoded. Empty output returns `[]`.
  */
 function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   if (output == null) return [];
@@ -326,9 +327,9 @@ function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   if (typeof output !== 'object') return [];
 
   const rec = output as Record<string, unknown>;
-  if (Array.isArray(rec.messages) && rec.messages.length > 0) {
-    const mapped = mapBaseMessages([rec.messages[rec.messages.length - 1]]);
-    if (mapped.length > 0) return mapped;
+  if (Array.isArray(rec.messages)) {
+    if (rec.messages.length === 0) return [];
+    return mapBaseMessages([rec.messages[rec.messages.length - 1]]);
   }
 
   const candidate = rec.output ?? rec.text;

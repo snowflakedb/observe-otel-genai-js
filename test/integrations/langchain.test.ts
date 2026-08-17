@@ -250,6 +250,28 @@ describe('LangChain adapter — chain output messages on the agent span', () => 
     ]);
   });
 
+  it('does not JSON-encode graph state when messages is empty', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!({ messages: [], privateState: 'secret' } as never, 'c1');
+
+    expect(agentOutput()).toBeUndefined();
+  });
+
+  it('does not JSON-encode graph state when the final message is unrenderable', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd!(
+      {
+        messages: [{ _getType: () => 'ai', content: '' }],
+        privateState: 'secret',
+      } as never,
+      'c1',
+    );
+
+    expect(agentOutput()).toBeUndefined();
+  });
+
   it('maps a string `output` field to one assistant message', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
