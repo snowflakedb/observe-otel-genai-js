@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- OpenTelemetry-native LangChain instrumentation (`LangChainInstrumentation`):
+  register it via `registerInstrumentations(...)` and every chain / LLM / tool
+  run is traced with no per-call wiring. CJS auto-patches zero-config (the hook
+  targets `@langchain/core/dist/callbacks/manager.cjs`, leaving the ESM module
+  graph untouched); ESM apps call `manuallyInstrument(...)`. Supports
+  `@langchain/core` `>=0.3.0 <2` (peer dep `^0.3.0 || ^1.0.0`).
+
 ### Changed
 - Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
   Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream

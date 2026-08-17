@@ -213,6 +213,51 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 
 Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 
+### Auto-instrumentation
+
+`LangChainInstrumentation` is a standard OpenTelemetry instrumentation. Register it and the handler is injected into every chain / LLM / tool run, including runs invoked with no callbacks. It dedupes by handler name, so also passing the handler manually does not double-instrument.
+
+```ts
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
+
+registerInstrumentations({
+  instrumentations: [new LangChainInstrumentation({ agentName: 'support-bot' })],
+});
+```
+
+The config takes every `GenAIOtelCallbackHandler` option plus an optional `client`. Omit `client` and one is created from the globally-registered tracer/meter providers — register those first (e.g. via `bootstrapOtel`).
+
+#### CommonJS
+
+Auto-patches. Call `registerInstrumentations(...)` before the first `require('@langchain/core')`.
+
+#### ESM
+
+Patch manually. Call `manuallyInstrument(...)` once, before importing `@langchain/core`:
+
+```ts
+import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
+import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
+
+const instrumentation = new LangChainInstrumentation({ agentName: 'support-bot' });
+instrumentation.manuallyInstrument(CallbackManagerModule);
+```
+
+Also use `manuallyInstrument` wherever there is no runtime `require` to hook: bundlers that inline `@langchain/core` (Next.js, some Webpack/esbuild setups) and non-Node runtimes. Do not enable OpenTelemetry's ESM loader hook for `@langchain/core`, it breaks the library's langsmith interop.
+
+#### Supported versions
+
+| Package | Range |
+|---|---|
+| `@langchain/core` | `>=0.3.0 <2` (0.3.x, 1.x) |
+
+#### Shutdown
+
+`await instrumentation.shutdown()` drains runs whose end/error callback never fired, and shuts down the `Client` only if the instrumentation created it (a `client` you passed in is yours to shut down).
+
+`disable()` removes the patch and best-effort drains the handler, but does not flush a self-created client. Prefer `shutdown()`, or rely on your `TracerProvider` shutdown to flush trailing spans.
+
 ### LangGraph
 
 The LangChain adapter works for LangGraph too — LangGraph reuses LangChain's callback system. Just register the same handler:
