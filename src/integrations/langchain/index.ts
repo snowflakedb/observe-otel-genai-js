@@ -106,7 +106,11 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   private readonly runParent = new Map<string, string | undefined>();
 
   constructor(options: GenAIOtelCallbackHandlerOptions) {
-    super();
+    // Run callbacks inline in the caller's async context instead of on
+    // LangChain's shared background queue, so concurrent runs don't leak each
+    // other's AsyncLocalStorage / OpenTelemetry context (parent trace,
+    // ambient conversationId).
+    super({ _awaitHandler: true });
     this.client = options.client;
     const { client: _c, captureChains, captureNestedChains, ...rest } = options;
     this.defaults = rest;

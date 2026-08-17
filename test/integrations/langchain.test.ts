@@ -9,6 +9,7 @@
  */
 
 import { RunnableLambda } from '@langchain/core/runnables';
+import { context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { withConversationId } from '../../src/context.js';
@@ -625,5 +626,73 @@ describe('LangChain adapter — chain input messages on the agent span', () => {
     await handler.handleChainEnd!({} as never, 'c1');
 
     expect(agentInput()).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — callback dispatch mode', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('runs callbacks inline (awaitHandlers) so they inherit the caller context', () => {
+    // With awaitHandlers on, LangChain executes the callbacks in the caller's
+    // async context instead of on its shared background queue — the root cause
+    // fix for cross-run context bleed (see concurrency test below).
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    expect(handler.awaitHandlers).toBe(true);
+  });
+});
+
+describe('LangChain adapter — external parent isolation under concurrency', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('parents each concurrent invoke_agent under its own external OTel span', async () => {
+    // The review scenario: two concurrent RunnableLambda.invoke() calls, each
+    // under a different active OpenTelemetry span. On LangChain's shared
+    // background queue both invoke_agent spans previously inherited whichever
+    // request started queue processing. Running callbacks inline (awaitHandlers)
+    // keeps each run's active context authoritative, so each agent span nests
+    // under its own external parent and lands on its own trace.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'concurrent' });
+    const tracer = h.tracerProvider.getTracer('test');
+    const echo = RunnableLambda.from(async (input: { q: string }) => {
+      await new Promise((r) => setTimeout(r, 5));
+      return { answer: input.q };
+    });
+
+    const extA = tracer.startSpan('ext-A');
+    const extB = tracer.startSpan('ext-B');
+    const runA = context.with(trace.setSpan(context.active(), extA), () =>
+      echo.invoke({ q: 'a' }, { callbacks: [handler] }),
+    );
+    const runB = context.with(trace.setSpan(context.active(), extB), () =>
+      echo.invoke({ q: 'b' }, { callbacks: [handler] }),
+    );
+    await Promise.all([runA, runB]);
+    extA.end();
+    extB.end();
+
+    const agents = h.spans
+      .getFinishedSpans()
+      .filter((s) => s.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_AGENT);
+    expect(agents.length).toBe(2);
+
+    // No cross-contamination: two distinct traces, each agent under its own ext.
+    const byTrace = new Map(agents.map((s) => [s.spanContext().traceId, s] as const));
+    expect(byTrace.size).toBe(2);
+    const agentA = byTrace.get(extA.spanContext().traceId);
+    const agentB = byTrace.get(extB.spanContext().traceId);
+    expect(agentA?.parentSpanContext?.spanId).toBe(extA.spanContext().spanId);
+    expect(agentB?.parentSpanContext?.spanId).toBe(extB.spanContext().spanId);
   });
 });
