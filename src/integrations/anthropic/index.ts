@@ -45,6 +45,16 @@ const resolveParams = accessor.resolveParams;
 type MessageCreateParams = Anthropic.Messages.MessageCreateParams;
 type AnthropicMessage = Anthropic.Messages.Message;
 
+/**
+ * Invokes the underlying (un-instrumented) `messages.create`. The proxy adapter
+ * binds this to `anthropic.messages.create`; the OTel instrumentation binds it
+ * to the original prototype method it patched, so the shared
+ * {@link runMessageCreate} core never re-enters the patched path.
+ */
+export type MessageCreateInvoke = (
+  params: MessageCreateParams,
+) => Promise<AnthropicMessage | AsyncIterable<unknown>>;
+
 export async function instrumentedMessageCreate(
   client: Client,
   anthropic: Anthropic,
@@ -52,12 +62,26 @@ export async function instrumentedMessageCreate(
   options: AnthropicAdapterOptions = {},
 ): Promise<AnthropicMessage | AsyncIterable<unknown>> {
   const resolved = resolveParams(params, options);
-  return runMessageCreate(client, anthropic, resolved.params, resolved.options);
+  return runMessageCreate(
+    client,
+    (p) => anthropic.messages.create(p) as Promise<AnthropicMessage | AsyncIterable<unknown>>,
+    resolved.params,
+    resolved.options,
+  );
 }
 
-async function runMessageCreate(
+/**
+ * Shared message-create instrumentation core. Takes an `invoke` callback (rather
+ * than the Anthropic client) so the proxy and the OTel instrumentation can share
+ * all span/recorder logic while each supplies its own recursion-safe way of
+ * reaching the real `create`.
+ *
+ * @internal exported for {@link file://./instrumentation.ts}; not part of the
+ * stable public API.
+ */
+export async function runMessageCreate(
   client: Client,
-  anthropic: Anthropic,
+  invoke: MessageCreateInvoke,
   params: MessageCreateParams,
   options: AnthropicAdapterOptions,
 ): Promise<AnthropicMessage | AsyncIterable<unknown>> {
@@ -92,7 +116,7 @@ async function runMessageCreate(
 
     let stream: AsyncIterable<Record<string, unknown>>;
     try {
-      stream = (await anthropic.messages.create(params)) as AsyncIterable<Record<string, unknown>>;
+      stream = (await invoke(params)) as AsyncIterable<Record<string, unknown>>;
     } catch (err) {
       rec.setCallError(err);
       await rec.end();
@@ -173,7 +197,7 @@ async function runMessageCreate(
 
   await using rec = client.startGeneration(seed);
   try {
-    const result = (await anthropic.messages.create(params)) as AnthropicMessage;
+    const result = (await invoke(params)) as AnthropicMessage;
     rec.setResult({
       responseId: result.id,
       responseModel: result.model,
@@ -214,12 +238,53 @@ function wrapMessages(client: Client, anthropic: Anthropic, messages: unknown) {
         return (params: MessageCreateParams) => {
           const options = readMetadata(params);
           stripMetadata(params);
-          return runMessageCreate(client, anthropic, params, options);
+          return runMessageCreate(
+            client,
+            (p) =>
+              anthropic.messages.create(p) as Promise<AnthropicMessage | AsyncIterable<unknown>>,
+            params,
+            options,
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
+}
+
+// -----------------------------------------------------------------------------
+// Prototype-patch entry point (used by AnthropicInstrumentation)
+// -----------------------------------------------------------------------------
+
+/**
+ * Builds a shimmer-style wrapper for `Messages.prototype.create`. The
+ * instrumentation applies this to the SDK's prototype method; `original` is the
+ * un-instrumented `create`. We read any per-call metadata attached via
+ * {@link withMetadata}, strip it before it hits the wire, and drive the shared
+ * {@link runMessageCreate} core with an `invoke` that calls `original` on the
+ * resource instance — so we never recurse back into the patched method.
+ *
+ * `Messages.prototype.parse` calls the (now patched) `this.create`, so parsed
+ * requests are instrumented too; `original` short-circuits any recursion.
+ *
+ * @internal
+ */
+export function patchMessagesCreate(
+  client: Client,
+  defaults: AnthropicAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as MessageCreateParams;
+      const rest = args.slice(1);
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const invoke: MessageCreateInvoke = (p) =>
+        Promise.resolve(original.apply(this, [p, ...rest])) as Promise<
+          AnthropicMessage | AsyncIterable<unknown>
+        >;
+      return runMessageCreate(client, invoke, params, options);
+    };
 }
 
 // -----------------------------------------------------------------------------
