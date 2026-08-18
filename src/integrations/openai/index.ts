@@ -49,6 +49,14 @@ type ChatCompletionsCreateParams = OpenAI.Chat.Completions.ChatCompletionCreateP
 type ChatCompletionsResult = OpenAI.Chat.Completions.ChatCompletion;
 
 /**
+ * Invokes the underlying (un-instrumented) `chat.completions.create`. The proxy
+ * adapter binds this to `openai.chat.completions.create`; the OTel
+ * instrumentation binds it to the original prototype method it patched, so the
+ * shared {@link runChatCompletion} core never re-enters the patched path.
+ */
+export type ChatCompletionsInvoke = (params: ChatCompletionsCreateParams) => Promise<unknown>;
+
+/**
  * Run a non-streaming chat completion inside a generation recorder.
  */
 export async function instrumentedChatCompletion(
@@ -70,15 +78,26 @@ export async function instrumentedChatCompletion(
   }
   return runChatCompletion(
     client,
-    openai,
+    (p) => openai.chat.completions.create(p) as Promise<unknown>,
     resolved.params,
     resolved.options,
   ) as Promise<ChatCompletionsResult>;
 }
 
-async function runChatCompletion(
+/**
+ * Shared chat-completion instrumentation core.
+ *
+ * Instead of receiving the OpenAI client, it takes an `invoke` callback that
+ * performs the actual network call. This lets the proxy adapter and the OTel
+ * instrumentation share all the span/recorder logic while each supplies its own
+ * (recursion-safe) way of reaching the real `create`.
+ *
+ * @internal exported for {@link file://./instrumentation.ts}; not part of the
+ * stable public API.
+ */
+export async function runChatCompletion(
   client: Client,
-  openai: OpenAI,
+  invoke: ChatCompletionsInvoke,
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
 ): Promise<unknown> {
@@ -118,9 +137,7 @@ async function runChatCompletion(
 
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     try {
-      stream = (await openai.chat.completions.create(
-        params,
-      )) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+      stream = (await invoke(params)) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     } catch (err) {
       rec.setCallError(err);
       await rec.end();
@@ -176,7 +193,7 @@ async function runChatCompletion(
 
   await using rec = client.startGeneration(seed);
   try {
-    const result = (await openai.chat.completions.create(params)) as ChatCompletionsResult;
+    const result = (await invoke(params)) as ChatCompletionsResult;
     rec.setResult({
       responseId: result.id,
       responseModel: result.model,
@@ -199,11 +216,36 @@ async function runChatCompletion(
 type EmbeddingCreateParams = OpenAI.Embeddings.EmbeddingCreateParams;
 type EmbeddingResult = OpenAI.Embeddings.CreateEmbeddingResponse;
 
+/** Invokes the underlying (un-instrumented) `embeddings.create`. */
+export type EmbeddingsInvoke = (params: EmbeddingCreateParams) => Promise<EmbeddingResult>;
+
 export async function instrumentedEmbedding(
   client: Client,
   openai: OpenAI,
   params: EmbeddingCreateParams,
   options: OpenAIAdapterOptions = {},
+): Promise<EmbeddingResult> {
+  const resolved = resolveParams(params, options);
+  return runEmbedding(
+    client,
+    (p) => openai.embeddings.create(p),
+    resolved.params,
+    resolved.options,
+  );
+}
+
+/**
+ * Shared embedding instrumentation core. Like {@link runChatCompletion}, it
+ * takes an `invoke` callback so the proxy and the OTel instrumentation can share
+ * it without re-entering the patched method.
+ *
+ * @internal exported for {@link file://./instrumentation.ts}.
+ */
+export async function runEmbedding(
+  client: Client,
+  invoke: EmbeddingsInvoke,
+  params: EmbeddingCreateParams,
+  options: OpenAIAdapterOptions,
 ): Promise<EmbeddingResult> {
   await using rec = client.startEmbedding({
     model: { provider: 'openai', name: params.model },
@@ -216,7 +258,7 @@ export async function instrumentedEmbedding(
   });
 
   try {
-    const result = await openai.embeddings.create(params);
+    const result = await invoke(params);
     const inputs = Array.isArray(params.input)
       ? params.input.filter((v): v is string => typeof v === 'string')
       : typeof params.input === 'string'
@@ -275,7 +317,12 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
         return (params: ChatCompletionsCreateParams) => {
           const options = readMetadata(params);
           stripMetadata(params);
-          return runChatCompletion(client, openai, params, options);
+          return runChatCompletion(
+            client,
+            (p) => openai.chat.completions.create(p) as Promise<unknown>,
+            params,
+            options,
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -291,12 +338,65 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
         return (params: EmbeddingCreateParams) => {
           const options = readMetadata(params);
           stripMetadata(params);
-          return instrumentedEmbedding(client, openai, params, options);
+          return runEmbedding(client, (p) => openai.embeddings.create(p), params, options);
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
+}
+
+// -----------------------------------------------------------------------------
+// Prototype-patch entry points (used by OpenAIInstrumentation)
+// -----------------------------------------------------------------------------
+
+/**
+ * Builds a shimmer-style wrapper for `Completions.prototype.create`. The
+ * instrumentation applies this to the SDK's prototype method; `original` is the
+ * un-instrumented `create`. We read any per-call metadata attached via
+ * {@link withMetadata}, strip it before it hits the wire, and drive the shared
+ * {@link runChatCompletion} core with an `invoke` that calls `original` on the
+ * resource instance — so we never recurse back into the patched method.
+ *
+ * @internal
+ */
+export function patchChatCompletionsCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as ChatCompletionsCreateParams;
+      const rest = args.slice(1);
+      // Instrumentation-level defaults, overridable per call via withMetadata().
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const invoke: ChatCompletionsInvoke = (p) =>
+        Promise.resolve(original.apply(this, [p, ...rest]));
+      return runChatCompletion(client, invoke, params, options);
+    };
+}
+
+/**
+ * Builds a shimmer-style wrapper for `Embeddings.prototype.create`, mirroring
+ * {@link patchChatCompletionsCreate}.
+ *
+ * @internal
+ */
+export function patchEmbeddingsCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as EmbeddingCreateParams;
+      const rest = args.slice(1);
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const invoke: EmbeddingsInvoke = (p) =>
+        Promise.resolve(original.apply(this, [p, ...rest])) as Promise<EmbeddingResult>;
+      return runEmbedding(client, invoke, params, options);
+    };
 }
 
 // -----------------------------------------------------------------------------
