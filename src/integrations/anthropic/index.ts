@@ -24,11 +24,16 @@ import {
   blockToParts,
 } from '../_common/anthropic-blocks.js';
 import {
+  type ApiPromiseLike,
+  finalizeSpanOnRequestError,
+  isApiPromiseLike,
+} from '../_common/api-promise.js';
+import {
   type AdapterCallOptions,
   createMetadataAccessor,
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
-import { wrapProviderStream } from '../_common/stream.js';
+import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 
 export type AnthropicAdapterOptions = AdapterCallOptions;
 
@@ -44,6 +49,9 @@ const resolveParams = accessor.resolveParams;
 
 type MessageCreateParams = Anthropic.Messages.MessageCreateParams;
 type AnthropicMessage = Anthropic.Messages.Message;
+
+/** Recorder returned by the shared {@link Client} generation entry points. */
+type GenerationRecorder = ReturnType<Client['startGeneration']>;
 
 /**
  * Invokes the underlying (un-instrumented) `messages.create`. The proxy adapter
@@ -76,6 +84,11 @@ export async function instrumentedMessageCreate(
  * all span/recorder logic while each supplies its own recursion-safe way of
  * reaching the real `create`.
  *
+ * This path returns a plain `Promise`. Callers that need to preserve the SDK's
+ * `APIPromise` (so `.withResponse()` and the `messages.stream()` helper keep
+ * working) should use {@link instrumentMessageCreateApiPromise} instead; this
+ * remains the fallback for non-`APIPromise` returns.
+ *
  * @internal exported for {@link file://./instrumentation.ts}; not part of the
  * stable public API.
  */
@@ -86,7 +99,83 @@ export async function runMessageCreate(
   options: AnthropicAdapterOptions,
 ): Promise<AnthropicMessage | AsyncIterable<unknown>> {
   const isStream = (params as { stream?: boolean }).stream === true;
-  const seed: GenerationStart = {
+  const seed = buildGenerationSeed(params, options);
+
+  if (isStream) {
+    const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapAnthropicInput(params.messages) });
+    let stream: AsyncIterable<Record<string, unknown>>;
+    try {
+      stream = (await invoke(params)) as AsyncIterable<Record<string, unknown>>;
+    } catch (err) {
+      rec.setCallError(err);
+      await rec.end();
+      throw err;
+    }
+    return wrapProviderStream<typeof stream, Record<string, unknown>>(
+      stream,
+      anthropicStreamHandlers(rec),
+    );
+  }
+
+  await using rec = client.startGeneration(seed);
+  try {
+    const result = (await invoke(params)) as AnthropicMessage;
+    recordNonStreamResult(rec, params, result);
+    return result;
+  } catch (err) {
+    rec.setCallError(err);
+    throw err;
+  }
+}
+
+/**
+ * Instrument a `messages.create` call while preserving the SDK's `APIPromise`,
+ * so `.withResponse()` / `.asResponse()` — and `messages.stream()`, which calls
+ * `create(...).withResponse()` internally — keep working. Recording happens in
+ * the `_thenUnwrap` transform (which runs when the caller consumes the result);
+ * request failures are finalized separately via {@link endSpanOnRequestError},
+ * since the transform only runs on success.
+ *
+ * @internal
+ */
+export function instrumentMessageCreateApiPromise(
+  client: Client,
+  apiPromise: ApiPromiseLike<unknown>,
+  params: MessageCreateParams,
+  options: AnthropicAdapterOptions,
+): unknown {
+  const isStream = (params as { stream?: boolean }).stream === true;
+  const seed = buildGenerationSeed(params, options);
+
+  if (isStream) {
+    const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapAnthropicInput(params.messages) });
+    const handlers = anthropicStreamHandlers(rec);
+    finalizeSpanOnRequestError(apiPromise, rec);
+    return apiPromise._thenUnwrap((stream) =>
+      wrapProviderStream<AsyncIterable<Record<string, unknown>>, Record<string, unknown>>(
+        stream as AsyncIterable<Record<string, unknown>>,
+        handlers,
+      ),
+    );
+  }
+
+  const rec = client.startGeneration(seed);
+  finalizeSpanOnRequestError(apiPromise, rec);
+  return apiPromise._thenUnwrap((result) => {
+    recordNonStreamResult(rec, params, result as AnthropicMessage);
+    void rec.end();
+    return result;
+  });
+}
+
+/** Builds the recorder seed (span attributes) from the request params. */
+function buildGenerationSeed(
+  params: MessageCreateParams,
+  options: AnthropicAdapterOptions,
+): GenerationStart {
+  return {
     model: { provider: 'anthropic', name: params.model },
     operationName: OP_CHAT,
     maxTokens: params.max_tokens,
@@ -103,114 +192,109 @@ export async function runMessageCreate(
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   };
+}
 
-  if (isStream) {
-    const rec = client.startStreamingGeneration(seed);
-    rec.setResult({ input: mapAnthropicInput(params.messages) });
-    let firstTokenSeen = false;
-    let finalUsage: AnthropicUsageShape | undefined;
-    let finalModel: string | undefined;
-    let finalStopReason: string | undefined;
-    let finalId: string | undefined;
-    const blockAcc = new Map<number, AntBlockAcc>();
+/** Records the result of a non-streaming message onto the recorder. */
+function recordNonStreamResult(
+  rec: GenerationRecorder,
+  params: MessageCreateParams,
+  result: AnthropicMessage,
+): void {
+  rec.setResult({
+    responseId: result.id,
+    responseModel: result.model,
+    stopReason: result.stop_reason ?? undefined,
+    usage: mapAnthropicUsage(result.usage as unknown as AnthropicUsageShape),
+    input: mapAnthropicInput(params.messages),
+    output: mapAnthropicOutput((result as { content?: unknown }).content),
+  });
+}
 
-    let stream: AsyncIterable<Record<string, unknown>>;
-    try {
-      stream = (await invoke(params)) as AsyncIterable<Record<string, unknown>>;
-    } catch (err) {
+/**
+ * Builds the streaming {@link StreamWrapOptions} for a message stream: observes
+ * chunks to record TTFT, accumulate content blocks, and capture streamed usage,
+ * then finalizes the recorder on completion / error / abandonment.
+ */
+function anthropicStreamHandlers(
+  rec: GenerationRecorder,
+): StreamWrapOptions<Record<string, unknown>> {
+  let firstTokenSeen = false;
+  let finalUsage: AnthropicUsageShape | undefined;
+  let finalModel: string | undefined;
+  let finalStopReason: string | undefined;
+  let finalId: string | undefined;
+  const blockAcc = new Map<number, AntBlockAcc>();
+
+  return {
+    onChunk: (event) => {
+      const t = event.type as string | undefined;
+      // TTFT = first content token, not the `message_start` metadata event.
+      if (!firstTokenSeen && (t === 'content_block_start' || t === 'content_block_delta')) {
+        firstTokenSeen = true;
+        rec.setFirstTokenAt(Date.now());
+      }
+      if (t === 'message_start') {
+        const msg = (event as { message?: AnthropicMessage }).message;
+        if (msg) {
+          finalId = msg.id;
+          finalModel = msg.model;
+          finalUsage = msg.usage as unknown as AnthropicUsageShape;
+        }
+      }
+      if (t === 'content_block_start') {
+        const idx = (event as { index?: number }).index ?? 0;
+        const cb = (event as { content_block?: AntBlock }).content_block;
+        blockAcc.set(idx, {
+          type: cb?.type,
+          text: '',
+          thinking: '',
+          toolId: cb?.id,
+          toolName: cb?.name,
+          toolJson: '',
+        });
+      }
+      if (t === 'content_block_delta') {
+        const idx = (event as { index?: number }).index ?? 0;
+        const d = (event as { delta?: AntStreamDelta }).delta;
+        const entry = blockAcc.get(idx) ?? { text: '', thinking: '', toolJson: '' };
+        if (d?.type === 'text_delta' && typeof d.text === 'string') {
+          entry.text += d.text;
+          entry.type ??= 'text';
+        } else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+          entry.toolJson += d.partial_json;
+          entry.type ??= 'tool_use';
+        } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
+          entry.thinking += d.thinking;
+          entry.type ??= 'thinking';
+        }
+        blockAcc.set(idx, entry);
+      }
+      if (t === 'message_delta') {
+        const delta = (event as { delta?: { stop_reason?: string } }).delta;
+        if (delta?.stop_reason) finalStopReason = delta.stop_reason;
+        const usage = (event as { usage?: AnthropicUsageShape }).usage;
+        if (usage) finalUsage = { ...finalUsage, ...usage };
+      }
+    },
+    onComplete: async () => {
+      rec.setResult({
+        responseId: finalId,
+        responseModel: finalModel,
+        stopReason: finalStopReason,
+        usage: mapAnthropicUsage(finalUsage),
+        output: buildAnthropicStreamOutput(blockAcc),
+      });
+      await rec.end();
+    },
+    onError: async (err) => {
       rec.setCallError(err);
       await rec.end();
-      throw err;
-    }
-
-    return wrapProviderStream<typeof stream, Record<string, unknown>>(stream, {
-      onChunk: (event) => {
-        const t = event.type as string | undefined;
-        // TTFT = first content token, not the `message_start` metadata event.
-        if (!firstTokenSeen && (t === 'content_block_start' || t === 'content_block_delta')) {
-          firstTokenSeen = true;
-          rec.setFirstTokenAt(Date.now());
-        }
-        if (t === 'message_start') {
-          const msg = (event as { message?: AnthropicMessage }).message;
-          if (msg) {
-            finalId = msg.id;
-            finalModel = msg.model;
-            finalUsage = msg.usage as unknown as AnthropicUsageShape;
-          }
-        }
-        if (t === 'content_block_start') {
-          const idx = (event as { index?: number }).index ?? 0;
-          const cb = (event as { content_block?: AntBlock }).content_block;
-          blockAcc.set(idx, {
-            type: cb?.type,
-            text: '',
-            thinking: '',
-            toolId: cb?.id,
-            toolName: cb?.name,
-            toolJson: '',
-          });
-        }
-        if (t === 'content_block_delta') {
-          const idx = (event as { index?: number }).index ?? 0;
-          const d = (event as { delta?: AntStreamDelta }).delta;
-          const entry = blockAcc.get(idx) ?? { text: '', thinking: '', toolJson: '' };
-          if (d?.type === 'text_delta' && typeof d.text === 'string') {
-            entry.text += d.text;
-            entry.type ??= 'text';
-          } else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string') {
-            entry.toolJson += d.partial_json;
-            entry.type ??= 'tool_use';
-          } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
-            entry.thinking += d.thinking;
-            entry.type ??= 'thinking';
-          }
-          blockAcc.set(idx, entry);
-        }
-        if (t === 'message_delta') {
-          const delta = (event as { delta?: { stop_reason?: string } }).delta;
-          if (delta?.stop_reason) finalStopReason = delta.stop_reason;
-          const usage = (event as { usage?: AnthropicUsageShape }).usage;
-          if (usage) finalUsage = { ...finalUsage, ...usage };
-        }
-      },
-      onComplete: async () => {
-        rec.setResult({
-          responseId: finalId,
-          responseModel: finalModel,
-          stopReason: finalStopReason,
-          usage: mapAnthropicUsage(finalUsage),
-          output: buildAnthropicStreamOutput(blockAcc),
-        });
-        await rec.end();
-      },
-      onError: async (err) => {
-        rec.setCallError(err);
-        await rec.end();
-      },
-      onAbandoned: async () => {
-        rec.setCallError(new Error('anthropic stream was never consumed'));
-        await rec.end();
-      },
-    });
-  }
-
-  await using rec = client.startGeneration(seed);
-  try {
-    const result = (await invoke(params)) as AnthropicMessage;
-    rec.setResult({
-      responseId: result.id,
-      responseModel: result.model,
-      stopReason: result.stop_reason ?? undefined,
-      usage: mapAnthropicUsage(result.usage as unknown as AnthropicUsageShape),
-      input: mapAnthropicInput(params.messages),
-      output: mapAnthropicOutput((result as { content?: unknown }).content),
-    });
-    return result;
-  } catch (err) {
-    rec.setCallError(err);
-    throw err;
-  }
+    },
+    onAbandoned: async () => {
+      rec.setCallError(new Error('anthropic stream was never consumed'));
+      await rec.end();
+    },
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -235,13 +319,17 @@ function wrapMessages(client: Client, anthropic: Anthropic, messages: unknown) {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
-        return (params: MessageCreateParams) => {
+        return (params: MessageCreateParams, ...rest: unknown[]) => {
           const options = readMetadata(params);
           stripMetadata(params);
+          const create = anthropic.messages.create as (...a: unknown[]) => unknown;
+          const raw = create.call(anthropic.messages, params, ...rest);
+          if (isApiPromiseLike(raw)) {
+            return instrumentMessageCreateApiPromise(client, raw, params, options);
+          }
           return runMessageCreate(
             client,
-            (p) =>
-              anthropic.messages.create(p) as Promise<AnthropicMessage | AsyncIterable<unknown>>,
+            () => Promise.resolve(raw) as Promise<AnthropicMessage | AsyncIterable<unknown>>,
             params,
             options,
           );
@@ -279,11 +367,18 @@ export function patchMessagesCreate(
       const rest = args.slice(1);
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
-      const invoke: MessageCreateInvoke = (p) =>
-        Promise.resolve(original.apply(this, [p, ...rest])) as Promise<
-          AnthropicMessage | AsyncIterable<unknown>
-        >;
-      return runMessageCreate(client, invoke, params, options);
+      const raw = original.apply(this, [params, ...rest]);
+      if (isApiPromiseLike(raw)) {
+        return instrumentMessageCreateApiPromise(client, raw, params, options);
+      }
+      // Fallback for non-`APIPromise` returns (unusual SDK shapes): the
+      // `APIPromise` helpers are lost, but the span is still recorded.
+      return runMessageCreate(
+        client,
+        () => Promise.resolve(raw) as Promise<AnthropicMessage | AsyncIterable<unknown>>,
+        params,
+        options,
+      );
     };
 }
 
