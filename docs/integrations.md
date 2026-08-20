@@ -204,8 +204,8 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleLLMNewToken` (first non-empty) | `recorder.setFirstTokenAt(now)` |
 | `handleLLMEnd` | `recorder.setResult({ usage, stopReason, responseId, output })`; `recorder.end()` |
 | `handleLLMError` | `recorder.setCallError(err)`; `recorder.end()` |
-| `handleToolStart` | `client.startToolExecution({ toolName })`; `recorder.setResult({ arguments })` |
-| `handleToolEnd` | `recorder.setResult({ result })`; `recorder.end()` |
+| `handleToolStart` | `client.startToolExecution({ toolName })` (the run's `runName`, else the serialized class name); `recorder.setResult({ arguments })` |
+| `handleToolEnd` | `recorder.setToolName(...)` (the authoritative tool name from the `ToolMessage`, overriding `runName`), `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
 | `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` + input messages from `chainInputToMessages(inputs)` |
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |

@@ -37,6 +37,12 @@ export class ToolExecutionRecorder extends RecorderBase {
     this.result = { ...(this.result ?? {}), ...end };
   }
 
+  /** Overrides the tool name once known (from the tool-end `ToolMessage`); `finalize` re-derives the span name and `gen_ai.tool.name` from it. Ignored when empty. */
+  setToolName(toolName: string | undefined): void {
+    if (toolName == null || toolName === '') return;
+    this.seed.toolName = toolName;
+  }
+
   /** Alias for `setCallError` that reads more naturally for tool executions. */
   setExecError(err: unknown): void {
     this.setCallError(err);

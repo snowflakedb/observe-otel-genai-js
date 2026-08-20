@@ -266,11 +266,13 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     parentRunId?: string,
     _tags?: string[],
     metadata?: Record<string, unknown>,
+    runName?: string,
   ): Promise<void> {
     this.runParent.set(runId, parentRunId);
     const rec = this.nested(parentRunId, () =>
       this.client.startToolExecution({
-        toolName: toolNameFromSerialized(tool),
+        // runName also covers failures (no ToolMessage); handleToolEnd overrides on success.
+        toolName: nonEmpty(runName) ?? toolNameFromSerialized(tool),
         agentName: this.defaults.agentName,
         agentVersion: this.defaults.agentVersion,
         conversationId: this.conversationId(metadata),
@@ -286,6 +288,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     const rec = this.toolRunMap.get(runId);
     if (!rec) return;
     this.toolRunMap.delete(runId);
+    rec.setToolName(toolNameFromOutput(output));
     rec.setResult({ result: output });
     await safeEnd(rec);
   }
@@ -630,6 +633,18 @@ function inferProvider(idPath: readonly string[]): string {
 function toolNameFromSerialized(s: Serialized): string {
   const id = (s as { id?: string[] }).id ?? [];
   return id[id.length - 1] ?? 'tool';
+}
+
+/** The tool's real `name` from a tool-end `ToolMessage` (`_getType() === 'tool'`); `undefined` otherwise. */
+function toolNameFromOutput(output: unknown): string | undefined {
+  if (!output || typeof output !== 'object') return undefined;
+  const msg = output as { name?: unknown; _getType?: () => string };
+  if (typeof msg._getType !== 'function' || msg._getType() !== 'tool') return undefined;
+  return typeof msg.name === 'string' && msg.name.length > 0 ? msg.name : undefined;
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function mapLangChainUsage(llmOutput: unknown) {
