@@ -17,13 +17,21 @@
 import type { Span } from '@opentelemetry/api';
 import type { Generation } from '../models/generation.js';
 import type { Message } from '../models/message.js';
+import type { RetrievalDocument } from '../models/retrieval.js';
 import {
   ATTR_INPUT_MESSAGES,
   ATTR_OUTPUT_MESSAGES,
+  ATTR_RETRIEVAL_DOCUMENTS,
+  ATTR_RETRIEVAL_QUERY_TEXT,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
 } from '../semconv.js';
-import { type ContentCapture, type ContentCaptureMode, isContentCapped } from './capture.js';
+import {
+  type ContentCapture,
+  type ContentCaptureMode,
+  applyContentAttribute,
+  isContentCapped,
+} from './capture.js';
 import {
   resolveFinishReason,
   toSemconvInputMessages,
@@ -94,6 +102,29 @@ export function emitAgentContent(
 }
 
 /**
+ * Emits a retrieval's opt-in content onto `span`: the query text as
+ * `gen_ai.retrieval.query.text` and the retrieved documents as the structured
+ * `gen_ai.retrieval.documents` attribute. Both share the generation
+ * size/truncation policy so a configured `maxContentLength` applies uniformly.
+ */
+export function emitRetrievalContent(
+  span: Span,
+  queryText: string | undefined,
+  documents: readonly RetrievalDocument[] | undefined,
+  capture: ContentCapture,
+): void {
+  if (!capture.enabled) return;
+
+  if (queryText && queryText.length > 0) {
+    applyContentAttribute(span, ATTR_RETRIEVAL_QUERY_TEXT, queryText, capture);
+  }
+  if (documents && documents.length > 0) {
+    // Documents are best-first: truncate from the end (drop lowest-ranked).
+    applyStructuredAttribute(span, ATTR_RETRIEVAL_DOCUMENTS, documents, capture, true);
+  }
+}
+
+/**
  * Returns a deep copy of `messages` with tool payloads cleared for the
  * `no_tool_content` policy: `toolCall.inputJson`, `toolResult.content`, and
  * `toolResult.contentJson` are removed while tool names/ids and the surrounding
@@ -135,24 +166,66 @@ function hasToolContent(message: Message): boolean {
  * it, the value is trimmed at the string-leaf level so the emitted attribute is
  * still valid JSON, and `${key}.truncated` / `${key}.original_size_bytes`
  * markers are written.
+ *
+ * Encoding uses `safeJsonStringify`, which never throws. So if the content
+ * contains a value plain `JSON.stringify` would choke on (a bigint, a circular
+ * reference, a property getter that throws), the attribute is simply skipped
+ * instead of crashing span finalization.
  */
 function applyStructuredAttribute(
   span: Span,
   key: string,
   value: unknown,
   capture: ContentCapture,
+  dropFromEnd = false,
 ): void {
-  const encoded = JSON.stringify(value);
+  const encoded = safeJsonStringify(value);
+  if (encoded === undefined) return;
   const cap = capture.maxContentLength;
   if (!isContentCapped(cap) || encoded.length <= cap) {
     span.setAttribute(key, encoded);
     return;
   }
 
-  const { json, originalSizeBytes } = truncateStructuredToFit(value, cap, encoded);
+  // Re-parsing the encoded form gives the truncator plain JSON data to walk.
+  const { json, originalSizeBytes } = truncateStructuredToFit(
+    JSON.parse(encoded),
+    cap,
+    encoded,
+    dropFromEnd,
+  );
+  // Even the smallest valid JSON (`[]` / `{}`) can exceed a tiny cap — omit
+  // rather than emit a value over the configured limit (matches tool defs).
+  if (json.length > cap) return;
   span.setAttribute(key, json);
   span.setAttribute(`${key}.truncated`, true);
   span.setAttribute(`${key}.original_size_bytes`, originalSizeBytes);
+}
+
+/**
+ * `JSON.stringify` that never throws (returns `undefined` instead): a replacer
+ * handles the two values it rejects (bigint, circular refs), and a try/catch
+ * swallows values whose access throws (a getter, a revoked Proxy). Everything
+ * else defers to native stringify, so `toJSON`, `__proto__`, and non-finite
+ * numbers behave normally.
+ */
+function safeJsonStringify(value: unknown): string | undefined {
+  // Ancestor stack rather than a `seen` set, so a repeated but non-circular
+  // reference still serializes normally.
+  const ancestors: object[] = [];
+  try {
+    return JSON.stringify(value, function (this: object, _key: string, v: unknown) {
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+      if (typeof v === 'bigint') return v.toString();
+      if (typeof v === 'object' && v !== null) {
+        if (ancestors.includes(v)) return '[Circular]';
+        ancestors.push(v);
+      }
+      return v;
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -267,16 +340,15 @@ function collectStringLeaves(node: unknown, leaves: StringLeaf[], inContent: boo
 const TRUNCATION_MARKER = '\u2026';
 
 /**
- * Trims a structured value so its JSON encoding fits within `cap` characters
- * while remaining valid JSON. Long string leaves are shortened proportionally
- * to their size; if structural overhead alone still exceeds the cap, whole
- * elements are dropped from the front of a top-level array (oldest first),
- * falling back to `[]` in the extreme case.
+ * Trims a structured value's JSON to fit `cap`, staying valid JSON: string
+ * leaves are shortened first, then whole top-level array elements are dropped
+ * (front-first for messages, end-first when `dropFromEnd`), down to `[]`.
  */
 function truncateStructuredToFit(
   value: unknown,
   cap: number,
   encoded: string,
+  dropFromEnd = false,
 ): { json: string; originalSizeBytes: number } {
   const originalSizeBytes = Buffer.byteLength(encoded, 'utf8');
   const clone = structuredClone(value);
@@ -316,11 +388,13 @@ function truncateStructuredToFit(
     json = JSON.stringify(clone);
   }
 
-  // Last resort: structure alone exceeds the cap — drop oldest top-level
-  // elements until it fits, down to an empty array.
+  // Last resort: structure alone exceeds the cap — drop whole top-level
+  // elements (front for messages, end for documents) until it fits.
   if (json.length > cap && Array.isArray(clone)) {
-    while ((clone as unknown[]).length > 0 && json.length > cap) {
-      (clone as unknown[]).shift();
+    const arr = clone as unknown[];
+    while (arr.length > 0 && json.length > cap) {
+      if (dropFromEnd) arr.pop();
+      else arr.shift();
       json = JSON.stringify(clone);
     }
   }

@@ -13,7 +13,8 @@ import type { Span } from '@opentelemetry/api';
  * Coarse switch for "what content is included at all":
  *  - `default`         → fall through to the next level (per-recorder → client default).
  *  - `full`            → include all content (prompts, completions, tool args/results).
- *  - `no_tool_content` → include prompts and completions, but strip tool args/results.
+ *  - `no_tool_content` → include prompts and completions, but strip tool args/results
+ *                        and retrieval query/documents.
  *  - `metadata_only`   → strip ALL content; only structured metadata remains.
  */
 export type ContentCaptureMode = 'default' | 'full' | 'no_tool_content' | 'metadata_only';

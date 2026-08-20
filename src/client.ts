@@ -48,11 +48,13 @@ import { GenAIMetrics } from './metrics/histograms.js';
 import type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
 import type { EmbeddingStart } from './models/embedding.js';
 import type { GenerationStart } from './models/generation.js';
+import type { RetrievalStart } from './models/retrieval.js';
 import type { ToolExecutionStart } from './models/tool.js';
 import { AgentCreationRecorder, AgentInvocationRecorder } from './recorders/agent.js';
 import type { RecorderHostContext } from './recorders/base.js';
 import { EmbeddingRecorder } from './recorders/embedding.js';
 import { GenerationRecorder } from './recorders/generation.js';
+import { RetrievalRecorder } from './recorders/retrieval.js';
 import { ToolExecutionRecorder } from './recorders/tool.js';
 import { INSTRUMENTATION_NAME, OP_CHAT, OP_EMBEDDINGS } from './semconv.js';
 import {
@@ -60,6 +62,7 @@ import {
   applyAgentCreationAttributes,
   applyEmbeddingStartAttributes,
   applyGenerationAttributes,
+  applyRetrievalAttributes,
   applyToolAttributes,
 } from './spans/attributes.js';
 import { SpanLinkMap } from './spans/links.js';
@@ -68,6 +71,7 @@ import {
   agentSpanName,
   embeddingSpanName,
   generationSpanName,
+  retrievalSpanName,
   toolSpanName,
 } from './spans/names.js';
 import { generateId } from './util/id.js';
@@ -190,6 +194,25 @@ export class Client implements RecorderHostContext {
       startedAtMs,
       seed.contentCapture ?? 'default',
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retrieval
+  // ---------------------------------------------------------------------------
+
+  startRetrieval(start: RetrievalStart): RetrievalRecorder {
+    this.assertOpen();
+    const seed = this.normalizeRetrievalSeed(start);
+    const startedAtMs = toMs(seed.startedAt) ?? this.now();
+    seed.startedAt = startedAtMs;
+
+    const span = this.tracer.startSpan(retrievalSpanName(seed.dataSourceId ?? ''), {
+      kind: SpanKind.CLIENT,
+      startTime: new Date(startedAtMs),
+    });
+    applyRetrievalAttributes(span, seed);
+
+    return new RetrievalRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
   }
 
   // ---------------------------------------------------------------------------
@@ -419,6 +442,15 @@ export class Client implements RecorderHostContext {
     seed.conversationTitle ||= conversationTitleFromContext() ?? '';
     seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
     seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
+    return seed;
+  }
+
+  private normalizeRetrievalSeed(input: RetrievalStart): RetrievalStart {
+    const seed: RetrievalStart = { ...input };
+    seed.conversationId ||= conversationIdFromContext() ?? '';
+    seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
+    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
+    seed.tags = { ...(this.config.tags ?? {}), ...(seed.tags ?? {}) };
     return seed;
   }
 

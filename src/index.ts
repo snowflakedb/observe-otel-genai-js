@@ -78,6 +78,7 @@ export type {
 } from './recorders/agent.js';
 export type { EmbeddingRecorder } from './recorders/embedding.js';
 export type { GenerationRecorder } from './recorders/generation.js';
+export type { RetrievalRecorder } from './recorders/retrieval.js';
 export type { ToolExecutionRecorder } from './recorders/tool.js';
 
 // Models
@@ -93,6 +94,11 @@ export type {
   ConversationSnapshotKind,
 } from './models/generation.js';
 export type { EmbeddingResult, EmbeddingStart } from './models/embedding.js';
+export type {
+  RetrievalDocument,
+  RetrievalResult,
+  RetrievalStart,
+} from './models/retrieval.js';
 export type {
   ExecuteToolCallsOptions,
   ToolExecutionEnd,
@@ -128,6 +134,7 @@ export {
   ATTR_AGENT_NAME,
   ATTR_AGENT_VERSION,
   ATTR_CONVERSATION_ID,
+  ATTR_DATA_SOURCE_ID,
   ATTR_GENERATION_ID,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
@@ -135,6 +142,9 @@ export {
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_MODEL,
+  ATTR_RETRIEVAL_DOCUMENTS,
+  ATTR_RETRIEVAL_QUERY_TEXT,
+  ATTR_RETRIEVAL_TOP_K,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_INPUT_TOKENS,
@@ -157,6 +167,7 @@ export {
   OP_EXECUTE_TOOL,
   OP_GENERATE_CONTENT,
   OP_INVOKE_AGENT,
+  OP_RETRIEVAL,
   OP_TEXT_COMPLETION,
   SDK_NAME,
   TOKEN_USAGE_BUCKETS,

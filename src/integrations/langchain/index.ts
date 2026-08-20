@@ -17,9 +17,11 @@
  *  - `handleToolEnd`   → `recorder.setResult({ result })` + `recorder.end()`.
  *  - `handleToolError` → `recorder.setExecError(err)` + `recorder.end()`.
  *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` lifecycle.
- *  - `handleRetrieverStart`/`End`/`Error` → no span yet (no retrieval recorder);
- *                        records the run-tree edge so descendant spans still
- *                        parent under the agent.
+ *  - `handleRetrieverStart` → `client.startRetrieval({...})`. The retrieval span
+ *                        becomes the active parent, so an in-retriever query
+ *                        rewrite (`chat`) and any descendants nest under it.
+ *  - `handleRetrieverEnd`  → `recorder.setDocuments(...)` + `recorder.end()`.
+ *  - `handleRetrieverError`→ `recorder.setCallError(err)` + `recorder.end()`.
  *
  * Use:
  *   const handler = new GenAIOtelCallbackHandler({ client });
@@ -44,8 +46,10 @@ import {
   toolResultPart,
   userTextMessage,
 } from '../../models/message.js';
+import type { RetrievalDocument } from '../../models/retrieval.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
+import type { RetrievalRecorder } from '../../recorders/retrieval.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 
 export interface GenAIOtelCallbackHandlerOptions {
@@ -101,6 +105,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   >();
   private readonly toolRunMap = new Map<string, ToolExecutionRecorder>();
   private readonly chainRunMap = new Map<string, AgentInvocationRecorder>();
+  private readonly retrieverRunMap = new Map<string, RetrievalRecorder>();
 
   /** runId → parentRunId for the whole run tree, including suppressed chains, so
    *  nearestRecorder can walk up to the closest run that owns a span. */
@@ -127,7 +132,9 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   private recorderForRun(runId: string): { withActiveContext<T>(fn: () => T): T } | undefined {
     const llm = this.llmRunMap.get(runId);
     if (llm) return llm.rec;
-    return this.toolRunMap.get(runId) ?? this.chainRunMap.get(runId);
+    return (
+      this.toolRunMap.get(runId) ?? this.retrieverRunMap.get(runId) ?? this.chainRunMap.get(runId)
+    );
   }
 
   /** Walk parentRunId up the run tree to the nearest run that owns a span. */
@@ -387,29 +394,51 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   // ---------------------------------------------------------------------------
-  // Retriever lifecycle (run-tree topology only — no span)
+  // Retriever lifecycle (mapped to a retrieval span, kind CLIENT)
   // ---------------------------------------------------------------------------
 
-  /**
-   * No span is emitted for retrievers yet. The run is still tracked in the
-   * run tree so that `nearestRecorder` can walk up through it to the real
-   * ancestor span rather than starting a new root trace.
-   */
   override async handleRetrieverStart(
-    _retriever: Serialized,
-    _query: string,
+    retriever: Serialized,
+    query: string,
     runId: string,
     parentRunId?: string,
+    _tags?: string[],
+    metadata?: Record<string, unknown>,
+    _name?: string,
   ): Promise<void> {
     this.runParent.set(runId, parentRunId);
+    const rec = this.nested(parentRunId, () =>
+      this.client.startRetrieval({
+        dataSourceId: dataSourceIdFromRetriever(retriever),
+        topK: topKFromRetriever(retriever),
+        queryText: typeof query === 'string' && query.length > 0 ? query : undefined,
+        agentName: this.defaults.agentName,
+        agentVersion: this.defaults.agentVersion,
+        conversationId: this.conversationId(metadata),
+        contentCapture: this.defaults.contentCapture,
+        tags: this.defaults.tags,
+        metadata: this.defaults.metadata,
+      }),
+    );
+    this.retrieverRunMap.set(runId, rec);
   }
 
-  override async handleRetrieverEnd(_documents: unknown[], runId: string): Promise<void> {
+  override async handleRetrieverEnd(documents: unknown[], runId: string): Promise<void> {
     this.runParent.delete(runId);
+    const rec = this.retrieverRunMap.get(runId);
+    if (!rec) return;
+    this.retrieverRunMap.delete(runId);
+    rec.setDocuments(mapRetrieverDocuments(documents));
+    await safeEnd(rec);
   }
 
-  override async handleRetrieverError(_err: unknown, runId: string): Promise<void> {
+  override async handleRetrieverError(err: unknown, runId: string): Promise<void> {
     this.runParent.delete(runId);
+    const rec = this.retrieverRunMap.get(runId);
+    if (!rec) return;
+    this.retrieverRunMap.delete(runId);
+    rec.setCallError(err);
+    await safeEnd(rec);
   }
 
   /**
@@ -435,6 +464,11 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       await safeEnd(rec);
     }
     this.chainRunMap.clear();
+    for (const rec of this.retrieverRunMap.values()) {
+      rec.setCallError(err);
+      await safeEnd(rec);
+    }
+    this.retrieverRunMap.clear();
     this.runParent.clear();
   }
 }
@@ -671,6 +705,131 @@ function toolNameFromOutput(output: unknown): string | undefined {
 
 function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+const DATA_SOURCE_ID_KEYS: readonly string[] = [
+  'indexName',
+  'index_name',
+  'index',
+  'namespace',
+  'collectionName',
+  'collection_name',
+  'collection',
+];
+
+/**
+ * `gen_ai.data_source.id` from the wrapped vector store's serialized config
+ * (index/collection/namespace). The store may be a live Serializable
+ * (`lc_kwargs`/instance fields, camelCase) or pre-serialized (`kwargs`,
+ * snake_case), so both are checked. Undefined when no store identity is present.
+ */
+function dataSourceIdFromRetriever(s: Serialized): string | undefined {
+  const kwargs = (s as { kwargs?: Record<string, unknown> }).kwargs ?? {};
+  const vs = kwargs.vectorStore ?? kwargs.vector_store ?? kwargs.vectorstore;
+  if (!vs || typeof vs !== 'object') return undefined;
+
+  const store = vs as Record<string, unknown>;
+  // Live instance first (current field values), then the serialized config /
+  // constructor snapshot, so a mutated `indexName` wins over its stale seed.
+  for (const src of [store, readObject(store, 'kwargs'), readObject(store, 'lc_kwargs')]) {
+    const id = firstStr(src, DATA_SOURCE_ID_KEYS);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+/** Reads `obj[key]` as a plain object, guarding against a throwing getter/Proxy. */
+function readObject(
+  obj: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  let v: unknown;
+  try {
+    v = obj[key];
+  } catch {
+    return undefined;
+  }
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
+
+/** Returns `obj[key]` when it is a non-empty string, else `undefined`. Reading
+ *  is guarded so a throwing getter/Proxy trap yields `undefined` rather than throwing. */
+function strField(obj: Record<string, unknown> | undefined, key: string): string | undefined {
+  let v: unknown;
+  try {
+    v = obj?.[key];
+  } catch {
+    return undefined;
+  }
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** First non-empty string value among `keys` on `obj`, else `undefined`. */
+function firstStr(
+  obj: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const v = strField(obj, key);
+    if (v) return v;
+  }
+  return undefined;
+}
+
+/** `gen_ai.retrieval.top_k` from the retriever's serialized `k` / `searchKwargs.k`. */
+function topKFromRetriever(s: Serialized): number | undefined {
+  const kwargs = (s as { kwargs?: Record<string, unknown> }).kwargs ?? {};
+  const fromKwargs = numField(kwargs, 'k') ?? numField(kwargs, 'topK') ?? numField(kwargs, 'top_k');
+  if (fromKwargs != null) return fromKwargs;
+
+  const searchKwargs = kwargs.searchKwargs ?? kwargs.search_kwargs;
+  if (searchKwargs && typeof searchKwargs === 'object') {
+    return numField(searchKwargs as Record<string, unknown>, 'k');
+  }
+  return undefined;
+}
+
+/** Returns `obj[key]` when it is a finite number, else `undefined`. Reading is
+ *  guarded so a throwing getter/Proxy trap yields `undefined` rather than throwing. */
+function numField(obj: Record<string, unknown> | undefined, key: string): number | undefined {
+  let v: unknown;
+  try {
+    v = obj?.[key];
+  } catch {
+    return undefined;
+  }
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Maps LangChain `Document` objects (`{ pageContent, metadata, id? }`) into the
+ * genai-otel `RetrievalDocument` shape. Non-object entries are skipped.
+ */
+function mapRetrieverDocuments(documents: unknown[]): RetrievalDocument[] {
+  if (!Array.isArray(documents)) return [];
+  const out: RetrievalDocument[] = [];
+  for (const raw of documents) {
+    if (!raw || typeof raw !== 'object') continue;
+    const doc = raw as {
+      id?: unknown;
+      pageContent?: unknown;
+      page_content?: unknown;
+      metadata?: unknown;
+    };
+    const mapped: RetrievalDocument = {};
+    if (typeof doc.id === 'string' && doc.id.length > 0) mapped.id = doc.id;
+    const content = doc.pageContent ?? doc.page_content;
+    if (typeof content === 'string') mapped.content = content;
+    if (doc.metadata && typeof doc.metadata === 'object') {
+      const meta = doc.metadata as Record<string, unknown>;
+      mapped.metadata = meta;
+      // Only an explicit relevance score; a raw distance would invert ranking.
+      const score = numField(meta, 'score');
+      if (score != null) mapped.score = score;
+    }
+    out.push(mapped);
+  }
+  return out;
 }
 
 function toolCallIdFromOutput(output: unknown): string | undefined {

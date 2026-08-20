@@ -8,7 +8,7 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `create_agent` |
+| `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `create_agent`, `retrieval` |
 | `gen_ai.conversation.id` | string | when set on `GenerationStart` or in `withConversationId(...)` context |
 | `genai.conversation.title` | string | when `conversationTitle` is set |
 | `genai.conversation.turn_index` | int | when `turnIndex` is set on the start |
@@ -82,6 +82,19 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.tool.call.arguments` | string (JSON) |
 | `gen_ai.tool.call.result` | string (JSON) |
 
+### Retrieval-only
+
+`retrieval` spans (span kind CLIENT) model a RAG context fetch from a vector database or search system. Span name is `retrieval {gen_ai.data_source.id}`.
+
+| Attribute | Type | Where |
+|---|---|---|
+| `gen_ai.data_source.id` | string | the data source / index / collection being queried, when known |
+| `gen_ai.retrieval.top_k` | int | number of documents requested, when known |
+| `gen_ai.retrieval.query.text` | string | Opt-In query text — subject to the content-capture config, stripped under `metadata_only` and `no_tool_content` |
+| `gen_ai.retrieval.documents` | string (JSON, structured document array) | Opt-In retrieved documents (`{ id?, content?, score?, metadata? }`) — same size/truncation policy as `gen_ai.input.messages`, stripped under `metadata_only` and `no_tool_content` |
+
+`gen_ai.provider.name` / `gen_ai.request.model` are emitted when the caller supplies them.
+
 ### Agent-invocation-only
 
 `invoke_agent` spans carry the agent input and output as the standard structured content attributes (subject to the content-capture config, same size/truncation policy as generations):
@@ -133,6 +146,7 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 | Non-streaming chat | `CLIENT` |
 | Streaming chat | `CLIENT` |
 | Embeddings | `CLIENT` |
+| Retrieval | `CLIENT` |
 | Tool execution | `INTERNAL` |
 | Agent invocation | `INTERNAL` |
 | Agent creation | `INTERNAL` |
