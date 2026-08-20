@@ -22,7 +22,9 @@ import {
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_ID,
+  ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_NAME,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
@@ -294,12 +296,119 @@ describe('LangChain adapter — tool lifecycle', () => {
     await handler.handleToolStart!(toolSerialized as any, '{"city":"Tokyo"}', 'tool-id');
     // Modern LangChain passes a ToolMessage (not a bare string) to tool-end.
     await handler.handleToolEnd!(
-      { tool_call_id: 'toolu_bdrk_01KasL9JjjkNha2wutiD9eDJ', content: 'Tokyo: sunny, 25C' } as any,
+      {
+        _getType: () => 'tool',
+        tool_call_id: 'toolu_bdrk_01KasL9JjjkNha2wutiD9eDJ',
+        content: 'Tokyo: sunny, 25C',
+      } as any,
       'tool-id',
     );
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_TOOL_CALL_ID]).toBe('toolu_bdrk_01KasL9JjjkNha2wutiD9eDJ');
+  });
+
+  it('unwraps the ToolMessage content for gen_ai.tool.call.result', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleToolStart!(toolSerialized as any, '{"city":"Shanghai"}', 'tool-res');
+    // Modern LangChain wraps the tool return in a ToolMessage; the real answer
+    // lives in `content`, surrounded by transport noise that must be dropped.
+    await handler.handleToolEnd!(
+      {
+        lc: 1,
+        type: 'constructor',
+        id: ['langchain_core', 'messages', 'ToolMessage'],
+        _getType: () => 'tool',
+        status: 'success',
+        content: 'Shanghai: sunny, 25C, good for going outside',
+        tool_call_id: 'toolu_bdrk_016q1Thxcjjz',
+        name: 'get_weather',
+        artifact: { raw: 'do-not-emit' },
+        metadata: { versions: { '@langchain/core': '1.2.3' } },
+        additional_kwargs: {},
+        response_metadata: {},
+      } as any,
+      'tool-res',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    const result = span?.attributes[ATTR_TOOL_CALL_RESULT] as string;
+    expect(result).toBe(JSON.stringify('Shanghai: sunny, 25C, good for going outside'));
+    expect(result).not.toContain('kwargs');
+    expect(result).not.toContain('response_metadata');
+    expect(result).not.toContain('do-not-emit');
+  });
+
+  it('unwraps ToolMessage content-block arrays and keeps JSON results structured', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleToolStart!(toolSerialized as any, '{"q":"hi"}', 'tool-blocks');
+    await handler.handleToolEnd!(
+      {
+        _getType: () => 'tool',
+        tool_call_id: 'call-1',
+        content: [
+          { type: 'text', text: '{"temp":' },
+          { type: 'text', text: '25}' },
+        ],
+      } as any,
+      'tool-blocks',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    // Content blocks flatten to the JSON string, which serializes as structured JSON.
+    expect(JSON.parse(span?.attributes[ATTR_TOOL_CALL_RESULT] as string)).toEqual({ temp: 25 });
+  });
+
+  it('preserves mixed content blocks instead of dropping non-text parts', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleToolStart!(toolSerialized as any, '{"city":"Paris"}', 'tool-mixed');
+    // A multimodal ToolMessage: a text block alongside an image block. Flattening
+    // to text would silently discard the image, so the array is kept intact.
+    await handler.handleToolEnd!(
+      {
+        _getType: () => 'tool',
+        tool_call_id: 'call-mm',
+        content: [
+          { type: 'text', text: 'Here is the chart:' },
+          { type: 'image_url', image_url: { url: 'https://example.com/chart.png' } },
+        ],
+      } as any,
+      'tool-mixed',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    const result = JSON.parse(span?.attributes[ATTR_TOOL_CALL_RESULT] as string);
+    expect(result).toEqual([
+      { type: 'text', text: 'Here is the chart:' },
+      { type: 'image_url', image_url: { url: 'https://example.com/chart.png' } },
+    ]);
+  });
+
+  it('passes through a bare string result unchanged', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleToolStart!(toolSerialized as any, '{"q":"hi"}', 'tool-bare');
+    // Direct .invoke() (no tool call) path: the raw return value, not a ToolMessage.
+    await handler.handleToolEnd!('plain answer', 'tool-bare');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_CALL_RESULT]).toBe(JSON.stringify('plain answer'));
+    expect(span?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBe('{"q":"hi"}');
+  });
+
+  it('does not mistake a raw object result for a ToolMessage', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleToolStart!(toolSerialized as any, '{"q":"hi"}', 'tool-raw');
+    // A directly-invoked tool may return a plain object that happens to carry
+    // `content`/`tool_call_id` keys. Without a `_getType()` discriminator it must
+    // be recorded verbatim, not unwrapped to `content`.
+    await handler.handleToolEnd!(
+      { tool_call_id: 'not-a-message', content: 'inner', extra: 42 } as any,
+      'tool-raw',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    const result = JSON.parse(span?.attributes[ATTR_TOOL_CALL_RESULT] as string);
+    expect(result).toEqual({ tool_call_id: 'not-a-message', content: 'inner', extra: 42 });
   });
 
   it('leaves gen_ai.tool.call.id unset when tool-end has a bare string result', async () => {
@@ -338,7 +447,7 @@ describe('LangChain adapter — tool lifecycle', () => {
     // Tool span for the execution of that call; the ToolMessage carries the id.
     await handler.handleToolStart!(toolSerialized as any, '{"city":"Shanghai"}', 'tool-1');
     await handler.handleToolEnd!(
-      { tool_call_id: callId, content: 'Shanghai: sunny, 25C' } as any,
+      { _getType: () => 'tool', tool_call_id: callId, content: 'Shanghai: sunny, 25C' } as any,
       'tool-1',
     );
 
