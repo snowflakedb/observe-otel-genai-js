@@ -92,6 +92,8 @@ export const ATTR_INPUT_MESSAGES = 'gen_ai.input.messages';
 export const ATTR_OUTPUT_MESSAGES = 'gen_ai.output.messages';
 export const ATTR_SYSTEM_INSTRUCTIONS = 'gen_ai.system_instructions';
 
+export const ATTR_TOOL_DEFINITIONS = 'gen_ai.tool.definitions';
+
 // -----------------------------------------------------------------------------
 // `gen_ai.operation.name` values
 // -----------------------------------------------------------------------------

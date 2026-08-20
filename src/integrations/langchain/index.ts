@@ -34,6 +34,7 @@ import type { ChainValues } from '@langchain/core/utils/types';
 
 import type { Client } from '../../client.js';
 import type { ContentCaptureMode } from '../../content/capture.js';
+import type { ToolDefinition } from '../../models/generation.js';
 import {
   type Message,
   type Part,
@@ -185,6 +186,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       parentRunId,
       metadata,
       isStreaming(extraParams),
+      toolDefinitionsFromExtraParams(extraParams),
     );
   }
 
@@ -208,6 +210,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       parentRunId,
       metadata,
       isStreaming(extraParams),
+      toolDefinitionsFromExtraParams(extraParams),
     );
   }
 
@@ -218,6 +221,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     parentRunId?: string,
     metadata?: Record<string, unknown>,
     streaming = false,
+    tools?: ToolDefinition[],
   ): void {
     this.runParent.set(runId, parentRunId);
     const seed = {
@@ -230,6 +234,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       turnIndex: this.defaults.turnIndex,
       turnRole: this.defaults.turnRole,
       contentCapture: this.defaults.contentCapture,
+      tools,
       tags: this.defaults.tags,
       metadata: this.defaults.metadata,
     };
@@ -757,6 +762,70 @@ function firstGenerationMessage(output: LLMResult): unknown {
 function isStreaming(extraParams?: Record<string, unknown>): boolean {
   const invocation = extraParams?.invocation_params as Record<string, unknown> | undefined;
   return invocation?.stream === true || extraParams?.stream === true;
+}
+
+/**
+ * Extracts the bound tool list from `extraParams.invocation_params.tools` (where
+ * LangChain records the tools passed to `.bindTools(...)` at chat-model start)
+ * and normalizes each provider shape into a genai-otel `ToolDefinition`.
+ * Returns `undefined` when no tools were bound.
+ */
+function toolDefinitionsFromExtraParams(
+  extraParams?: Record<string, unknown>,
+): ToolDefinition[] | undefined {
+  const invocation = extraParams?.invocation_params as Record<string, unknown> | undefined;
+  const rawTools = invocation?.tools;
+  if (!Array.isArray(rawTools) || rawTools.length === 0) return undefined;
+
+  const defs: ToolDefinition[] = [];
+  for (const raw of rawTools) {
+    const def = normalizeToolDefinition(raw);
+    if (def) defs.push(def);
+  }
+  return defs.length > 0 ? defs : undefined;
+}
+
+/**
+ * Normalizes one provider-specific tool entry into `{ name, description?,
+ * inputSchemaJson? }`. Handles the three shapes LangChain forwards:
+ *   - OpenAI:    `{ type: 'function', function: { name, description, parameters } }`
+ *   - Anthropic: `{ name, description, input_schema }`
+ *   - already-normalized: `{ name, description, parameters }`
+ * The JSON schema is stored as a JSON string (`inputSchemaJson`); the content
+ * sink parses it back into `parameters` for the semconv shape.
+ */
+function normalizeToolDefinition(raw: unknown): ToolDefinition | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+
+  // OpenAI wraps the definition under `function`; other providers are flat.
+  const fn =
+    r.function && typeof r.function === 'object'
+      ? (r.function as Record<string, unknown>)
+      : undefined;
+  const src = fn ?? r;
+
+  const name = src.name;
+  if (typeof name !== 'string' || name.length === 0) return undefined;
+
+  const def: ToolDefinition = { name };
+
+  const description = src.description;
+  if (typeof description === 'string' && description.length > 0) def.description = description;
+
+  // `parameters` (OpenAI / normalized) or `input_schema` (Anthropic).
+  const schema = src.parameters ?? src.input_schema ?? src.inputSchema ?? src.schema;
+  if (schema != null) {
+    const encoded = lcJson(schema);
+    if (encoded != null) def.inputSchemaJson = encoded;
+  }
+
+  // The OTel schema requires `type`. OpenAI carries it at the top level
+  // (`type: 'function'`); Anthropic and bare/normalized tools don't, so default
+  // to the cross-provider function-tool type.
+  def.type = typeof r.type === 'string' && r.type.length > 0 ? r.type : 'function';
+
+  return def;
 }
 
 /** Extracts the raw provider stop reason from an `LLMResult`, or `undefined`. */

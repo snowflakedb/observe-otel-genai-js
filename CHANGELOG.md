@@ -7,6 +7,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- LangChain adapter: emit `gen_ai.tool.definitions` on `chat` spans from the
+  model's bound tools. `type` + `name` are always emitted; `description` /
+  `parameters` only under `full` content capture.
 - OpenTelemetry-native LangChain instrumentation (`LangChainInstrumentation`):
   register it via `registerInstrumentations(...)` and every chain / LLM / tool
   run is traced with no per-call wiring. CJS auto-patches zero-config (the hook

@@ -8,6 +8,7 @@ import {
   ATTR_INPUT_MESSAGES,
   ATTR_OUTPUT_MESSAGES,
   ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_DEFINITIONS,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
 
@@ -128,6 +129,136 @@ describe('content on span attributes', () => {
     expect(parsed[0].parts[0].content.length).toBeLessThan(500);
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBe(true);
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.original_size_bytes`]).toBeGreaterThan(500);
+  });
+
+  it('drops the parameters schema but keeps type, name and description when that fits', async () => {
+    // Tier 1: shed the large optional schema wholesale (never keyword-mutated)
+    // and keep the smaller description alongside the required type + name.
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      contentCapture: { ...defaultContentCapture(), maxContentLength: 120 },
+    });
+
+    const bigSchema = {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`field_${i}`, { type: 'string' }]),
+      ),
+    };
+    const rec = h.client.startGeneration({
+      model: { provider: 'p', name: 'm' },
+      tools: [
+        {
+          name: 'lookup',
+          type: 'function',
+          description: 'Look up a value',
+          inputSchemaJson: JSON.stringify(bigSchema),
+        },
+      ],
+    });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const raw = span!.attributes[ATTR_TOOL_DEFINITIONS] as string;
+    expect(raw.length).toBeLessThanOrEqual(120);
+
+    const parsed = JSON.parse(raw);
+    expect(parsed).toEqual([{ type: 'function', name: 'lookup', description: 'Look up a value' }]);
+    // The schema is dropped as a whole — no corrupted keywords leak through.
+    expect(raw).not.toContain('"type":"…"');
+    expect(raw).not.toContain('field_');
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.truncated`]).toBe(true);
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.original_size_bytes`]).toBeGreaterThan(120);
+  });
+
+  it('drops both schema and description down to type + name when neither fits', async () => {
+    // Tier 2: an oversized description is dropped wholesale (not trimmed in
+    // place), leaving the schema-required type + name.
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      contentCapture: { ...defaultContentCapture(), maxContentLength: 60 },
+    });
+
+    const rec = h.client.startGeneration({
+      model: { provider: 'p', name: 'm' },
+      tools: [
+        {
+          name: 'get_weather',
+          type: 'function',
+          description: 'D'.repeat(500),
+          inputSchemaJson: JSON.stringify({
+            type: 'object',
+            properties: { city: { type: 'string' } },
+          }),
+        },
+      ],
+    });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const raw = span!.attributes[ATTR_TOOL_DEFINITIONS] as string;
+    expect(raw.length).toBeLessThanOrEqual(60);
+    expect(JSON.parse(raw)).toEqual([{ type: 'function', name: 'get_weather' }]);
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.truncated`]).toBe(true);
+  });
+
+  it('drops whole definitions as a last resort, keeping the survivors valid', async () => {
+    // Tier 3: when even type + name for every tool overflows, drop whole
+    // definitions from the end; each survivor stays a valid { type, name }.
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      contentCapture: { ...defaultContentCapture(), maxContentLength: 45 },
+    });
+
+    const rec = h.client.startGeneration({
+      model: { provider: 'p', name: 'm' },
+      tools: [
+        { name: 'alpha', type: 'function' },
+        { name: 'bravo', type: 'function' },
+        { name: 'charlie', type: 'function' },
+      ],
+    });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const raw = span!.attributes[ATTR_TOOL_DEFINITIONS] as string;
+    expect(raw.length).toBeLessThanOrEqual(45);
+    const parsed = JSON.parse(raw);
+    expect(parsed.length).toBeGreaterThanOrEqual(1);
+    expect(parsed.length).toBeLessThan(3);
+    for (const d of parsed) {
+      expect(d.type).toBe('function');
+      expect(typeof d.name).toBe('string');
+    }
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.truncated`]).toBe(true);
+  });
+
+  it('omits gen_ai.tool.definitions entirely when even an empty array exceeds the cap', async () => {
+    // A cap of 1 cannot hold "[]" (2 chars); the attribute must be omitted
+    // rather than emitting a value over the documented maximum.
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      contentCapture: { ...defaultContentCapture(), maxContentLength: 1 },
+    });
+
+    const rec = h.client.startGeneration({
+      model: { provider: 'p', name: 'm' },
+      tools: [{ name: 'get_weather', type: 'function', description: 'D'.repeat(50) }],
+    });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span!.attributes[ATTR_TOOL_DEFINITIONS]).toBeUndefined();
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.truncated`]).toBeUndefined();
+    expect(span!.attributes[`${ATTR_TOOL_DEFINITIONS}.original_size_bytes`]).toBeUndefined();
   });
 
   it('strips all content under metadata_only', async () => {

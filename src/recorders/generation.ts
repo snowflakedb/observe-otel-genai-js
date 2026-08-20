@@ -102,7 +102,7 @@ export class GenerationRecorder extends RecorderBase {
 
     // 3. Emit content as structured span attributes.
     if (!stripped && captureConfig.enabled) {
-      emitGenerationContent(this.span, generation, captureConfig);
+      emitGenerationContent(this.span, generation, captureConfig, mode);
     } else if (stripped) {
       // Strip user-facing content from the merged payload so the attribute
       // application below does not leak the conversation title onto the span.
