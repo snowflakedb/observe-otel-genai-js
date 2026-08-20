@@ -121,6 +121,76 @@ describe('LangChain adapter — LLM lifecycle', () => {
     expect(output[0].parts[0].content).toBe('hello');
   });
 
+  it('reads the provider stop_reason from message.response_metadata (LangChain 1.x)', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-tooluse');
+    // LangChain 1.x leaves generationInfo null; the real reason for a
+    // tool-calling turn lives on the message's response_metadata.
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [
+            {
+              text: '',
+              generationInfo: null,
+              message: {
+                _getType: () => 'ai',
+                content: 'calling a tool',
+                response_metadata: { stop_reason: 'tool_use', model: 'claude-opus-4-8' },
+              },
+            } as any,
+          ],
+        ],
+        llmOutput: { stop_reason: 'tool_use' },
+      },
+      'run-tooluse',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['tool_use']);
+    const output = JSON.parse(span!.attributes[ATTR_OUTPUT_MESSAGES] as string);
+    expect(output[0].finish_reason).toBe('tool_use');
+  });
+
+  it('falls back to llmOutput.stop_reason when the message carries no reason', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-llmout');
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [{ text: 'done', message: { _getType: () => 'ai', content: 'done' } } as any],
+        ],
+        llmOutput: { stop_reason: 'max_tokens' },
+      },
+      'run-llmout',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['max_tokens']);
+    const output = JSON.parse(span!.attributes[ATTR_OUTPUT_MESSAGES] as string);
+    expect(output[0].finish_reason).toBe('max_tokens');
+  });
+
+  it('defaults the output-message finish_reason to stop when no provider reason is available', async () => {
+    // The response-level `gen_ai.response.finish_reasons` reflects only a real
+    // provider reason (omitted here), but the required per-message `finish_reason`
+    // defaults to `stop`.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-noreason');
+    await handler.handleLLMEnd!(
+      {
+        generations: [[{ text: 'hi', message: { _getType: () => 'ai', content: 'hi' } } as any]],
+        llmOutput: { tokenUsage: { prompt_tokens: 1, completion_tokens: 1 } },
+      },
+      'run-noreason',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['gen_ai.response.finish_reasons']).toBeUndefined();
+    const output = JSON.parse(span!.attributes[ATTR_OUTPUT_MESSAGES] as string);
+    expect(output[0].finish_reason).toBe('stop');
+  });
+
   it('captures TTFT on first non-empty token', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleLLMStart!(llmSerialized as any, ['hi'], 'run-stream');

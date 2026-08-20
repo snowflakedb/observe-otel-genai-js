@@ -693,11 +693,34 @@ function mapLangChainUsage(llmOutput: unknown) {
   };
 }
 
+/** Extracts the raw provider stop reason from an `LLMResult`, or `undefined`. */
 function extractStopReason(output: LLMResult): string | undefined {
-  const gens = output.generations?.[0];
-  if (!gens || gens.length === 0) return undefined;
-  const first = gens[0] as { generationInfo?: { finishReason?: string; finish_reason?: string } };
-  return first.generationInfo?.finishReason ?? first.generationInfo?.finish_reason;
+  const first = output.generations?.[0]?.[0] as
+    | {
+        generationInfo?: { finishReason?: string; finish_reason?: string } | null;
+        message?: { response_metadata?: { stop_reason?: unknown; finish_reason?: unknown } | null };
+      }
+    | undefined;
+
+  const genInfo = first?.generationInfo;
+  if (genInfo) {
+    const fromGenInfo = genInfo.finishReason ?? genInfo.finish_reason;
+    if (typeof fromGenInfo === 'string' && fromGenInfo.length > 0) return fromGenInfo;
+  }
+
+  const meta = first?.message?.response_metadata;
+  if (meta) {
+    const fromMeta = meta.stop_reason ?? meta.finish_reason;
+    if (typeof fromMeta === 'string' && fromMeta.length > 0) return fromMeta;
+  }
+
+  const llmOut = output.llmOutput as { stop_reason?: unknown; finish_reason?: unknown } | undefined;
+  if (llmOut) {
+    const fromLlmOut = llmOut.stop_reason ?? llmOut.finish_reason;
+    if (typeof fromLlmOut === 'string' && fromLlmOut.length > 0) return fromLlmOut;
+  }
+
+  return undefined;
 }
 
 function extractResponseId(output: LLMResult): string | undefined {
