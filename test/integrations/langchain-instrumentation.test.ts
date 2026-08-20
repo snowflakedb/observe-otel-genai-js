@@ -18,7 +18,12 @@ import { RunnableLambda } from '@langchain/core/runnables';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { LangChainInstrumentation } from '../../src/integrations/langchain/instrumentation.js';
-import { ATTR_AGENT_NAME, ATTR_OPERATION_NAME, OP_INVOKE_AGENT } from '../../src/semconv.js';
+import {
+  ATTR_AGENT_NAME,
+  ATTR_CONVERSATION_ID,
+  ATTR_OPERATION_NAME,
+  OP_INVOKE_AGENT,
+} from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
 /**
@@ -68,6 +73,49 @@ describe('LangChainInstrumentation — auto-injection', () => {
       const spans = invokeAgentSpans(h);
       expect(spans).toHaveLength(1);
       expect(spans[0]?.attributes[ATTR_AGENT_NAME]).toBe('auto-agent');
+    } finally {
+      unpatch();
+    }
+  });
+
+  it('sets gen_ai.conversation.id on the auto-patched invoke_agent root from thread_id', async () => {
+    // Regression: with no callbacks passed, LangChain's
+    // `_configureSync` returns no manager for the root run and drops the
+    // metadata it was handed. The wrapper fabricates a manager, so without the
+    // fix the root `invoke_agent` span has no conversation id even though its
+    // children (whose managers LangChain builds normally) do. `thread_id`
+    // arrives via `configurable`, which LangChain promotes into run metadata —
+    // the same shape a LangGraph checkpointer produces.
+    const instr = new LangChainInstrumentation({ client: h.client, enabled: false });
+    const unpatch = patchLangChain(instr);
+    try {
+      const echo = RunnableLambda.from((x: unknown) => x);
+      await echo.invoke({ q: 'hello' }, { configurable: { thread_id: 'conv-auto-1' } });
+      await awaitAllCallbacks();
+      await instr.handler.dispose();
+
+      const spans = invokeAgentSpans(h);
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.attributes[ATTR_CONVERSATION_ID]).toBe('conv-auto-1');
+    } finally {
+      unpatch();
+    }
+  });
+
+  it('sets gen_ai.conversation.id on the auto-patched root from explicit metadata', async () => {
+    // Same fabricated-manager path, but `thread_id` supplied directly as run
+    // metadata rather than promoted from `configurable`.
+    const instr = new LangChainInstrumentation({ client: h.client, enabled: false });
+    const unpatch = patchLangChain(instr);
+    try {
+      const echo = RunnableLambda.from((x: unknown) => x);
+      await echo.invoke({ q: 'hello' }, { metadata: { thread_id: 'conv-auto-2' } });
+      await awaitAllCallbacks();
+      await instr.handler.dispose();
+
+      const spans = invokeAgentSpans(h);
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.attributes[ATTR_CONVERSATION_ID]).toBe('conv-auto-2');
     } finally {
       unpatch();
     }

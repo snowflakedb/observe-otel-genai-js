@@ -26,6 +26,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replacing the previous 20/22 matrix.
 
 ### Fixed
+- LangChain instrumentation: set `gen_ai.conversation.id` on the auto-patched
+  `invoke_agent` root span. With no callbacks passed, `_configureSync` builds no
+  manager and drops its metadata, so the fabricated fallback lost the run's
+  `thread_id` while child spans kept it; the metadata is now replayed onto it.
 - LangChain adapter: nest child spans under the agent trace. Each LLM / tool /
   chain recorder opened its own root span, so one agent run produced N
   disconnected single-span traces; a run now emits one connected trace

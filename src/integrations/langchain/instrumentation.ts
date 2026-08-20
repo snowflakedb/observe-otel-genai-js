@@ -86,6 +86,8 @@ export interface LangChainInstrumentationConfig
 interface LangChainCallbackManager {
   handlers?: Array<{ name?: string }>;
   addHandler(handler: unknown, inherit?: boolean): void;
+  /** Optional to degrade gracefully if a future `@langchain/core` renames it. */
+  addMetadata?(metadata: Record<string, unknown>, inherit?: boolean): void;
 }
 
 /** Minimal shape of the `CallbackManager` class (constructor + static). */
@@ -216,7 +218,16 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
           // returned nothing (no user callbacks, no tracing), build a manager so
           // telemetry is still emitted.
           const ManagerClass = this as CallbackManagerClass;
-          const manager: LangChainCallbackManager = base ?? new ManagerClass();
+          let manager: LangChainCallbackManager;
+          if (base) {
+            manager = base;
+          } else {
+            // `_configureSync` drops the metadata args when it builds no
+            // manager, so our fabricated one starts empty and the root run
+            // can't resolve `thread_id`. Replay the merge.
+            manager = new ManagerClass();
+            applyConfigureMetadata(manager, args);
+          }
           const already = manager.handlers?.some((h) => h?.name === handler.name);
           if (!already) manager.addHandler(handler, true);
           return manager;
@@ -289,4 +300,23 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
       }
     }
   }
+}
+
+/**
+ * Merges `_configureSync`'s metadata args (`inheritableMetadata` = `args[4]`,
+ * `localMetadata` = `args[5]`) onto a manager we fabricated, mirroring its own
+ * final step. These carry `configurable.thread_id`, which the handler reads as
+ * `gen_ai.conversation.id`. Best-effort: no-ops on non-records or if the
+ * manager lacks `addMetadata`.
+ */
+function applyConfigureMetadata(manager: LangChainCallbackManager, args: unknown[]): void {
+  if (typeof manager.addMetadata !== 'function') return;
+  const inheritableMetadata = args[4];
+  const localMetadata = args[5];
+  if (isPlainRecord(inheritableMetadata)) manager.addMetadata(inheritableMetadata, true);
+  if (isPlainRecord(localMetadata)) manager.addMetadata(localMetadata, false);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
