@@ -7,6 +7,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- LangChain adapter: emit `gen_ai.response.model` on `chat` spans — the model
+  that served the call, which can be more specific than the requested one (ask
+  for `gpt-4o`, get `gpt-4o-2024-11-20`). `gen_ai.request.model` still reports
+  what you asked for.
 - LangChain adapter: map prompt-cache token counts onto `chat` spans as
   `gen_ai.usage.cache_read.input_tokens` and
   `gen_ai.usage.cache_creation.input_tokens`, whenever the provider reports them.
@@ -26,6 +30,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   then `thread_id`.
 
 ### Changed
+- **LangChain adapter: `gen_ai.provider.name` now emits the semconv well-known
+  values.** `google` → `gcp.vertex_ai` / `gcp.gemini` / `gcp.gen_ai`,
+  `aws-bedrock` → `aws.bedrock`, `mistralai` → `mistral_ai`. Classes that
+  previously reported their own name, `AzureChatOpenAI`,
+  `ChatGoogleGenerativeAI` and `ChatBedrockConverse` among them, now map too.
 - Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
   Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream
   security patches. CI now tests Node 22 (Maintenance LTS) and 24 (Active LTS),
