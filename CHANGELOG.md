@@ -7,6 +7,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- LangChain adapter: map prompt-cache token counts onto `chat` spans as
+  `gen_ai.usage.cache_read.input_tokens` and
+  `gen_ai.usage.cache_creation.input_tokens`, whenever the provider reports them.
 - LangChain adapter: emit `gen_ai.tool.definitions` on `chat` spans from the
   model's bound tools. `type` + `name` are always emitted; `description` /
   `parameters` only under `full` content capture.
