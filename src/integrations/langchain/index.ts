@@ -17,6 +17,9 @@
  *  - `handleToolEnd`   → `recorder.setResult({ result })` + `recorder.end()`.
  *  - `handleToolError` → `recorder.setExecError(err)` + `recorder.end()`.
  *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` lifecycle.
+ *  - `handleRetrieverStart`/`End`/`Error` → no span yet (no retrieval recorder);
+ *                        records the run-tree edge so descendant spans still
+ *                        parent under the agent.
  *
  * Use:
  *   const handler = new GenAIOtelCallbackHandler({ client });
@@ -98,13 +101,62 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   private readonly toolRunMap = new Map<string, ToolExecutionRecorder>();
   private readonly chainRunMap = new Map<string, AgentInvocationRecorder>();
 
+  /** runId → parentRunId for the whole run tree, including suppressed chains, so
+   *  nearestRecorder can walk up to the closest run that owns a span. */
+  private readonly runParent = new Map<string, string | undefined>();
+
   constructor(options: GenAIOtelCallbackHandlerOptions) {
-    super();
+    // Run callbacks inline in the caller's async context instead of on
+    // LangChain's shared background queue, so concurrent runs don't leak each
+    // other's AsyncLocalStorage / OpenTelemetry context (parent trace,
+    // ambient conversationId).
+    super({ _awaitHandler: true });
     this.client = options.client;
     const { client: _c, captureChains, captureNestedChains, ...rest } = options;
     this.defaults = rest;
     this.captureChains = captureChains !== false;
     this.captureNestedChains = captureNestedChains === true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Span nesting: attach each child recorder's span under the nearest ancestor
+  // ---------------------------------------------------------------------------
+
+  /** The recorder owning this run's span, if any (LLM / tool / chain). */
+  private recorderForRun(runId: string): { withActiveContext<T>(fn: () => T): T } | undefined {
+    const llm = this.llmRunMap.get(runId);
+    if (llm) return llm.rec;
+    return this.toolRunMap.get(runId) ?? this.chainRunMap.get(runId);
+  }
+
+  /** Walk parentRunId up the run tree to the nearest run that owns a span. */
+  private nearestRecorder(
+    runId: string | undefined,
+  ): { withActiveContext<T>(fn: () => T): T } | undefined {
+    let cur = runId;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const rec = this.recorderForRun(cur);
+      if (rec) return rec;
+      cur = this.runParent.get(cur);
+    }
+    return undefined;
+  }
+
+  /** Run `start` with the nearest ancestor span active, so the span it creates
+   *  parents under it. No ancestor: ambient context (a new root). */
+  private nested<T>(parentRunId: string | undefined, start: () => T): T {
+    const anc = this.nearestRecorder(parentRunId);
+    return anc ? anc.withActiveContext(start) : start();
+  }
+
+  /** `gen_ai.conversation.id`: handler `conversationId`, else the run's
+   *  `thread_id` (from `configurable.thread_id` via a checkpointer). */
+  private conversationId(metadata?: Record<string, unknown>): string | undefined {
+    if (this.defaults.conversationId) return this.defaults.conversationId;
+    const t = metadata?.thread_id;
+    return typeof t === 'string' && t.length > 0 ? t : undefined;
   }
 
   // ---------------------------------------------------------------------------
@@ -115,8 +167,10 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     llm: Serialized,
     prompts: string[],
     runId: string,
-    _parentRunId?: string,
+    parentRunId?: string,
     extraParams?: Record<string, unknown>,
+    _tags?: string[],
+    metadata?: Record<string, unknown>,
   ): Promise<void> {
     // Raw string-completion path (also the fallback LangChain uses for chat
     // models when a handler has no `handleChatModelStart`). Each prompt becomes
@@ -124,37 +178,48 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     const input = prompts
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => userTextMessage(p));
-    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId);
+    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId, parentRunId, metadata);
   }
 
   override async handleChatModelStart(
     llm: Serialized,
     messages: BaseMessage[][],
     runId: string,
-    _parentRunId?: string,
+    parentRunId?: string,
     extraParams?: Record<string, unknown>,
+    _tags?: string[],
+    metadata?: Record<string, unknown>,
   ): Promise<void> {
     // Chat-model path: structured messages with real roles. System messages are
     // part of the provided chat history, so they map to input.messages (role
     // `system`) rather than to gen_ai.system_instructions.
     const input = mapBaseMessages(messages[0] ?? []);
-    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId);
+    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId, parentRunId, metadata);
   }
 
-  private openGeneration(model: ModelHint, input: Message[], runId: string): void {
-    const rec = this.client.startGeneration({
-      model,
-      agentName: this.defaults.agentName,
-      agentVersion: this.defaults.agentVersion,
-      conversationId: this.defaults.conversationId,
-      conversationTitle: this.defaults.conversationTitle,
-      userId: this.defaults.userId,
-      turnIndex: this.defaults.turnIndex,
-      turnRole: this.defaults.turnRole,
-      contentCapture: this.defaults.contentCapture,
-      tags: this.defaults.tags,
-      metadata: this.defaults.metadata,
-    });
+  private openGeneration(
+    model: ModelHint,
+    input: Message[],
+    runId: string,
+    parentRunId?: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    this.runParent.set(runId, parentRunId);
+    const rec = this.nested(parentRunId, () =>
+      this.client.startGeneration({
+        model,
+        agentName: this.defaults.agentName,
+        agentVersion: this.defaults.agentVersion,
+        conversationId: this.conversationId(metadata),
+        conversationTitle: this.defaults.conversationTitle,
+        userId: this.defaults.userId,
+        turnIndex: this.defaults.turnIndex,
+        turnRole: this.defaults.turnRole,
+        contentCapture: this.defaults.contentCapture,
+        tags: this.defaults.tags,
+        metadata: this.defaults.metadata,
+      }),
+    );
     if (input.length > 0) rec.setResult({ input });
     this.llmRunMap.set(runId, { rec, firstTokenSeen: false });
   }
@@ -168,6 +233,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const entry = this.llmRunMap.get(runId);
     if (!entry) return;
     this.llmRunMap.delete(runId);
@@ -181,6 +247,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   override async handleLLMError(err: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const entry = this.llmRunMap.get(runId);
     if (!entry) return;
     this.llmRunMap.delete(runId);
@@ -192,19 +259,30 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   // Tool lifecycle
   // ---------------------------------------------------------------------------
 
-  override async handleToolStart(tool: Serialized, input: string, runId: string): Promise<void> {
-    const rec = this.client.startToolExecution({
-      toolName: toolNameFromSerialized(tool),
-      agentName: this.defaults.agentName,
-      agentVersion: this.defaults.agentVersion,
-      conversationId: this.defaults.conversationId,
-      contentCapture: this.defaults.contentCapture,
-    });
+  override async handleToolStart(
+    tool: Serialized,
+    input: string,
+    runId: string,
+    parentRunId?: string,
+    _tags?: string[],
+    metadata?: Record<string, unknown>,
+  ): Promise<void> {
+    this.runParent.set(runId, parentRunId);
+    const rec = this.nested(parentRunId, () =>
+      this.client.startToolExecution({
+        toolName: toolNameFromSerialized(tool),
+        agentName: this.defaults.agentName,
+        agentVersion: this.defaults.agentVersion,
+        conversationId: this.conversationId(metadata),
+        contentCapture: this.defaults.contentCapture,
+      }),
+    );
     rec.setResult({ arguments: input });
     this.toolRunMap.set(runId, rec);
   }
 
   override async handleToolEnd(output: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const rec = this.toolRunMap.get(runId);
     if (!rec) return;
     this.toolRunMap.delete(runId);
@@ -213,6 +291,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   override async handleToolError(err: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const rec = this.toolRunMap.get(runId);
     if (!rec) return;
     this.toolRunMap.delete(runId);
@@ -226,33 +305,42 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
 
   override async handleChainStart(
     chain: Serialized,
-    _inputs: ChainValues,
+    inputs: ChainValues,
     runId: string,
     parentRunId?: string,
     _tags?: string[],
-    _metadata?: Record<string, unknown>,
+    metadata?: Record<string, unknown>,
     _runType?: string,
     runName?: string,
   ): Promise<void> {
-    // Top-level chains always become invoke_agent spans. Nested chains only
-    // become spans when `captureNestedChains` is true (off by default to keep
-    // traces focused on the outermost agent boundary).
+    // Record every chain run, including suppressed ones, so descendant spans
+    // can walk up to a real ancestor (see nearestRecorder).
+    this.runParent.set(runId, parentRunId);
+
+    // Top-level chains become invoke_agent spans. Nested chains only do so when
+    // captureNestedChains is on (off by default, to keep the trace at the
+    // outer agent boundary).
     if (!this.captureChains) return;
     if (parentRunId && !this.captureNestedChains) return;
 
-    const rec = this.client.invokeAgent({
-      agentName:
-        this.defaults.agentName ?? runName ?? toolNameFromSerialized(chain) ?? 'langchain-chain',
-      agentVersion: this.defaults.agentVersion,
-      conversationId: this.defaults.conversationId,
-      userId: this.defaults.userId,
-      tags: this.defaults.tags,
-      metadata: this.defaults.metadata,
-    });
+    const rec = this.nested(parentRunId, () =>
+      this.client.invokeAgent({
+        agentName:
+          this.defaults.agentName ?? runName ?? toolNameFromSerialized(chain) ?? 'langchain-chain',
+        agentVersion: this.defaults.agentVersion,
+        input: chainInputToMessages(inputs),
+        conversationId: this.conversationId(metadata),
+        userId: this.defaults.userId,
+        contentCapture: this.defaults.contentCapture,
+        tags: this.defaults.tags,
+        metadata: this.defaults.metadata,
+      }),
+    );
     this.chainRunMap.set(runId, rec);
   }
 
   override async handleChainEnd(output: ChainValues, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const rec = this.chainRunMap.get(runId);
     if (!rec) return;
     this.chainRunMap.delete(runId);
@@ -261,11 +349,38 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   override async handleChainError(err: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
     const rec = this.chainRunMap.get(runId);
     if (!rec) return;
     this.chainRunMap.delete(runId);
     rec.setError(err);
     await safeEnd(rec);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retriever lifecycle (run-tree topology only — no span)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * No span is emitted for retrievers yet. The run is still tracked in the
+   * run tree so that `nearestRecorder` can walk up through it to the real
+   * ancestor span rather than starting a new root trace.
+   */
+  override async handleRetrieverStart(
+    _retriever: Serialized,
+    _query: string,
+    runId: string,
+    parentRunId?: string,
+  ): Promise<void> {
+    this.runParent.set(runId, parentRunId);
+  }
+
+  override async handleRetrieverEnd(_documents: unknown[], runId: string): Promise<void> {
+    this.runParent.delete(runId);
+  }
+
+  override async handleRetrieverError(_err: unknown, runId: string): Promise<void> {
+    this.runParent.delete(runId);
   }
 
   /**
@@ -291,6 +406,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       await safeEnd(rec);
     }
     this.chainRunMap.clear();
+    this.runParent.clear();
   }
 }
 
@@ -309,6 +425,39 @@ async function safeEnd(rec: { end(): Promise<void> }): Promise<void> {
   } catch {
     /* ignore — instrumentation must not break the user's chain */
   }
+}
+
+/**
+ * Converts a LangChain chain input into `gen_ai.input.messages`.
+ *
+ * A `messages` array (LangGraph et al.) uses the `BaseMessage` mapping; a
+ * string, or a string `input`/`question`/`text` field, becomes one user
+ * message; any other shape is JSON-encoded. Empty input returns `[]`.
+ */
+function chainInputToMessages(inputs: ChainValues | undefined): Message[] {
+  if (inputs == null) return [];
+  if (typeof inputs === 'string') return inputs === '' ? [] : [userTextMessage(inputs)];
+  if (typeof inputs !== 'object') return [];
+
+  const rec = inputs as Record<string, unknown>;
+  if (Array.isArray(rec.messages)) {
+    const mapped = mapBaseMessages(rec.messages);
+    if (mapped.length > 0) return mapped;
+  }
+
+  const candidate = rec.input ?? rec.question ?? rec.text;
+  if (typeof candidate === 'string') return candidate === '' ? [] : [userTextMessage(candidate)];
+
+  // Nothing recognizable: fall back to the whole payload, but don't emit a
+  // message for an empty one (`{}` / `[]` is noise, not input).
+  if (Object.keys(rec).length === 0) return [];
+  let text: string;
+  try {
+    text = JSON.stringify(inputs);
+  } catch {
+    return [];
+  }
+  return text === '' ? [] : [userTextMessage(text)];
 }
 
 /**
