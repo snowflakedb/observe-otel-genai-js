@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- LangChain adapter: map a LangGraph `messages` output on the `invoke_agent`
+  span's `gen_ai.output.messages` instead of JSON-serializing the whole graph
+  state. The final state's `messages` array was dumped verbatim — a blob of
+  serialized `BaseMessage`s that also duplicated the input — so only the last
+  message (the agent's answer) is now kept.
+
 ### Changed
 - Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
   Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream
