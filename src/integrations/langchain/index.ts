@@ -460,7 +460,7 @@ function chainInputToMessages(inputs: ChainValues | undefined): Message[] {
   return text === '' ? [] : [userTextMessage(text)];
 }
 
-
+/**
  * Converts a LangChain chain output into `gen_ai.output.messages`.
  *
  * A `messages` array (LangGraph et al.) returns the whole conversation, so we
