@@ -34,6 +34,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which previously showed output but no input. A `messages` array (LangGraph)
   uses the `BaseMessage` mapping, a string or a string `input` / `question` /
   `text` field becomes one user message, and any other shape is JSON-encoded.
+- LangChain adapter: map a LangGraph `messages` output on the `invoke_agent`
+  span's `gen_ai.output.messages` instead of JSON-serializing the whole graph
+  state. The final state's `messages` array was dumped verbatim — a blob of
+  serialized `BaseMessage`s that also duplicated the input — so only the last
+  message (the agent's answer) is now kept.
 
 ## [0.3.0] - 2026-07-15
 
