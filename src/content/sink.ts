@@ -18,7 +18,7 @@ import type { Span } from '@opentelemetry/api';
 import type { Generation } from '../models/generation.js';
 import type { Message } from '../models/message.js';
 import { ATTR_INPUT_MESSAGES, ATTR_OUTPUT_MESSAGES, ATTR_SYSTEM_INSTRUCTIONS } from '../semconv.js';
-import { type ContentCapture, isContentCapped } from './capture.js';
+import { type ContentCapture, type ContentCaptureMode, isContentCapped } from './capture.js';
 import {
   resolveFinishReason,
   toSemconvInputMessages,
@@ -61,16 +61,63 @@ export function emitAgentContent(
   capture: ContentCapture,
   stopReason: string | undefined,
   hadError: boolean,
+  mode: ContentCaptureMode,
 ): void {
   if (!capture.enabled) return;
 
-  const inputMessages = toSemconvInputMessages(input);
-  const outputMessages = toSemconvOutputMessages(output, resolveFinishReason(stopReason, hadError));
+  // Under `no_tool_content` the agent span mixes plain prompt/completion text
+  // (kept) with tool_call / tool_result parts (stripped). The sibling
+  // execute_tool span already withholds these, so sanitize here too — keeping
+  // tool names/ids for topology while clearing the payloads.
+  const sanitizedInput = mode === 'no_tool_content' ? stripToolContent(input) : input;
+  const sanitizedOutput = mode === 'no_tool_content' ? stripToolContent(output) : output;
+
+  const inputMessages = toSemconvInputMessages(sanitizedInput);
+  const outputMessages = toSemconvOutputMessages(
+    sanitizedOutput,
+    resolveFinishReason(stopReason, hadError),
+  );
 
   if (inputMessages.length > 0)
     applyStructuredAttribute(span, ATTR_INPUT_MESSAGES, inputMessages, capture);
   if (outputMessages.length > 0)
     applyStructuredAttribute(span, ATTR_OUTPUT_MESSAGES, outputMessages, capture);
+}
+
+/**
+ * Returns a deep copy of `messages` with tool payloads cleared for the
+ * `no_tool_content` policy: `toolCall.inputJson`, `toolResult.content`, and
+ * `toolResult.contentJson` are removed while tool names/ids and the surrounding
+ * message structure (roles, plain text, thinking) are preserved. The input is
+ * never mutated, since it belongs to the caller.
+ */
+function stripToolContent(
+  messages: readonly Message[] | undefined,
+): readonly Message[] | undefined {
+  if (!messages || messages.length === 0) return messages;
+  if (!messages.some(hasToolContent)) return messages;
+
+  const cloned = structuredClone(messages) as Message[];
+  for (const message of cloned) {
+    for (const part of message.parts) {
+      if (part.toolCall) part.toolCall.inputJson = undefined;
+      if (part.toolResult) {
+        part.toolResult.content = undefined;
+        part.toolResult.contentJson = undefined;
+      }
+    }
+  }
+  return cloned;
+}
+
+/** True when any part carries a tool argument or tool result payload. */
+function hasToolContent(message: Message): boolean {
+  return message.parts.some(
+    (part) =>
+      part.toolCall?.inputJson != null ||
+      part.toolResult?.content != null ||
+      part.toolResult?.contentJson != null,
+  );
 }
 
 /**

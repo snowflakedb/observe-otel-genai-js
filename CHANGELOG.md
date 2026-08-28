@@ -13,12 +13,38 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   targets `@langchain/core/dist/callbacks/manager.cjs`, leaving the ESM module
   graph untouched); ESM apps call `manuallyInstrument(...)`. Supports
   `@langchain/core` `>=0.3.0 <2` (peer dep `^0.3.0 || ^1.0.0`).
+- LangChain adapter: map LangGraph's `thread_id` (from `config.configurable`) to
+  `gen_ai.conversation.id` on every span in the run, so the turns of a
+  multi-turn or checkpointed graph share one id. A user-provided id wins:
+  precedence is the handler `conversationId`, then `withConversationId(...)`,
+  then `thread_id`.
 
 ### Changed
 - Minimum supported Node.js is now 22 (`engines.node: ">=22"`, was `">=20"`).
   Node 20 reached end-of-life on 2026-04-30 and no longer receives upstream
   security patches. CI now tests Node 22 (Maintenance LTS) and 24 (Active LTS),
   replacing the previous 20/22 matrix.
+
+### Fixed
+- LangChain adapter: nest child spans under the agent trace. Each LLM / tool /
+  chain recorder opened its own root span, so one agent run produced N
+  disconnected single-span traces; a run now emits one connected trace
+  (`invoke_agent` → `chat` / `execute_tool`).
+- LangChain adapter: keep retriever runs in the run tree. Retrievers emit no
+  span (no retrieval recorder yet), and without their `runId` recorded, a RAG
+  chain's LLM call dead-ended the ancestor walk and started a new root trace.
+  `handleRetrieverStart` / `End` / `Error` now record the parent edge so the
+  trace stays connected (though an LLM call inside a retriever parents under
+  `invoke_agent`, not a retrieval span).
+- LangChain adapter: emit `gen_ai.input.messages` on the `invoke_agent` span,
+  which previously showed output but no input. A `messages` array (LangGraph)
+  uses the `BaseMessage` mapping, a string or a string `input` / `question` /
+  `text` field becomes one user message, and any other shape is JSON-encoded.
+- LangChain adapter: map a LangGraph `messages` output on the `invoke_agent`
+  span's `gen_ai.output.messages` instead of JSON-serializing the whole graph
+  state. The final state's `messages` array was dumped verbatim — a blob of
+  serialized `BaseMessage`s that also duplicated the input — so only the last
+  message (the agent's answer) is now kept.
 
 ## [0.3.0] - 2026-07-15
 

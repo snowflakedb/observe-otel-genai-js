@@ -232,7 +232,13 @@ export class Client implements RecorderHostContext {
         links,
       });
       applyAgentAttributes(span, seed);
-      return new AgentInvocationRecorder(this, span, seed, startedAtMs, 'default');
+      return new AgentInvocationRecorder(
+        this,
+        span,
+        seed,
+        startedAtMs,
+        seed.contentCapture ?? 'default',
+      );
     }
 
     // Callback variant: use startActiveSpan so children parent correctly.
@@ -243,7 +249,13 @@ export class Client implements RecorderHostContext {
           { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs), links },
           async (span: Span) => {
             applyAgentAttributes(span, seed);
-            const recorder = new AgentInvocationRecorder(this, span, seed, startedAtMs, 'default');
+            const recorder = new AgentInvocationRecorder(
+              this,
+              span,
+              seed,
+              startedAtMs,
+              seed.contentCapture ?? 'default',
+            );
             try {
               const out = await fn(recorder);
               await recorder.end();

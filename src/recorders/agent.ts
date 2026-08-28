@@ -90,6 +90,7 @@ export class AgentInvocationRecorder extends RecorderBase {
         captureConfig,
         this.stopReason,
         this.callError != null,
+        mode,
       );
     }
 

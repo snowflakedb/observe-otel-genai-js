@@ -1,3 +1,4 @@
+import type { ContentCaptureMode } from '../content/capture.js';
 import type { ParentGenerationRef } from './generation.js';
 import type { Message } from './message.js';
 
@@ -25,6 +26,7 @@ export interface AgentInvocationStart {
   parentGenerationIds?: ParentGenerationRef[];
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
+  contentCapture?: ContentCaptureMode;
   startedAt?: Date | number;
 }
 
