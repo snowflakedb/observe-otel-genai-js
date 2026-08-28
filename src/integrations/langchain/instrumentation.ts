@@ -104,6 +104,8 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
    * never shut down by us — its owner is responsible for that.
    */
   private ownedClient?: Client;
+  /** Modules patched via {@link manuallyInstrument}; OTel's hook never saw them, so {@link disable} unpatches them itself. */
+  private readonly manualModules = new Set<CallbackManagerModuleExports>();
 
   constructor(config: LangChainInstrumentationConfig = {}) {
     super('@genai-otel/instrumentation-langchain', VERSION, config);
@@ -140,11 +142,13 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
    *   import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
    *   instrumentation.manuallyInstrument(CallbackManagerModule);
    *
-   * Idempotent: a module that's already patched is left as-is.
+   * Idempotent: re-patching an already-patched module is a no-op.
    */
   manuallyInstrument(moduleExports: { CallbackManager?: unknown }): void {
     this._diag.debug('manually instrumenting @langchain/core CallbackManager');
-    this.patchCallbackManager(moduleExports as CallbackManagerModuleExports);
+    const exports = moduleExports as CallbackManagerModuleExports;
+    this.patchCallbackManager(exports);
+    this.manualModules.add(exports);
   }
 
   private getHandler(): GenAIOtelCallbackHandler {
@@ -237,6 +241,9 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
    */
   override disable(): void {
     super.disable();
+    // OTel only unpatches modules its hook saw (CJS); undo our manual (ESM) ones.
+    for (const mod of this.manualModules) this.unpatchCallbackManager(mod);
+    this.manualModules.clear();
     if (this.handlerInstance) {
       this.handlerInstance
         .dispose()

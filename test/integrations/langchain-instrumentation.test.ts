@@ -165,4 +165,19 @@ describe('LangChainInstrumentation — manuallyInstrument (ESM entry point)', ()
       unpatch(instr);
     }
   });
+
+  it('disable() unpatches a manually-instrumented module', async () => {
+    // OTel won't unpatch an ESM module its hook never saw; disable() must.
+    const instr = new LangChainInstrumentation({ client: h.client, enabled: false });
+    instr.manuallyInstrument({ CallbackManager });
+    instr.disable();
+
+    const echo = RunnableLambda.from((x: unknown) => x);
+    await echo.invoke({ q: 'hello' });
+    await awaitAllCallbacks();
+    await instr.handler.dispose();
+
+    expect(invokeAgentSpans(h)).toHaveLength(0);
+    unpatch(instr); // redundant unpatch after disable() must not throw
+  });
 });
