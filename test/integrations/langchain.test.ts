@@ -33,6 +33,8 @@ import {
   ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_DEFINITIONS,
   ATTR_TOOL_NAME,
+  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
@@ -237,6 +239,192 @@ describe('LangChain adapter — LLM lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('server_error');
+  });
+});
+
+describe('LangChain adapter — cache token counts', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function endWith(runId: string, result: unknown): Promise<void> {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[{ _getType: () => 'human', content: 'hi' }] as any],
+      runId,
+    );
+    await handler.handleLLMEnd!(result as never, runId);
+  }
+
+  it('reads cache counts nested under usage_metadata.input_token_details', async () => {
+    // LangChain's standardized UsageMetadata shape.
+    await endWith('run-cache-nested', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 420,
+                output_tokens: 66,
+                total_tokens: 486,
+                input_token_details: { cache_read: 300, cache_creation: 40 },
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(420);
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(300);
+    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(40);
+  });
+
+  it('takes cache counts from the message when input counts tie (real ChatOpenAI)', async () => {
+    // Real ChatOpenAI reports the same input count on both sources. The tie makes
+    // `llmOutput` primary, and it has no cache breakdown, so the read count has
+    // to come from the message.
+    await endWith('run-cache-tie', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 2000,
+                output_tokens: 10,
+                total_tokens: 2010,
+                input_token_details: { cache_read: 1920 },
+              },
+            },
+          },
+        ],
+      ],
+      llmOutput: { tokenUsage: { promptTokens: 2000, completionTokens: 10, totalTokens: 2010 } },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(2000);
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(1920);
+  });
+
+  it('keeps cache counts from the source that loses on input tokens', async () => {
+    // ChatAnthropic copies the raw response onto `llmOutput`, where input_tokens
+    // excludes cached ones. Totals come from the message; the cache count only
+    // exists here.
+    await endWith('run-cache-losing-bag', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: { input_tokens: 25, output_tokens: 12, total_tokens: 37 },
+            },
+          },
+        ],
+      ],
+      llmOutput: {
+        id: 'msg_1',
+        model: 'claude-x',
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 0, output_tokens: 12, cache_read_input_tokens: 90 },
+      },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(25);
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(90);
+  });
+
+  it('ignores a usage object nested under response_metadata', async () => {
+    // ChatAnthropic({ streamUsage: false }) reports usage only under
+    // `response_metadata.usage`. The adapter reads one usage object per
+    // container and never descends into `response_metadata`, so nothing lands.
+    await endWith('run-cache-orphan', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              response_metadata: {
+                usage: { cache_read_input_tokens: 768, cache_creation_input_tokens: 512 },
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBeUndefined();
+  });
+
+  it('omits the attributes when the provider reports no cache use', async () => {
+    await endWith('run-cache-zero', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 10,
+                output_tokens: 2,
+                input_token_details: { cache_read: 0, cache_creation: 0 },
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBeUndefined();
+  });
+
+  it('emits only the non-zero cache count', async () => {
+    await endWith('run-cache-one-sided', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 10,
+                output_tokens: 2,
+                input_token_details: { cache_read: 0, cache_creation: 7 },
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(7);
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
   });
 });
 

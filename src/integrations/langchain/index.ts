@@ -707,6 +707,32 @@ function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+const USAGE_OBJECT_KEYS: readonly string[] = [
+  'tokenUsage',
+  'usage',
+  'usageMetadata',
+  'usage_metadata',
+];
+const INPUT_TOKEN_KEYS: readonly string[] = [
+  'input_tokens',
+  'inputTokens',
+  'promptTokens',
+  'prompt_tokens',
+];
+const OUTPUT_TOKEN_KEYS: readonly string[] = [
+  'output_tokens',
+  'outputTokens',
+  'completionTokens',
+  'completion_tokens',
+];
+const CACHE_READ_KEYS: readonly string[] = ['cache_read_input_tokens', 'cacheReadInputTokens'];
+const CACHE_CREATION_KEYS: readonly string[] = [
+  'cache_creation_input_tokens',
+  'cacheCreationInputTokens',
+  // Bedrock's spelling.
+  'cacheWriteInputTokens',
+];
+
 const DATA_SOURCE_ID_KEYS: readonly string[] = [
   'indexName',
   'index_name',
@@ -762,6 +788,18 @@ function strField(obj: Record<string, unknown> | undefined, key: string): string
     return undefined;
   }
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** First finite number among `keys` on `obj`, else `undefined`. */
+function firstNum(
+  obj: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): number | undefined {
+  for (const key of keys) {
+    const v = numField(obj, key);
+    if (v != null) return v;
+  }
+  return undefined;
 }
 
 /** First non-empty string value among `keys` on `obj`, else `undefined`. */
@@ -863,6 +901,8 @@ function toolResultFromOutput(output: unknown): unknown {
 interface MappedUsage {
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
 }
 
 /**
@@ -878,33 +918,75 @@ function mapLangChainUsage(output: LLMResult): MappedUsage | undefined {
   if (!fromLlmOutput) return fromMessage;
   if (!fromMessage) return fromLlmOutput;
   // Both present: prefer whichever reports more input tokens so a streamed
-  // llmOutput's 0 yields to the message's real count. Keeping one source whole
-  // keeps input/output internally consistent.
+  // llmOutput's 0 yields to the message's real count. Keep input and output
+  // from a single source so they stay consistent.
   return (fromMessage.inputTokens ?? 0) > (fromLlmOutput.inputTokens ?? 0)
-    ? fromMessage
-    : fromLlmOutput;
+    ? mergeCacheCounts(fromMessage, fromLlmOutput)
+    : mergeCacheCounts(fromLlmOutput, fromMessage);
 }
 
-/** The usage-bearing object on a LangChain container, if any. */
-function usageBag(container: unknown): Record<string, number> | undefined {
+/** `primary` wins except on cache counts, where its zero would hide a real count
+ *  on `secondary`. */
+function mergeCacheCounts(primary: MappedUsage, secondary: MappedUsage): MappedUsage {
+  return {
+    ...primary,
+    cacheReadInputTokens: preferPositive(
+      primary.cacheReadInputTokens,
+      secondary.cacheReadInputTokens,
+    ),
+    cacheCreationInputTokens: preferPositive(
+      primary.cacheCreationInputTokens,
+      secondary.cacheCreationInputTokens,
+    ),
+  };
+}
+
+function preferPositive(a: number | undefined, b: number | undefined): number | undefined {
+  if (a != null && a > 0) return a;
+  if (b != null && b > 0) return b;
+  return a ?? b;
+}
+
+/** The usage object on a container. `tokenUsage`, `usageMetadata` and
+ *  `usage_metadata` are LangChain's own shapes; `usage` is the provider's raw
+ *  object, which some integrations copy onto `llmOutput`. */
+function usageBag(container: unknown): Record<string, unknown> | undefined {
   if (!container || typeof container !== 'object') return undefined;
   const out = container as Record<string, unknown>;
-  return (
-    (out.tokenUsage as Record<string, number> | undefined) ??
-    (out.usage as Record<string, number> | undefined) ??
-    (out.usageMetadata as Record<string, number> | undefined) ??
-    (out.usage_metadata as Record<string, number> | undefined)
-  );
+  for (const key of USAGE_OBJECT_KEYS) {
+    const bag = readObject(out, key);
+    if (bag) return bag;
+  }
+  return undefined;
 }
 
-/** Normalizes a LangChain usage bag's varied key casings to token counts. */
-function readUsage(u: Record<string, number> | undefined): MappedUsage | undefined {
+/** Normalizes a usage object's varied key casings to token counts. */
+function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefined {
   if (!u) return undefined;
-  const inputTokens = u.input_tokens ?? u.inputTokens ?? u.promptTokens ?? u.prompt_tokens;
-  const outputTokens =
-    u.output_tokens ?? u.outputTokens ?? u.completionTokens ?? u.completion_tokens;
-  if (inputTokens == null && outputTokens == null) return undefined;
-  return { inputTokens, outputTokens };
+  const inputTokens = firstNum(u, INPUT_TOKEN_KEYS);
+  const outputTokens = firstNum(u, OUTPUT_TOKEN_KEYS);
+
+  // Some integrations skip `input_token_details` and copy the provider's flat
+  // keys instead, so read the nested shape first and fall back to those.
+  const details = readObject(u, 'input_token_details') ?? readObject(u, 'inputTokenDetails');
+  const cacheReadInputTokens = numField(details, 'cache_read') ?? firstNum(u, CACHE_READ_KEYS);
+  const cacheCreationInputTokens =
+    numField(details, 'cache_creation') ?? firstNum(u, CACHE_CREATION_KEYS);
+
+  if (
+    inputTokens == null &&
+    outputTokens == null &&
+    cacheReadInputTokens == null &&
+    cacheCreationInputTokens == null
+  ) {
+    return undefined;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+  };
 }
 
 /** The message object on an `LLMResult`'s first generation, if present. */

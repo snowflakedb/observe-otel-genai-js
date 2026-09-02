@@ -225,6 +225,8 @@ The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a 
 
 `chat` spans also carry `gen_ai.tool.definitions`, the model's bound tools normalized to the semconv `{ type, name, description, parameters }` shape. `type` and `name` are always emitted; `description` and `parameters` only under `full` content capture.
 
+Token usage covers `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and the prompt-cache counts `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`.
+
 Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 
 ### Auto-instrumentation
