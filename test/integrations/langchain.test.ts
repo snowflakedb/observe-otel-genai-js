@@ -26,6 +26,7 @@ import {
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_ID,
   ATTR_TOOL_CALL_RESULT,
+  ATTR_TOOL_DEFINITIONS,
   ATTR_TOOL_NAME,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
@@ -220,6 +221,179 @@ describe('LangChain adapter — LLM lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('server_error');
+  });
+});
+
+describe('LangChain adapter — tool definitions', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** Parsed gen_ai.tool.definitions off the single finished span. */
+  function toolDefs(): unknown {
+    const [span] = h.spans.getFinishedSpans();
+    const raw = span?.attributes[ATTR_TOOL_DEFINITIONS];
+    return raw === undefined ? undefined : JSON.parse(raw as string);
+  }
+
+  it('emits gen_ai.tool.definitions from Anthropic-shaped bound tools', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    const extraParams = {
+      invocation_params: {
+        model: 'claude-opus-4-8',
+        tools: [
+          {
+            name: 'get_weather',
+            description: 'Return current weather for a city',
+            input_schema: {
+              type: 'object',
+              properties: { city: { type: 'string' } },
+              required: ['city'],
+            },
+          },
+        ],
+      },
+    };
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[]] as any,
+      'run-tools',
+      undefined,
+      extraParams,
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'ok', message: { _getType: () => 'ai', content: 'ok' } }]] } as any,
+      'run-tools',
+    );
+
+    expect(toolDefs()).toEqual([
+      {
+        type: 'function',
+        name: 'get_weather',
+        description: 'Return current weather for a city',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+        },
+      },
+    ]);
+  });
+
+  it('emits only the required type + name under no_tool_content (default) capture', async () => {
+    // Default capture resolves to no_tool_content: tool schemas carry business
+    // detail, so description/parameters must be withheld while type/name (the
+    // schema-required, non-sensitive fields) still advertise tool topology.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const extraParams = {
+      invocation_params: {
+        model: 'claude-opus-4-8',
+        tools: [
+          {
+            name: 'get_weather',
+            description: 'Return current weather for a city',
+            input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+          },
+        ],
+      },
+    };
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[]] as any,
+      'run-ntc',
+      undefined,
+      extraParams,
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'ok', message: { _getType: () => 'ai', content: 'ok' } }]] } as any,
+      'run-ntc',
+    );
+
+    expect(toolDefs()).toEqual([{ type: 'function', name: 'get_weather' }]);
+  });
+
+  it('normalizes OpenAI function-wrapped tools into { type, name, description, parameters }', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    const extraParams = {
+      invocation_params: {
+        model: 'gpt-4o',
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'lookup',
+              description: 'Look up a value',
+              parameters: { type: 'object', properties: { q: { type: 'string' } } },
+            },
+          },
+        ],
+      },
+    };
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[]] as any,
+      'run-oa',
+      undefined,
+      extraParams,
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'ok', message: { _getType: () => 'ai', content: 'ok' } }]] } as any,
+      'run-oa',
+    );
+
+    expect(toolDefs()).toEqual([
+      {
+        type: 'function',
+        name: 'lookup',
+        description: 'Look up a value',
+        parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      },
+    ]);
+  });
+
+  it('does not emit the attribute when no tools are bound', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-none', undefined, {
+      invocation_params: { model: 'gpt-4o' },
+    });
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'ok', message: { _getType: () => 'ai', content: 'ok' } }]] } as any,
+      'run-none',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_DEFINITIONS]).toBeUndefined();
+  });
+
+  it('strips tool definitions under metadata_only capture', async () => {
+    const handler = new GenAIOtelCallbackHandler({
+      client: h.client,
+      contentCapture: 'metadata_only',
+    });
+    const extraParams = {
+      invocation_params: {
+        model: 'gpt-4o',
+        tools: [{ name: 'get_weather', input_schema: { type: 'object' } }],
+      },
+    };
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[]] as any,
+      'run-md',
+      undefined,
+      extraParams,
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'ok', message: { _getType: () => 'ai', content: 'ok' } }]] } as any,
+      'run-md',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_DEFINITIONS]).toBeUndefined();
   });
 });
 

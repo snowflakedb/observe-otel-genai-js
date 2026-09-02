@@ -65,6 +65,10 @@ export {
   type SemconvMessage,
   type SemconvPart,
 } from './content/messages-schema.js';
+export {
+  toToolDefinitions,
+  type SemconvToolDefinition,
+} from './content/tool-definitions-schema.js';
 
 // Recorder types (the user receives instances; the types are needed for
 // generics in their own code).
@@ -132,6 +136,7 @@ export {
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_MODEL,
   ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   DURATION_BUCKETS_SECONDS,

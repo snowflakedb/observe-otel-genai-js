@@ -17,7 +17,12 @@
 import type { Span } from '@opentelemetry/api';
 import type { Generation } from '../models/generation.js';
 import type { Message } from '../models/message.js';
-import { ATTR_INPUT_MESSAGES, ATTR_OUTPUT_MESSAGES, ATTR_SYSTEM_INSTRUCTIONS } from '../semconv.js';
+import {
+  ATTR_INPUT_MESSAGES,
+  ATTR_OUTPUT_MESSAGES,
+  ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_DEFINITIONS,
+} from '../semconv.js';
 import { type ContentCapture, type ContentCaptureMode, isContentCapped } from './capture.js';
 import {
   resolveFinishReason,
@@ -25,6 +30,7 @@ import {
   toSemconvOutputMessages,
   toSystemInstructions,
 } from './messages-schema.js';
+import { type SemconvToolDefinition, toToolDefinitions } from './tool-definitions-schema.js';
 
 /**
  * Emits a generation's content onto `span` as structured span attributes.
@@ -33,6 +39,7 @@ export function emitGenerationContent(
   span: Span,
   generation: Generation,
   capture: ContentCapture,
+  mode: ContentCaptureMode,
 ): void {
   if (!capture.enabled) return;
 
@@ -42,10 +49,12 @@ export function emitGenerationContent(
     resolveFinishReason(generation.stopReason, Boolean(generation.callError)),
   );
   const system = toSystemInstructions(generation.systemPrompt);
+  const tools = toToolDefinitions(generation.tools, mode === 'full');
 
   if (system.length > 0) applyStructuredAttribute(span, ATTR_SYSTEM_INSTRUCTIONS, system, capture);
   if (input.length > 0) applyStructuredAttribute(span, ATTR_INPUT_MESSAGES, input, capture);
   if (output.length > 0) applyStructuredAttribute(span, ATTR_OUTPUT_MESSAGES, output, capture);
+  if (tools.length > 0) applyToolDefinitionsAttribute(span, ATTR_TOOL_DEFINITIONS, tools, capture);
 }
 
 /**
@@ -144,6 +153,63 @@ function applyStructuredAttribute(
   span.setAttribute(key, json);
   span.setAttribute(`${key}.truncated`, true);
   span.setAttribute(`${key}.original_size_bytes`, originalSizeBytes);
+}
+
+/**
+ * Writes `gen_ai.tool.definitions` as a span attribute, applying tool-specific
+ * truncation when a finite cap is set.
+ */
+function applyToolDefinitionsAttribute(
+  span: Span,
+  key: string,
+  tools: SemconvToolDefinition[],
+  capture: ContentCapture,
+): void {
+  const encoded = JSON.stringify(tools);
+  const cap = capture.maxContentLength;
+  if (!isContentCapped(cap) || encoded.length <= cap) {
+    span.setAttribute(key, encoded);
+    return;
+  }
+
+  const { json, originalSizeBytes } = truncateToolDefinitionsToFit(tools, cap, encoded);
+  // A cap smaller than the empty array (`[]`, 2 chars) can't hold any valid
+  // value — omit the attribute rather than emit something over the cap.
+  if (json.length > cap) return;
+  span.setAttribute(key, json);
+  span.setAttribute(`${key}.truncated`, true);
+  span.setAttribute(`${key}.original_size_bytes`, originalSizeBytes);
+}
+
+/**
+ * Shrinks a `gen_ai.tool.definitions` list to fit `cap` by dropping whole
+ * optional fields — `parameters`, then `description`, then whole definitions —
+ * so schemas are never corrupted and the required `type` + `name` are kept.
+ */
+function truncateToolDefinitionsToFit(
+  tools: SemconvToolDefinition[],
+  cap: number,
+  encoded: string,
+): { json: string; originalSizeBytes: number } {
+  const originalSizeBytes = Buffer.byteLength(encoded, 'utf8');
+  const defs = structuredClone(tools) as SemconvToolDefinition[];
+  const fits = () => JSON.stringify(defs).length <= cap;
+
+  // 1) Drop the optional parameters schema (never keyword-mutated).
+  for (const d of defs) {
+    d.parameters = undefined;
+  }
+  if (fits()) return { json: JSON.stringify(defs), originalSizeBytes };
+
+  // 2) Drop the optional description, keeping the required type + name.
+  for (const d of defs) {
+    d.description = undefined;
+  }
+  if (fits()) return { json: JSON.stringify(defs), originalSizeBytes };
+
+  // 3) Last resort: drop whole definitions from the end, down to [].
+  while (defs.length > 0 && JSON.stringify(defs).length > cap) defs.pop();
+  return { json: JSON.stringify(defs), originalSizeBytes };
 }
 
 interface StringLeaf {
