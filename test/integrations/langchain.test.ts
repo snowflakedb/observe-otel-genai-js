@@ -180,6 +180,113 @@ describe('LangChain adapter — tool lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('tool_execution_error');
   });
+
+  it('names a failed tool from runName, not the serialized class name', async () => {
+    // Failures go straight to handleToolError with no ToolMessage, so the
+    // start-time runName (the tool instance name, present even on failures) is
+    // the only real name available.
+    const classToolSerialized = {
+      lc: 1,
+      type: 'constructor',
+      id: ['langchain', 'tools', 'DynamicStructuredTool'],
+      kwargs: {},
+    };
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(
+      classToolSerialized as any,
+      '{"city":"Tokyo"}',
+      'tool-fail',
+      undefined,
+      [],
+      undefined,
+      'get_weather',
+    );
+    await handler.handleToolError!(new Error('boom'), 'tool-fail');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_NAME]).toBe('get_weather');
+    expect(span?.name).toBe('execute_tool get_weather');
+  });
+
+  it('lets the tool-end ToolMessage name override runName on success', async () => {
+    // runName is caller-overridable, so the authoritative ToolMessage name wins
+    // when the tool succeeds.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(
+      toolSerialized as any,
+      '{"city":"Tokyo"}',
+      'tool-override',
+      undefined,
+      [],
+      undefined,
+      'caller-renamed-run',
+    );
+    await handler.handleToolEnd!(
+      { _getType: () => 'tool', name: 'get_weather', content: 'sunny' } as any,
+      'tool-override',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_NAME]).toBe('get_weather');
+  });
+
+  it('names the execute_tool span from the tool-end ToolMessage name', async () => {
+    // Real tools serialize to their generic class name; the instance's real
+    // `name` is authoritative and arrives on the tool-end ToolMessage.
+    const classToolSerialized = {
+      lc: 1,
+      type: 'constructor',
+      id: ['langchain', 'tools', 'DynamicStructuredTool'],
+      kwargs: {},
+    };
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(classToolSerialized as any, '{"city":"Tokyo"}', 'tool-run');
+    await handler.handleToolEnd!(
+      { _getType: () => 'tool', name: 'get_weather', content: 'sunny' } as any,
+      'tool-run',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_NAME]).toBe('get_weather');
+    expect(span?.name).toBe('execute_tool get_weather');
+  });
+
+  it('gives two differently-named tools two differently-named spans', async () => {
+    const classToolSerialized = {
+      lc: 1,
+      type: 'constructor',
+      id: ['langchain', 'tools', 'DynamicStructuredTool'],
+      kwargs: {},
+    };
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(classToolSerialized as any, '{"city":"Tokyo"}', 't-weather');
+    await handler.handleToolEnd!(
+      { _getType: () => 'tool', name: 'get_weather', content: 'sunny' } as any,
+      't-weather',
+    );
+    await handler.handleToolStart!(classToolSerialized as any, '{"weather":"sunny"}', 't-activity');
+    await handler.handleToolEnd!(
+      { _getType: () => 'tool', name: 'recommend_activity', content: 'go outside' } as any,
+      't-activity',
+    );
+
+    const names = h.spans.getFinishedSpans().map((s) => s.name);
+    expect(names).toContain('execute_tool get_weather');
+    expect(names).toContain('execute_tool recommend_activity');
+    expect(new Set(names).size).toBe(2);
+  });
+
+  it('falls back to the serialized class name when the result carries no name', async () => {
+    // A bare-string result (direct .invoke, not a ToolMessage) has no name, so
+    // the start-time class-name placeholder stands.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(toolSerialized as any, '{"q":"hi"}', 'tool-fallback');
+    await handler.handleToolEnd!('result', 'tool-fallback');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_NAME]).toBe('search');
+    expect(span?.name).toBe('execute_tool search');
+  });
 });
 
 describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
