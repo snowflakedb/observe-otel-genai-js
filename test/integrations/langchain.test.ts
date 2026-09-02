@@ -25,6 +25,7 @@ import {
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_REQUEST_STREAM,
+  ATTR_RESPONSE_MODEL,
   ATTR_RETRIEVAL_DOCUMENTS,
   ATTR_RETRIEVAL_QUERY_TEXT,
   ATTR_RETRIEVAL_TOP_K,
@@ -239,6 +240,269 @@ describe('LangChain adapter — LLM lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('server_error');
+  });
+});
+
+describe('LangChain adapter — response model', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function endWith(runId: string, result: unknown): Promise<void> {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, runId);
+    await handler.handleLLMEnd!(result as never, runId);
+  }
+
+  const generation = (message: Record<string, unknown>) => ({
+    generations: [[{ text: 'hi', message: { _getType: () => 'ai', content: 'hi', ...message } }]],
+  });
+
+  it('reads llmOutput.model', async () => {
+    await endWith('run-resp-model-llmoutput', {
+      ...generation({}),
+      llmOutput: { model: 'gpt-4o-2024-11-20' },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-4o-2024-11-20');
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-4o');
+  });
+
+  it('falls back to the message response_metadata.model (ChatAnthropic)', async () => {
+    // ChatAnthropic passes the API response through, so the key is `model`.
+    await endWith(
+      'run-resp-model-meta',
+      generation({ response_metadata: { model: 'claude-sonnet-4-5-20250929' } }),
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('claude-sonnet-4-5-20250929');
+  });
+
+  it('reads response_metadata.model_name (ChatOpenAI)', async () => {
+    // @langchain/openai builds response_metadata as
+    // { model_provider, model_name: rawResponse.model, usage, ... } and puts no
+    // model on `llmOutput`, so probing `model` alone finds nothing.
+    await endWith('run-resp-model-name', {
+      ...generation({
+        response_metadata: {
+          model_provider: 'openai',
+          model_name: 'gpt-4o-2024-11-20',
+          usage: { prompt_tokens: 9, completion_tokens: 3 },
+        },
+      }),
+      llmOutput: { tokenUsage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 } },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-4o-2024-11-20');
+  });
+
+  it('reads additional_kwargs.model (streaming ChatAnthropic)', async () => {
+    // A streamed Anthropic turn carries the model only here: `response_metadata`
+    // has none, and neither does `llmOutput`.
+    await endWith('run-resp-model-akw', {
+      ...generation({
+        response_metadata: { model_provider: 'anthropic' },
+        additional_kwargs: { id: 'msg_2', model: 'claude-sonnet-4-5-20250929' },
+      }),
+      llmOutput: { tokenUsage: { promptTokens: 0, completionTokens: 20, totalTokens: 20 } },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('claude-sonnet-4-5-20250929');
+  });
+
+  it('stays absent when the provider reports no model', async () => {
+    await endWith('run-resp-model-absent', generation({}));
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBeUndefined();
+  });
+
+  it('falls back to metadata ls_model_name for gen_ai.request.model', async () => {
+    // A serialized shape without `kwargs.model` (some proxy/gateway classes strip
+    // it) — every LangChain chat model still populates `ls_model_name` via
+    // `getLsParams`, so it's the last honest source before "unknown".
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      { lc: 1, type: 'constructor', id: ['some-gateway', 'CustomChat'], kwargs: {} } as any,
+      [[]] as any,
+      'run-ls-model-name',
+      undefined,
+      undefined,
+      undefined,
+      { ls_model_name: 'gpt-4o' },
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: '', message: { _getType: () => 'ai', content: '' } }]] } as never,
+      'run-ls-model-name',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-4o');
+  });
+});
+
+describe('LangChain adapter — provider name mapping', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function providerFor(id: string[], lsProvider?: string): Promise<unknown> {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const runId = `run-provider-${id.join('-')}`;
+    await handler.handleChatModelStart!(
+      { lc: 1, type: 'constructor', id, kwargs: { model: 'm' } } as any,
+      [[]] as any,
+      runId,
+      undefined,
+      undefined,
+      undefined,
+      lsProvider ? { ls_provider: lsProvider } : undefined,
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: '', message: { _getType: () => 'ai', content: '' } }]] } as never,
+      runId,
+    );
+    const spans = h.spans.getFinishedSpans();
+    return spans[spans.length - 1]?.attributes[ATTR_PROVIDER_NAME];
+  }
+
+  // Real @langchain/* serialized id paths → semconv well-known values. Checked
+  // against the published packages in August 2026; a package that renames its
+  // module path fails here.
+  it.each([
+    [['langchain', 'chat_models', 'openai', 'ChatOpenAI'], 'openai'],
+    [['langchain', 'chat_models', 'anthropic', 'ChatAnthropic'], 'anthropic'],
+    [['langchain', 'chat_models', 'vertexai', 'ChatVertexAI'], 'gcp.vertex_ai'],
+    [['langchain', 'chat_models', 'google_genai', 'ChatGoogleGenerativeAI'], 'gcp.gemini'],
+    [['langchain', 'chat_models', 'chat_bedrock_converse', 'ChatBedrockConverse'], 'aws.bedrock'],
+    [['langchain', 'chat_models', 'azure_openai', 'AzureChatOpenAI'], 'azure.ai.openai'],
+    [['langchain', 'chat_models', 'mistralai', 'ChatMistralAI'], 'mistral_ai'],
+    [['langchain', 'chat_models', 'groq', 'ChatGroq'], 'groq'],
+    [['langchain', 'chat_models', 'deepseek', 'ChatDeepSeek'], 'deepseek'],
+    [['langchain', 'chat_models', 'xai', 'ChatXAI'], 'x_ai'],
+    [['langchain', 'chat_models', 'cohere', 'ChatCohere'], 'cohere'],
+    [['langchain', 'chat_models', 'watsonx', 'ChatWatsonx'], 'ibm.watsonx.ai'],
+  ])('maps %j to %s', async (id, expected) => {
+    expect(await providerFor(id as string[])).toBe(expected);
+  });
+
+  it('prefers the hosting platform over the model vendor it hosts', async () => {
+    // AzureChatOpenAI's id path contains "openai", so the azure entry has to be
+    // matched first.
+    expect(await providerFor(['langchain', 'chat_models', 'azure_openai', 'AzureChatOpenAI'])).toBe(
+      'azure.ai.openai',
+    );
+  });
+
+  it('keeps a plain name for a provider the semconv list does not cover', async () => {
+    expect(await providerFor(['langchain', 'chat_models', 'ollama', 'ChatOllama'])).toBe('ollama');
+  });
+
+  it('maps Azure AI Inference paths distinctly from Azure OpenAI', async () => {
+    // Speculative: no LangChain JS class for Azure AI Inference exists yet, but
+    // semconv defines `azure.ai.inference` as a separate provider. Locks in that
+    // an id path containing `azure_ai` beats the `azure` (OpenAI) entry, and that
+    // AzureChatOpenAI's path — which contains neither `azure_ai` nor `azureai` —
+    // stays on `azure.ai.openai`.
+    expect(
+      await providerFor(['langchain', 'chat_models', 'azure_ai', 'AzureAIChatCompletionsModel']),
+    ).toBe('azure.ai.inference');
+    expect(await providerFor(['langchain', 'chat_models', 'azure_openai', 'AzureChatOpenAI'])).toBe(
+      'azure.ai.openai',
+    );
+  });
+
+  it('falls back to metadata ls_provider when the class name matches nothing', async () => {
+    // A proxy/gateway class name matches no known provider, but LangChain's run
+    // metadata names it.
+    expect(await providerFor(['some-gateway', 'CustomChat'], 'openai')).toBe('openai');
+    // An ls_provider the table doesn't know is passed through rather than
+    // reporting the class name.
+    expect(await providerFor(['some-gateway', 'CustomChat'], 'togetherai')).toBe('togetherai');
+  });
+
+  it('keeps the id-path platform when ls_provider names the vendor it hosts', async () => {
+    // AzureChatOpenAI inherits `ls_provider: "openai"` from @langchain/openai,
+    // so the declared value must not beat the `id` path.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      {
+        lc: 1,
+        type: 'constructor',
+        id: ['langchain', 'chat_models', 'azure_openai', 'AzureChatOpenAI'],
+        kwargs: { model: 'my-gpt4o-deployment' },
+      } as any,
+      [[]] as any,
+      'run-azure-declared',
+      undefined,
+      undefined,
+      undefined,
+      { ls_provider: 'openai' },
+    );
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [
+            {
+              text: '',
+              message: {
+                _getType: () => 'ai',
+                content: '',
+                response_metadata: { model_provider: 'openai', model_name: 'gpt-4o-2024-11-20' },
+              },
+            },
+          ],
+        ],
+      } as never,
+      'run-azure-declared',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('azure.ai.openai');
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('my-gpt4o-deployment');
+  });
+
+  it('matches an ls_provider whose separators differ from the id path', async () => {
+    // Hyphenated metadata values must reach the same value as the underscored
+    // `id` path spelling.
+    expect(await providerFor(['some-gateway', 'CustomChat'], 'google-genai')).toBe('gcp.gemini');
+    expect(await providerFor(['some-gateway', 'CustomChat'], 'bedrock-converse')).toBe(
+      'aws.bedrock',
+    );
+  });
+
+  it('normalizes an ls_provider value to the semconv value', async () => {
+    // `google_genai` matches, so it must be normalized rather than passed through.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      { lc: 1, type: 'constructor', id: ['x'], kwargs: { model: 'gemini-2.0-flash' } } as any,
+      [[]] as any,
+      'run-ls-google',
+      undefined,
+      undefined,
+      undefined,
+      { ls_provider: 'google_genai' },
+    );
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: '', message: { _getType: () => 'ai', content: '' } }]] } as never,
+      'run-ls-google',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('gcp.gemini');
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gemini-2.0-flash');
   });
 });
 

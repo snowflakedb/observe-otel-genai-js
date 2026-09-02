@@ -187,7 +187,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => userTextMessage(p));
     this.openGeneration(
-      modelFromSerialized(llm, extraParams),
+      modelFromSerialized(llm, extraParams, metadata),
       input,
       runId,
       parentRunId,
@@ -211,7 +211,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // `system`) rather than to gen_ai.system_instructions.
     const input = mapBaseMessages(messages[0] ?? []);
     this.openGeneration(
-      modelFromSerialized(llm, extraParams),
+      modelFromSerialized(llm, extraParams, metadata),
       input,
       runId,
       parentRunId,
@@ -273,6 +273,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       usage: mapLangChainUsage(output),
       stopReason: extractStopReason(output),
       responseId: extractResponseId(output),
+      responseModel: extractResponseModel(output),
       output: mapLangChainOutput(output),
     });
     await safeEnd(entry.rec);
@@ -658,12 +659,15 @@ function lcJson(value: unknown): string | undefined {
   }
 }
 
-function modelFromSerialized(llm: Serialized, extraParams?: Record<string, unknown>): ModelHint {
+function modelFromSerialized(
+  llm: Serialized,
+  extraParams?: Record<string, unknown>,
+  metadata?: Record<string, unknown>,
+): ModelHint {
   // LangChain's `Serialized` shape varies; we look for common patterns.
   // Examples:
   //   { lc: 1, type: 'constructor', id: ['langchain', 'chat_models', 'openai', 'ChatOpenAI'], kwargs: { model: 'gpt-4o' } }
   const id = (llm as { id?: string[] }).id ?? [];
-  const provider = inferProvider(id);
   const kwargs = (llm as { kwargs?: Record<string, unknown> }).kwargs ?? {};
   const modelName =
     (kwargs.model as string | undefined) ??
@@ -672,22 +676,57 @@ function modelFromSerialized(llm: Serialized, extraParams?: Record<string, unkno
     ((extraParams?.invocation_params as Record<string, unknown> | undefined)?.model as
       | string
       | undefined) ??
+    strField(metadata, 'ls_model_name') ??
     'unknown';
+
+  // The `id` path comes first: `ls_provider` is inherited, so anything extending
+  // ChatOpenAI without overriding it reports `"openai"` (ChatXAI, ChatDeepSeek).
+  const declared = strField(metadata, 'ls_provider');
+  const provider =
+    matchProvider(id) ??
+    (declared ? (matchProvider([declared]) ?? declared) : undefined) ??
+    id[id.length - 1] ??
+    'langchain';
+
   return { provider, name: modelName };
 }
 
-function inferProvider(idPath: readonly string[]): string {
-  const lc = idPath.map((s) => s.toLowerCase());
-  if (lc.includes('openai')) return 'openai';
-  if (lc.includes('anthropic')) return 'anthropic';
-  if (lc.includes('googlegenai') || lc.includes('gemini') || lc.includes('vertexai'))
-    return 'google';
-  if (lc.includes('mistralai')) return 'mistralai';
-  if (lc.includes('cohere')) return 'cohere';
-  if (lc.includes('bedrock')) return 'aws-bedrock';
-  if (lc.includes('azure')) return 'azure-openai';
-  if (lc.includes('ollama')) return 'ollama';
-  return idPath[idPath.length - 1] ?? 'langchain';
+/**
+ * Order matters for two reasons. Hosting platforms come before the vendors they host,
+ * because their class names carry the hosted vendor's name too
+ * (`AzureChatOpenAI` contains `openai`). And `vertex` must precede `xai`,
+ * because `vertexai` contains `xai`.
+ */
+const PROVIDER_MATCHES: readonly (readonly [readonly string[], string])[] = [
+  [['azureai'], 'azure.ai.inference'],
+  [['azure'], 'azure.ai.openai'],
+  [['bedrock'], 'aws.bedrock'],
+  [['openai'], 'openai'],
+  [['vertex'], 'gcp.vertex_ai'],
+  [['anthropic'], 'anthropic'],
+  [['gemini', 'googlegenai', 'googlegenerativeai'], 'gcp.gemini'],
+  [['google'], 'gcp.gen_ai'],
+  [['mistral'], 'mistral_ai'],
+  [['cohere'], 'cohere'],
+  [['watsonx'], 'ibm.watsonx.ai'],
+  [['perplexity'], 'perplexity'],
+  [['deepseek'], 'deepseek'],
+  [['moonshot'], 'moonshot_ai'],
+  [['groq'], 'groq'],
+  [['xai'], 'x_ai'],
+  [['ollama'], 'ollama'],
+];
+
+/**
+ * Separators are stripped because `id` paths and `ls_provider` values use `_`
+ * and `-` inconsistently.
+ */
+function matchProvider(hint: readonly string[]): string | undefined {
+  const lc = hint.map((s) => s.toLowerCase().replace(/[-_]/g, ''));
+  for (const [needles, provider] of PROVIDER_MATCHES) {
+    if (needles.some((needle) => lc.some((s) => s.includes(needle)))) return provider;
+  }
+  return undefined;
 }
 
 function toolNameFromSerialized(s: Serialized): string {
@@ -725,6 +764,7 @@ const OUTPUT_TOKEN_KEYS: readonly string[] = [
   'completionTokens',
   'completion_tokens',
 ];
+const RESPONSE_MODEL_KEYS: readonly string[] = ['model', 'model_name'];
 const CACHE_READ_KEYS: readonly string[] = ['cache_read_input_tokens', 'cacheReadInputTokens'];
 const CACHE_CREATION_KEYS: readonly string[] = [
   'cache_creation_input_tokens',
@@ -1067,6 +1107,31 @@ function normalizeToolDefinition(raw: unknown): ToolDefinition | undefined {
   def.type = typeof r.type === 'string' && r.type.length > 0 ? r.type : 'function';
 
   return def;
+}
+
+/** `gen_ai.response.model` — the model that served the call, which is more
+ *  specific than the requested name when you ask for an alias. ChatAnthropic
+ *  names the field `model`, ChatOpenAI `model_name`. */
+function extractResponseModel(output: LLMResult): string | undefined {
+  const llmOut = output.llmOutput as Record<string, unknown> | undefined;
+  const message = firstGenerationMessage(output);
+  const meta = responseMetadata(message);
+  return (
+    firstStr(llmOut, RESPONSE_MODEL_KEYS) ??
+    firstStr(meta, RESPONSE_MODEL_KEYS) ??
+    // Streaming ChatAnthropic reports it only here.
+    strField(additionalKwargs(message), 'model')
+  );
+}
+
+function additionalKwargs(message: unknown): Record<string, unknown> | undefined {
+  if (!message || typeof message !== 'object') return undefined;
+  return readObject(message as Record<string, unknown>, 'additional_kwargs');
+}
+
+function responseMetadata(message: unknown): Record<string, unknown> | undefined {
+  if (!message || typeof message !== 'object') return undefined;
+  return readObject(message as Record<string, unknown>, 'response_metadata');
 }
 
 /** Extracts the raw provider stop reason from an `LLMResult`, or `undefined`. */

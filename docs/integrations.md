@@ -205,7 +205,7 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleLLMStart` (raw completions / chat fallback) | `client.startGeneration({ model, ... })` + input messages from the prompt strings |
 | `handleChatModelStart` (chat models) | `client.startGeneration(...)` + structured input messages (real roles) from `BaseMessage[]` |
 | `handleLLMNewToken` (first non-empty) | `recorder.setFirstTokenAt(now)` |
-| `handleLLMEnd` | `recorder.setResult({ usage, stopReason, responseId, output })`; `recorder.end()` |
+| `handleLLMEnd` | `recorder.setResult({ usage, stopReason, responseId, responseModel, output })`; `recorder.end()` |
 | `handleLLMError` | `recorder.setCallError(err)`; `recorder.end()` |
 | `handleToolStart` | `client.startToolExecution({ toolName })` (the run's `runName`, else the serialized class name); `recorder.setResult({ arguments })` |
 | `handleToolEnd` | `recorder.setToolName(...)` (the authoritative tool name from the `ToolMessage`, overriding `runName`), `recorder.setResult({ result })`; `recorder.end()` |
@@ -224,6 +224,10 @@ Retrievers emit a `retrieval` span (kind CLIENT); an in-retriever query rewrite 
 The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a `messages` array uses the `BaseMessage` mapping, a string or a string `input` / `question` / `text` field becomes one user message, any other shape is JSON-encoded, and empty input emits nothing.
 
 `chat` spans also carry `gen_ai.tool.definitions`, the model's bound tools normalized to the semconv `{ type, name, description, parameters }` shape. `type` and `name` are always emitted; `description` and `parameters` only under `full` content capture.
+
+`gen_ai.provider.name` uses the semconv well-known values (`openai`, `anthropic`, `aws.bedrock`, `gcp.gemini`, and so on). A hosting platform wins over the vendor it hosts, so a Bedrock-hosted Anthropic model reports `aws.bedrock`.
+
+`gen_ai.response.model` is the model that served the call — ask for `gpt-4o`, get `gpt-4o-2024-11-20`. `gen_ai.request.model` keeps the requested name.
 
 Token usage covers `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and the prompt-cache counts `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`.
 
