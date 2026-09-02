@@ -288,6 +288,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     const rec = this.toolRunMap.get(runId);
     if (!rec) return;
     this.toolRunMap.delete(runId);
+    rec.setToolCallId(toolCallIdFromOutput(output));
     rec.setToolName(toolNameFromOutput(output));
     rec.setResult({ result: output });
     await safeEnd(rec);
@@ -645,6 +646,12 @@ function toolNameFromOutput(output: unknown): string | undefined {
 
 function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function toolCallIdFromOutput(output: unknown): string | undefined {
+  if (!output || typeof output !== 'object') return undefined;
+  const id = (output as { tool_call_id?: unknown }).tool_call_id;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
 }
 
 function mapLangChainUsage(llmOutput: unknown) {

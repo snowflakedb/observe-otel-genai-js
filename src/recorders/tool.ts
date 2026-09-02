@@ -43,6 +43,11 @@ export class ToolExecutionRecorder extends RecorderBase {
     this.seed.toolName = toolName;
   }
 
+  setToolCallId(toolCallId: string | undefined): void {
+    if (toolCallId == null || toolCallId === '') return;
+    this.seed.toolCallId = toolCallId;
+  }
+
   /** Alias for `setCallError` that reads more naturally for tool executions. */
   setExecError(err: unknown): void {
     this.setCallError(err);

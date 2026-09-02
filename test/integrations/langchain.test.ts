@@ -22,6 +22,7 @@ import {
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_TOOL_CALL_ID,
   ATTR_TOOL_NAME,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
@@ -286,6 +287,72 @@ describe('LangChain adapter — tool lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_TOOL_NAME]).toBe('search');
     expect(span?.name).toBe('execute_tool search');
+  });
+
+  it('backfills gen_ai.tool.call.id from the tool-end ToolMessage', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(toolSerialized as any, '{"city":"Tokyo"}', 'tool-id');
+    // Modern LangChain passes a ToolMessage (not a bare string) to tool-end.
+    await handler.handleToolEnd!(
+      { tool_call_id: 'toolu_bdrk_01KasL9JjjkNha2wutiD9eDJ', content: 'Tokyo: sunny, 25C' } as any,
+      'tool-id',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_CALL_ID]).toBe('toolu_bdrk_01KasL9JjjkNha2wutiD9eDJ');
+  });
+
+  it('leaves gen_ai.tool.call.id unset when tool-end has a bare string result', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleToolStart!(toolSerialized as any, '{"q":"hi"}', 'tool-noid');
+    await handler.handleToolEnd!('result', 'tool-noid');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_TOOL_CALL_ID]).toBeUndefined();
+  });
+
+  it('agrees with the tool_call id on the sibling chat span', async () => {
+    const callId = 'toolu_bdrk_016q1Thxcjjz';
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+
+    // Chat span whose assistant output requests a tool call carrying `callId`.
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'chat-1');
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [
+            {
+              text: '',
+              message: {
+                _getType: () => 'ai',
+                content: '',
+                tool_calls: [{ id: callId, name: 'get_weather', args: { city: 'Shanghai' } }],
+              },
+            },
+          ],
+        ],
+      } as never,
+      'chat-1',
+    );
+
+    // Tool span for the execution of that call; the ToolMessage carries the id.
+    await handler.handleToolStart!(toolSerialized as any, '{"city":"Shanghai"}', 'tool-1');
+    await handler.handleToolEnd!(
+      { tool_call_id: callId, content: 'Shanghai: sunny, 25C' } as any,
+      'tool-1',
+    );
+
+    const spans = h.spans.getFinishedSpans();
+    const chat = spans.find((s) => s.name.startsWith('chat'))!;
+    const tool = spans.find((s) => s.name.startsWith('execute_tool'))!;
+
+    // Id on the execute_tool span matches the tool_call part on the chat span.
+    expect(tool.attributes[ATTR_TOOL_CALL_ID]).toBe(callId);
+    const outMessages = JSON.parse(chat.attributes[ATTR_OUTPUT_MESSAGES] as string);
+    const toolCallPart = outMessages
+      .flatMap((m: { parts?: Array<{ type?: string; id?: string }> }) => m.parts ?? [])
+      .find((p: { type?: string }) => p.type === 'tool_call');
+    expect(toolCallPart?.id).toBe(callId);
   });
 });
 

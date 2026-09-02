@@ -26,6 +26,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replacing the previous 20/22 matrix.
 
 ### Fixed
+- LangChain adapter: emit `gen_ai.tool.call.id` on `execute_tool` spans by backfilling the id from the tool-end `ToolMessage`, so the tool span correlates to the model's tool call.
 - LangChain adapter: name `execute_tool` spans from the tool instance's real name instead of the serialized class name — the run's `runName` at start (present even on failures), overridden by the authoritative tool-end `ToolMessage` `name` on success.
 - LangChain instrumentation: set `gen_ai.conversation.id` on the auto-patched
   `invoke_agent` root span. With no callbacks passed, `_configureSync` builds no
