@@ -26,6 +26,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replacing the previous 20/22 matrix.
 
 ### Fixed
+- LangChain adapter: report the real provider stop reason (read from
+  `response_metadata` / `llmOutput`, passed through unchanged) instead of always
+  `stop`; fall back to `stop` (or `error` on failures) only when the provider
+  reason is unknown.
 - LangChain adapter: set `gen_ai.tool.call.result` to the tool's actual return value by unwrapping the tool-end `ToolMessage`, instead of the serialized message envelope.
 - LangChain adapter: emit `gen_ai.tool.call.id` on `execute_tool` spans by backfilling the id from the tool-end `ToolMessage`, so the tool span correlates to the model's tool call.
 - LangChain adapter: name `execute_tool` spans from the tool instance's real name instead of the serialized class name — the run's `runName` at start (present even on failures), overridden by the authoritative tool-end `ToolMessage` `name` on success.
