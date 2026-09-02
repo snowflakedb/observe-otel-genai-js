@@ -290,7 +290,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     this.toolRunMap.delete(runId);
     rec.setToolCallId(toolCallIdFromOutput(output));
     rec.setToolName(toolNameFromOutput(output));
-    rec.setResult({ result: output });
+    rec.setResult({ result: toolResultFromOutput(output) });
     await safeEnd(rec);
   }
 
@@ -652,6 +652,28 @@ function toolCallIdFromOutput(output: unknown): string | undefined {
   if (!output || typeof output !== 'object') return undefined;
   const id = (output as { tool_call_id?: unknown }).tool_call_id;
   return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+/**
+ * Extracts the value a tool returned for `gen_ai.tool.call.result`. A
+ * `ToolMessage` (identified only by `_getType() === 'tool'`) is unwrapped to its
+ * `content`, flattening an all-text array but preserving any array with non-text
+ * blocks; anything else is passed through unchanged.
+ */
+function toolResultFromOutput(output: unknown): unknown {
+  if (!output || typeof output !== 'object') return output;
+  const msg = output as { content?: unknown; _getType?: () => string };
+  if (typeof msg._getType !== 'function' || msg._getType() !== 'tool') return output;
+
+  const content = msg.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const allText = content.every(
+      (b) => b && typeof b === 'object' && (b as { type?: string }).type === 'text',
+    );
+    return allText ? (lcContentText(content) ?? content) : content;
+  }
+  return content !== undefined ? content : output;
 }
 
 function mapLangChainUsage(llmOutput: unknown) {
