@@ -26,6 +26,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replacing the previous 20/22 matrix.
 
 ### Fixed
+- LangChain adapter: mark streamed calls with `gen_ai.request.stream` (via
+  `startStreamingGeneration`) so TTFT records, and recover
+  `gen_ai.usage.input_tokens` from the generation message's `usage_metadata` on
+  streams that only surface it there.
 - LangChain adapter: report the real provider stop reason (read from
   `response_metadata` / `llmOutput`, passed through unchanged) instead of always
   `stop`; fall back to `stop` (or `error` on failures) only when the provider

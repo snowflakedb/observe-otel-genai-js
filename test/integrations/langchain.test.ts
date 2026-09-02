@@ -22,6 +22,7 @@ import {
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_REQUEST_STREAM,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_ID,
   ATTR_TOOL_CALL_RESULT,
@@ -219,6 +220,126 @@ describe('LangChain adapter — LLM lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('server_error');
+  });
+});
+
+describe('LangChain adapter — streaming', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** True when a histogram of `name` recorded at least one data point. */
+  function hasMetric(collected: unknown, name: string): boolean {
+    const list = (collected as Array<{ scopeMetrics?: Array<{ metrics?: unknown[] }> }>) ?? [];
+    for (const rm of list) {
+      for (const sm of rm.scopeMetrics ?? []) {
+        for (const m of (sm.metrics ?? []) as Array<{
+          descriptor?: { name?: string };
+          dataPoints?: unknown[];
+        }>) {
+          if (m.descriptor?.name === name && (m.dataPoints?.length ?? 0) > 0) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  const streamParams = { invocation_params: { model: 'claude-opus-4-8', stream: true } };
+
+  it('marks the span as streaming and recovers input_tokens from message.usage_metadata', async () => {
+    // The OB-65331 scenario: an Anthropic stream delivers input tokens on
+    // message_start, which LangChain aggregates onto the generation message's
+    // usage_metadata — not llmOutput. The span must still carry both token
+    // counts and be flagged as a stream.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[{ _getType: () => 'human', content: 'hi' }] as any],
+      'run-stream-usage',
+      undefined,
+      streamParams,
+    );
+    await handler.handleLLMNewToken!('hel', {} as never, 'run-stream-usage');
+    await handler.handleLLMEnd!(
+      {
+        generations: [
+          [
+            {
+              text: 'hello',
+              message: {
+                _getType: () => 'ai',
+                content: 'hello',
+                usage_metadata: { input_tokens: 25, output_tokens: 12, total_tokens: 37 },
+              },
+            } as any,
+          ],
+        ],
+        // Real ChatAnthropic streaming shape: llmOutput reports promptTokens 0
+        // (a present-but-bogus zero) while the message carries the real count.
+        llmOutput: { tokenUsage: { promptTokens: 0, completionTokens: 12, totalTokens: 12 } },
+      },
+      'run-stream-usage',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_STREAM]).toBe(true);
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(25);
+    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(12);
+  });
+
+  it('records time_to_first_token for a streamed call', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(
+      llmSerialized as any,
+      [[]] as any,
+      'run-ttft',
+      undefined,
+      streamParams,
+    );
+    await handler.handleLLMNewToken!('a', {} as never, 'run-ttft');
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: 'a', message: { _getType: () => 'ai', content: 'a' } }]] } as never,
+      'run-ttft',
+    );
+
+    expect(hasMetric(await h.collectMetrics(), 'gen_ai.client.time_to_first_token')).toBe(true);
+  });
+
+  it('upgrades to streaming from token arrival even without an invocation flag', async () => {
+    // Some integrations do not expose invocation_params.stream. Receiving a
+    // streamed token is itself proof the call is streaming.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-token-only');
+    await handler.handleLLMNewToken!('tok', {} as never, 'run-token-only');
+    await handler.handleLLMEnd!(
+      {
+        generations: [[{ text: 'tok', message: { _getType: () => 'ai', content: 'tok' } }]],
+      } as never,
+      'run-token-only',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_STREAM]).toBe(true);
+    expect(hasMetric(await h.collectMetrics(), 'gen_ai.client.time_to_first_token')).toBe(true);
+  });
+
+  it('leaves a synchronous call unmarked', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-sync');
+    await handler.handleLLMEnd!(
+      {
+        generations: [[{ text: 'hi', message: { _getType: () => 'ai', content: 'hi' } } as any]],
+        llmOutput: { tokenUsage: { prompt_tokens: 4, completion_tokens: 1 } },
+      },
+      'run-sync',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_STREAM]).toBeUndefined();
   });
 });
 

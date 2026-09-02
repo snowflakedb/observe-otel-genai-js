@@ -178,7 +178,14 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     const input = prompts
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => userTextMessage(p));
-    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId, parentRunId, metadata);
+    this.openGeneration(
+      modelFromSerialized(llm, extraParams),
+      input,
+      runId,
+      parentRunId,
+      metadata,
+      isStreaming(extraParams),
+    );
   }
 
   override async handleChatModelStart(
@@ -194,7 +201,14 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // part of the provided chat history, so they map to input.messages (role
     // `system`) rather than to gen_ai.system_instructions.
     const input = mapBaseMessages(messages[0] ?? []);
-    this.openGeneration(modelFromSerialized(llm, extraParams), input, runId, parentRunId, metadata);
+    this.openGeneration(
+      modelFromSerialized(llm, extraParams),
+      input,
+      runId,
+      parentRunId,
+      metadata,
+      isStreaming(extraParams),
+    );
   }
 
   private openGeneration(
@@ -203,22 +217,24 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     runId: string,
     parentRunId?: string,
     metadata?: Record<string, unknown>,
+    streaming = false,
   ): void {
     this.runParent.set(runId, parentRunId);
+    const seed = {
+      model,
+      agentName: this.defaults.agentName,
+      agentVersion: this.defaults.agentVersion,
+      conversationId: this.conversationId(metadata),
+      conversationTitle: this.defaults.conversationTitle,
+      userId: this.defaults.userId,
+      turnIndex: this.defaults.turnIndex,
+      turnRole: this.defaults.turnRole,
+      contentCapture: this.defaults.contentCapture,
+      tags: this.defaults.tags,
+      metadata: this.defaults.metadata,
+    };
     const rec = this.nested(parentRunId, () =>
-      this.client.startGeneration({
-        model,
-        agentName: this.defaults.agentName,
-        agentVersion: this.defaults.agentVersion,
-        conversationId: this.conversationId(metadata),
-        conversationTitle: this.defaults.conversationTitle,
-        userId: this.defaults.userId,
-        turnIndex: this.defaults.turnIndex,
-        turnRole: this.defaults.turnRole,
-        contentCapture: this.defaults.contentCapture,
-        tags: this.defaults.tags,
-        metadata: this.defaults.metadata,
-      }),
+      streaming ? this.client.startStreamingGeneration(seed) : this.client.startGeneration(seed),
     );
     if (input.length > 0) rec.setResult({ input });
     this.llmRunMap.set(runId, { rec, firstTokenSeen: false });
@@ -230,6 +246,10 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (token.length === 0) return;
     entry.firstTokenSeen = true;
     entry.rec.setFirstTokenAt(Date.now());
+    // Receiving streamed tokens is itself proof the call is streaming. Upgrade
+    // the mode so gen_ai.request.stream and time_to_first_token land even when
+    // the provider didn't expose invocation_params.stream at start.
+    entry.rec.setResult({ mode: 'STREAM' });
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
@@ -238,7 +258,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     if (!entry) return;
     this.llmRunMap.delete(runId);
     entry.rec.setResult({
-      usage: mapLangChainUsage(output.llmOutput),
+      usage: mapLangChainUsage(output),
       stopReason: extractStopReason(output),
       responseId: extractResponseId(output),
       output: mapLangChainOutput(output),
@@ -676,21 +696,67 @@ function toolResultFromOutput(output: unknown): unknown {
   return content !== undefined ? content : output;
 }
 
-function mapLangChainUsage(llmOutput: unknown) {
-  if (!llmOutput || typeof llmOutput !== 'object') return undefined;
-  const out = llmOutput as Record<string, unknown>;
-  // LangChain models commonly stash usage at `tokenUsage` or `usage` or `usage_metadata`.
-  const u =
+interface MappedUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/**
+ * Extracts token usage from an aggregated `LLMResult`. Non-streaming carries
+ * usage on `llmOutput`; streaming leaves `llmOutput.tokenUsage.promptTokens` at
+ * 0 and puts the real input count on the generation message's `usage_metadata`.
+ * We pick the source that actually reports input tokens (a present-but-zero
+ * `llmOutput` count must not shadow the message's real value).
+ */
+function mapLangChainUsage(output: LLMResult): MappedUsage | undefined {
+  const fromLlmOutput = readUsage(usageBag(output.llmOutput));
+  const fromMessage = readUsage(usageBag(firstGenerationMessage(output)));
+  if (!fromLlmOutput) return fromMessage;
+  if (!fromMessage) return fromLlmOutput;
+  // Both present: prefer whichever reports more input tokens so a streamed
+  // llmOutput's 0 yields to the message's real count. Keeping one source whole
+  // keeps input/output internally consistent.
+  return (fromMessage.inputTokens ?? 0) > (fromLlmOutput.inputTokens ?? 0)
+    ? fromMessage
+    : fromLlmOutput;
+}
+
+/** The usage-bearing object on a LangChain container, if any. */
+function usageBag(container: unknown): Record<string, number> | undefined {
+  if (!container || typeof container !== 'object') return undefined;
+  const out = container as Record<string, unknown>;
+  return (
     (out.tokenUsage as Record<string, number> | undefined) ??
     (out.usage as Record<string, number> | undefined) ??
     (out.usageMetadata as Record<string, number> | undefined) ??
-    (out.usage_metadata as Record<string, number> | undefined);
+    (out.usage_metadata as Record<string, number> | undefined)
+  );
+}
+
+/** Normalizes a LangChain usage bag's varied key casings to token counts. */
+function readUsage(u: Record<string, number> | undefined): MappedUsage | undefined {
   if (!u) return undefined;
-  return {
-    inputTokens: u.input_tokens ?? u.inputTokens ?? u.promptTokens ?? u.prompt_tokens,
-    outputTokens: u.output_tokens ?? u.outputTokens ?? u.completionTokens ?? u.completion_tokens,
-    totalTokens: u.total_tokens ?? u.totalTokens,
-  };
+  const inputTokens = u.input_tokens ?? u.inputTokens ?? u.promptTokens ?? u.prompt_tokens;
+  const outputTokens =
+    u.output_tokens ?? u.outputTokens ?? u.completionTokens ?? u.completion_tokens;
+  if (inputTokens == null && outputTokens == null) return undefined;
+  return { inputTokens, outputTokens };
+}
+
+/** The message object on an `LLMResult`'s first generation, if present. */
+function firstGenerationMessage(output: LLMResult): unknown {
+  const gen = output.generations?.[0]?.[0] as { message?: unknown } | undefined;
+  return gen?.message;
+}
+
+/**
+ * Whether the invocation requested streaming. `invocation_params.stream` is
+ * populated by LangChain at chat-model start; some integrations expose a bare
+ * `stream` flag on `extraParams` instead.
+ */
+function isStreaming(extraParams?: Record<string, unknown>): boolean {
+  const invocation = extraParams?.invocation_params as Record<string, unknown> | undefined;
+  return invocation?.stream === true || extraParams?.stream === true;
 }
 
 /** Extracts the raw provider stop reason from an `LLMResult`, or `undefined`. */
