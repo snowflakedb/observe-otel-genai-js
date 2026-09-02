@@ -16,15 +16,17 @@ All peer deps are declared optional — the core install does not pull them in.
 Every adapter captures prompt and completion **content** — the input and output
 messages — as structured `gen_ai.input.messages` / `gen_ai.output.messages` span
 attributes. This is ON by default (client default mode `no_tool_content`:
-prompts and completions are captured; tool args/results are stripped).
+prompts and completions are captured; tool args/results and retrieval
+query/documents are stripped).
 
 Control it globally on the `Client` (`contentCaptureMode`), per call (the
 `contentCapture` option accepted by every adapter), or ambiently
-(`withContentCaptureMode`). Modes: `full` (all content incl. tool args/results),
-`no_tool_content` (default), `metadata_only` (no content at all — honored by
-every span type: generation, agent, tool, embedding). For fine-grained,
-field-level redaction, register a redacting `SpanProcessor` at bootstrap — see
-[exporting.md](exporting.md#redacting-content).
+(`withContentCaptureMode`). Modes: `full` (all content incl. tool args/results
+and retrieval query/documents), `no_tool_content` (default — tool payloads and
+retrieval content stripped), `metadata_only` (no content at all — honored by
+every span type: generation, agent, tool, embedding, retrieval). For
+fine-grained, field-level redaction, register a redacting `SpanProcessor` at
+bootstrap — see [exporting.md](exporting.md#redacting-content).
 
 ### Adapter capability matrix
 
@@ -211,11 +213,13 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` + input messages from `chainInputToMessages(inputs)` |
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
-| `handleRetrieverStart` / `End` / `Error` | no span yet — records the `runId → parentRunId` edge only, so spans beneath a retriever still parent under the agent |
+| `handleRetrieverStart` | `client.startRetrieval({ dataSourceId, topK?, queryText })` — the retrieval span becomes the active parent |
+| `handleRetrieverEnd` | `recorder.setDocuments(mapRetrieverDocuments(documents))`; `recorder.end()` |
+| `handleRetrieverError` | `recorder.setCallError(err)`; `recorder.end()` |
 
-All spans nest into one trace: an `invoke_agent` root with `chat` / `execute_tool` spans beneath it. Runs with no span of their own (suppressed nested chains, retrievers) stay in the run tree as pass-through nodes so their descendants still parent under the nearest real ancestor.
+All spans nest into one trace: an `invoke_agent` root with `chat` / `execute_tool` / `retrieval` spans beneath it. Runs with no span of their own (suppressed nested chains) stay in the run tree as pass-through nodes so their descendants still parent under the nearest real ancestor.
 
-Retrievers are a pass-through only because this library has no retrieval recorder yet — the semconv does define a `retrieval` span. Until it lands, an LLM call made inside a retriever parents directly under `invoke_agent`.
+Retrievers emit a `retrieval` span (kind CLIENT); an in-retriever query rewrite nests under it. Query text and documents are emitted as the Opt-In `gen_ai.retrieval.query.text` / `gen_ai.retrieval.documents`. `gen_ai.retrieval.top_k` and `gen_ai.data_source.id` are read only from the retriever's serialized config (not run metadata), so they're often absent; `gen_ai.provider.name` / `gen_ai.request.model` aren't emitted (they describe the embedding call, which LangChain doesn't surface). Pass any of these to `client.startRetrieval(...)` directly if you know them.
 
 The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a `messages` array uses the `BaseMessage` mapping, a string or a string `input` / `question` / `text` field becomes one user message, any other shape is JSON-encoded, and empty input emits nothing.
 

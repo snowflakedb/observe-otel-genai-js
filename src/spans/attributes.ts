@@ -12,6 +12,7 @@ import type { Span } from '@opentelemetry/api';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
 import type { Generation, GenerationStart } from '../models/generation.js';
+import type { RetrievalStart } from '../models/retrieval.js';
 import type { ToolExecutionStart } from '../models/tool.js';
 import {
   ATTR_AGENT_DESCRIPTION,
@@ -22,6 +23,7 @@ import {
   ATTR_CONVERSATION_TITLE,
   ATTR_CONVERSATION_TURN_INDEX,
   ATTR_CONVERSATION_TURN_ROLE,
+  ATTR_DATA_SOURCE_ID,
   ATTR_EMBEDDING_DIMENSION_COUNT,
   ATTR_EMBEDDING_INPUT_COUNT,
   ATTR_EMBEDDING_INPUT_TEXTS,
@@ -47,6 +49,7 @@ import {
   ATTR_REQUEST_TOP_P,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
+  ATTR_RETRIEVAL_TOP_K,
   ATTR_SDK_NAME,
   ATTR_SERVER_ADDRESS,
   ATTR_SERVER_PORT,
@@ -64,6 +67,7 @@ import {
   OP_EMBEDDINGS,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_RETRIEVAL,
   SDK_NAME,
 } from '../semconv.js';
 
@@ -269,6 +273,23 @@ export function applyAgentCreationAttributes(span: Span, start: AgentCreationSta
   setStr(span, ATTR_AGENT_DESCRIPTION, start.agentDescription);
   setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
   setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
+}
+
+// -----------------------------------------------------------------------------
+// Retrieval
+// -----------------------------------------------------------------------------
+
+export function applyRetrievalAttributes(span: Span, start: RetrievalStart) {
+  setStr(span, ATTR_OPERATION_NAME, OP_RETRIEVAL);
+  setStr(span, ATTR_SDK_NAME, SDK_NAME);
+
+  setStr(span, ATTR_DATA_SOURCE_ID, start.dataSourceId);
+  setStr(span, ATTR_PROVIDER_NAME, start.provider);
+  setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
+  setStr(span, ATTR_AGENT_NAME, start.agentName);
+  setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
+  setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setNum(span, ATTR_RETRIEVAL_TOP_K, start.topK);
 }
 
 function parentRefToString(ref: unknown): string {

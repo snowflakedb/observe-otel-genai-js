@@ -8,6 +8,7 @@
  * right arguments, the resulting spans will be correct.
  */
 
+import { Serializable } from '@langchain/core/load/serializable';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,12 +18,16 @@ import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
+  ATTR_DATA_SOURCE_ID,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_REQUEST_STREAM,
+  ATTR_RETRIEVAL_DOCUMENTS,
+  ATTR_RETRIEVAL_QUERY_TEXT,
+  ATTR_RETRIEVAL_TOP_K,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_ID,
   ATTR_TOOL_CALL_RESULT,
@@ -33,6 +38,7 @@ import {
   OP_CHAT,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_RETRIEVAL,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
@@ -63,6 +69,16 @@ const retrieverSerialized = {
   id: ['langchain', 'retrievers', 'VectorStoreRetriever'],
   kwargs: {},
 };
+
+/**
+ * Minimal real `Serializable` so tests can build payloads via the same
+ * `toJSON()` LangChain uses — which decamelizes kwargs keys to snake_case —
+ * instead of hand-crafting shapes LangChain never emits.
+ */
+class FakeSerializable extends Serializable {
+  lc_namespace = ['test', 'fake'];
+  override lc_serializable = true;
+}
 
 describe('LangChain adapter — LLM lifecycle', () => {
   let h: Harness;
@@ -1145,7 +1161,7 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
   });
 });
 
-describe('LangChain adapter — retriever run-tree topology', () => {
+describe('LangChain adapter — retriever lifecycle (retrieval span)', () => {
   let h: Harness;
   beforeEach(() => {
     h = createHarness();
@@ -1154,8 +1170,9 @@ describe('LangChain adapter — retriever run-tree topology', () => {
     await h.shutdown();
   });
 
-  it('walks past a retriever to the nearest ancestor span', async () => {
-    // RAG shape: chain (span) → retriever (no span) → llm.
+  it('emits a CLIENT retrieval span and nests an in-retriever chat under it', async () => {
+    // MultiQueryRetriever shape: chain → retriever (rewrites query with an LLM)
+    // → chat. The desired tree is invoke_agent → retrieval → chat.
     const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
@@ -1165,16 +1182,76 @@ describe('LangChain adapter — retriever run-tree topology', () => {
     await handler.handleChainEnd!({} as never, 'c1');
 
     const spans = h.spans.getFinishedSpans();
-    // retriever gets no span of its own: invoke_agent + chat only
-    expect(spans.length).toBe(2);
+    // invoke_agent + retrieval + chat
+    expect(spans.length).toBe(3);
     expect(new Set(spans.map((s) => s.spanContext().traceId)).size).toBe(1);
     const agent = spans.find((s) => s.name.startsWith('invoke_agent'))!;
+    const retrieval = spans.find((s) => s.name.startsWith('retrieval'))!;
     const chat = spans.find((s) => s.name.startsWith('chat'))!;
+    expect(retrieval.attributes[ATTR_OPERATION_NAME]).toBe(OP_RETRIEVAL);
+    expect(retrieval.kind).toBe(2 /* CLIENT */);
     expect(agent.parentSpanContext?.spanId).toBeUndefined();
-    expect(chat.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+    expect(retrieval.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+    expect(chat.parentSpanContext?.spanId).toBe(retrieval.spanContext().spanId);
   });
 
-  it('walks past a retriever nested under a suppressed chain', async () => {
+  it('records the query text, top_k, and returned documents', async () => {
+    const handler = new GenAIOtelCallbackHandler({
+      client: h.client,
+      agentName: 'rag',
+      contentCapture: 'full',
+    });
+    const retrieverWithK = {
+      ...retrieverSerialized,
+      kwargs: { k: 3 },
+    };
+    await handler.handleRetrieverStart!(retrieverWithK as never, 'what is otel?', 'r1');
+    await handler.handleRetrieverEnd!(
+      [
+        { pageContent: 'OTel is a spec', metadata: { source: 'a.md', score: 0.9 }, id: 'd1' },
+        { pageContent: 'It defines spans', metadata: { source: 'b.md' } },
+      ] as never,
+      'r1',
+    );
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_RETRIEVAL_QUERY_TEXT]).toBe('what is otel?');
+    expect(span.attributes[ATTR_RETRIEVAL_TOP_K]).toBe(3);
+    const docs = JSON.parse(span.attributes[ATTR_RETRIEVAL_DOCUMENTS] as string);
+    expect(docs).toHaveLength(2);
+    expect(docs[0]).toMatchObject({ id: 'd1', content: 'OTel is a spec', score: 0.9 });
+    expect(docs[1]).toMatchObject({ content: 'It defines spans' });
+  });
+
+  it('does not stamp provider/model on the retrieval span from LangChain', async () => {
+    const retrieverWithEmbeddings = {
+      ...retrieverSerialized,
+      kwargs: {
+        vectorStore: {
+          lc: 1,
+          type: 'constructor',
+          id: ['langchain', 'vectorstores', 'pinecone', 'PineconeStore'],
+          kwargs: {
+            embeddings: {
+              lc: 1,
+              type: 'constructor',
+              id: ['langchain', 'embeddings', 'openai', 'OpenAIEmbeddings'],
+              kwargs: { model: 'text-embedding-3-small' },
+            },
+          },
+        },
+      },
+    };
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(retrieverWithEmbeddings as never, 'q', 'r1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_PROVIDER_NAME]).toBeUndefined();
+    expect(span.attributes[ATTR_REQUEST_MODEL]).toBeUndefined();
+  });
+
+  it('nests a retrieval span under a suppressed intermediate chain', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'root');
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'node', 'root');
@@ -1186,26 +1263,136 @@ describe('LangChain adapter — retriever run-tree topology', () => {
     await handler.handleChainEnd!({} as never, 'root');
 
     const spans = h.spans.getFinishedSpans();
-    expect(spans.length).toBe(2);
+    // invoke_agent + retrieval + execute_tool
+    expect(spans.length).toBe(3);
     const agent = spans.find((s) => s.name.startsWith('invoke_agent'))!;
+    const retrieval = spans.find((s) => s.name.startsWith('retrieval'))!;
     const toolSpan = spans.find((s) => s.name.startsWith('execute_tool'))!;
-    expect(toolSpan.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+    expect(retrieval.parentSpanContext?.spanId).toBe(agent.spanContext().spanId);
+    expect(toolSpan.parentSpanContext?.spanId).toBe(retrieval.spanContext().spanId);
   });
 
-  it('forgets the retriever edge once the retriever errors', async () => {
+  it('records a failed retrieval as provider_call_error and clears the edge', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
     await handler.handleRetrieverError!(new Error('boom') as never, 'r1');
     await handler.handleChainEnd!({} as never, 'c1');
 
-    // Only the agent span; a later run reusing 'r1' as a parent finds no
-    // ancestor and starts its own root rather than attaching to a stale edge.
-    expect(h.spans.getFinishedSpans().length).toBe(1);
+    const retrieval = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(retrieval.attributes['error.type']).toBe('provider_call_error');
+
+    // A later run reusing 'r1' as a parent finds no ancestor (edge cleared on
+    // error) and starts its own root rather than attaching to a stale edge.
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'r1');
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
     const chat = h.spans.getFinishedSpans().find((s) => s.name.startsWith('chat'))!;
     expect(chat.parentSpanContext?.spanId).toBeUndefined();
+  });
+
+  it('omits data_source.id and does not fabricate one from the class or run name', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(
+      retrieverSerialized as never,
+      'q',
+      'r1',
+      undefined,
+      [],
+      undefined,
+      'my-retriever-run',
+    );
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.name).toBe('retrieval');
+    expect(span.attributes[ATTR_DATA_SOURCE_ID]).toBeUndefined();
+  });
+
+  it('does not read data_source.id from run metadata (no LangChain standard for it)', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', undefined, [], {
+      data_source_id: 'docs-index',
+      index: 42,
+      namespace: 'tenant-a',
+      collection: 'ui-widgets',
+    });
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.name).toBe('retrieval');
+    expect(span.attributes[ATTR_DATA_SOURCE_ID]).toBeUndefined();
+  });
+
+  it('reads data_source.id from a live nested Serializable (direct retriever.toJSON())', async () => {
+    // LangChain hands retriever.toJSON() to the callback WITHOUT stringifying,
+    // so the nested store stays a live Serializable — its config is under
+    // lc_kwargs (camelCase), not a serialized `kwargs` object.
+    const store = new FakeSerializable({ indexName: 'prod-index' });
+    const retriever = new FakeSerializable({ vectorStore: store });
+    const serialized = retriever.toJSON();
+    // Sanity: the nested value is the live instance, with no `kwargs`.
+    expect((serialized as any).kwargs.vector_store).toBe(store);
+    expect((serialized as any).kwargs.vector_store.kwargs).toBeUndefined();
+
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(serialized as never, 'q', 'r1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_DATA_SOURCE_ID]).toBe('prod-index');
+  });
+
+  it('prefers the live store field over a stale constructor snapshot', async () => {
+    // lc_kwargs is the constructor-time snapshot ('old'); the live instance field
+    // ('new') is current and must win.
+    const store = new FakeSerializable({ indexName: 'old' });
+    (store as unknown as { indexName: string }).indexName = 'new';
+    const retriever = new FakeSerializable({ vectorStore: store });
+
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(retriever.toJSON() as never, 'q', 'r1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_DATA_SOURCE_ID]).toBe('new');
+  });
+
+  it('reads data_source.id from a pre-serialized (snake_case) vector-store payload', async () => {
+    const retrieverWithIndex = {
+      ...retrieverSerialized,
+      kwargs: { vector_store: { kwargs: { index_name: 'prod-index' } } },
+    };
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(retrieverWithIndex as never, 'q', 'r1');
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_DATA_SOURCE_ID]).toBe('prod-index');
+  });
+
+  it('does not read top_k from run metadata (no LangChain standard for it)', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', undefined, [], {
+      k: 99,
+    });
+    await handler.handleRetrieverEnd!([] as never, 'r1');
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    expect(span.attributes[ATTR_RETRIEVAL_TOP_K]).toBeUndefined();
+  });
+
+  it('does not map a raw vector distance to score', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client, contentCapture: 'full' });
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1');
+    await handler.handleRetrieverEnd!(
+      [{ pageContent: 'doc', metadata: { _distance: 0.42, source: 'a.md' } }] as never,
+      'r1',
+    );
+
+    const span = h.spans.getFinishedSpans().find((s) => s.name.startsWith('retrieval'))!;
+    const docs = JSON.parse(span.attributes[ATTR_RETRIEVAL_DOCUMENTS] as string);
+    expect(docs[0].score).toBeUndefined();
+    expect(docs[0].metadata._distance).toBe(0.42);
   });
 });
 

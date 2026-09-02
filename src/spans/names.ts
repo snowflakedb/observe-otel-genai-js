@@ -12,6 +12,7 @@ import {
   OP_EMBEDDINGS,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_RETRIEVAL,
   type OperationName,
 } from '../semconv.js';
 
@@ -43,4 +44,10 @@ export function agentCreateSpanName(agentName: string) {
   const name = agentName.trim();
   if (name === '') return OP_CREATE_AGENT;
   return `${OP_CREATE_AGENT} ${name}`;
+}
+
+export function retrievalSpanName(dataSourceId: string) {
+  const id = dataSourceId.trim();
+  if (id === '') return OP_RETRIEVAL;
+  return `${OP_RETRIEVAL} ${id}`;
 }

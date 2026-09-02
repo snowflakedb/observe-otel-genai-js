@@ -68,6 +68,12 @@ export const ATTR_EMBEDDING_INPUT_COUNT = 'gen_ai.embeddings.input_count';
 export const ATTR_EMBEDDING_INPUT_TEXTS = 'gen_ai.embeddings.input_texts';
 export const ATTR_EMBEDDING_DIMENSION_COUNT = 'gen_ai.embeddings.dimension.count';
 
+// Retrieval (RAG context fetch from a vector DB / search system).
+export const ATTR_DATA_SOURCE_ID = 'gen_ai.data_source.id';
+export const ATTR_RETRIEVAL_TOP_K = 'gen_ai.retrieval.top_k';
+export const ATTR_RETRIEVAL_DOCUMENTS = 'gen_ai.retrieval.documents';
+export const ATTR_RETRIEVAL_QUERY_TEXT = 'gen_ai.retrieval.query.text';
+
 // Tool
 export const ATTR_TOOL_NAME = 'gen_ai.tool.name';
 export const ATTR_TOOL_CALL_ID = 'gen_ai.tool.call.id';
@@ -105,6 +111,7 @@ export const OP_EMBEDDINGS = 'embeddings';
 export const OP_EXECUTE_TOOL = 'execute_tool';
 export const OP_INVOKE_AGENT = 'invoke_agent';
 export const OP_CREATE_AGENT = 'create_agent';
+export const OP_RETRIEVAL = 'retrieval';
 
 export type OperationName =
   | typeof OP_CHAT
@@ -113,7 +120,8 @@ export type OperationName =
   | typeof OP_EMBEDDINGS
   | typeof OP_EXECUTE_TOOL
   | typeof OP_INVOKE_AGENT
-  | typeof OP_CREATE_AGENT;
+  | typeof OP_CREATE_AGENT
+  | typeof OP_RETRIEVAL;
 
 // -----------------------------------------------------------------------------
 // Metric names + bucket boundaries
