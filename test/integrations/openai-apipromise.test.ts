@@ -3,8 +3,9 @@
  * network), so every call here goes through a genuine `APIPromise`, the only shape
  * a real client returns.
  *
- * Covered: `.withResponse()`, `.asResponse()`, streamed `for await`, body parse
- * failures, and `withMetadata`, across chat completions and embeddings.
+ * Covered: `.withResponse()`, `.asResponse()`, streamed `for await`, `withMetadata`,
+ * request failure, and body parse failure, across chat completions, embeddings,
+ * and Responses.
  */
 
 import { SpanStatusCode } from '@opentelemetry/api';
@@ -13,12 +14,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import {
+  ATTR_OPERATION_NAME,
+  ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  OP_CHAT,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
+import { responsesMessage } from './_openai-server.js';
 
 /** Lets fire-and-forget `rec.end()` microtasks settle before asserting. */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -49,6 +54,13 @@ function sseResponse(chunks: unknown[]): Response {
   return new Response(body, {
     status: 200,
     headers: { 'content-type': 'text/event-stream', 'x-request-id': 'req_st' },
+  });
+}
+
+function errorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: { message, type: 'server_error' } }), {
+    status,
+    headers: { 'content-type': 'application/json', 'x-request-id': 'req_err' },
   });
 }
 
@@ -276,5 +288,80 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['gen_ai.agent.name']).toBe('planner');
     expect(span?.attributes['gen_ai.conversation.id']).toBe('conv-1');
+  });
+
+  it('does not leak the metadata symbol into the request body', async () => {
+    let sentBody: string | undefined;
+    const openai = wrapOpenAI(
+      h.client,
+      new OpenAI({
+        apiKey: 'test-key',
+        baseURL: 'https://api.openai.invalid',
+        fetch: async (_url, init) => {
+          sentBody = init?.body as string;
+          return jsonResponse(CHAT_COMPLETION);
+        },
+      }),
+    );
+
+    await openai.chat.completions.create(
+      withMetadata({ ...CHAT_PARAMS }, { agentName: 'planner' }),
+    );
+    await tick();
+
+    expect(sentBody).toBeDefined();
+    expect(Object.keys(JSON.parse(sentBody as string))).toEqual(['model', 'messages']);
+  });
+
+  it('await responses.create() records a chat span and maps instructions', async () => {
+    nextResponse = () => jsonResponse(responsesMessage({ id: 'resp_ns', model: 'gpt-x-2024' }));
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const out = await openai.responses.create({
+      model: 'gpt-x',
+      input: 'hi',
+      instructions: 'be terse',
+    });
+    await tick();
+
+    expect(out.id).toBe('resp_ns');
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_OPERATION_NAME]).toBe(OP_CHAT);
+    expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-x');
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-x-2024');
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_ns');
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(8);
+    expect(span?.attributes['gen_ai.system_instructions']).toBeDefined();
+  });
+
+  it('responses.create(...).withResponse() still works and records a span', async () => {
+    nextResponse = () => jsonResponse(responsesMessage({ id: 'resp_wr' }));
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const { data, response } = await openai.responses
+      .create({ model: 'gpt-x', input: 'hi' })
+      .withResponse();
+    await tick();
+
+    expect(data.id).toBe('resp_wr');
+    expect(response.status).toBe(200);
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_wr');
+  });
+
+  // The transform passed to `_thenUnwrap` only runs on success, so a failing
+  // request has to be observed separately or the span would leak.
+  it('records a failed responses.create on the span and still rejects', async () => {
+    nextResponse = () => errorResponse(503, 'upstream is down');
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(openai.responses.create({ model: 'gpt-x', input: 'hi' })).rejects.toThrow(
+      /upstream is down/,
+    );
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['error.type']).toBe('provider_call_error');
   });
 });

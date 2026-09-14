@@ -34,7 +34,7 @@ bootstrap — see [exporting.md](exporting.md#redacting-content).
 | Capability | Vercel | OpenAI | Anthropic | LangChain | Claude Agent SDK |
 |---|---|---|---|---|---|
 | input / output messages | yes | yes | yes | yes | yes (reconstructed from the message stream) |
-| tool definitions (`gen_ai.tool.definitions`) | — | — | — | yes | — |
+| tool definitions (`gen_ai.tool.definitions`) | — | yes (Responses) | — | yes | — |
 | request params (`temperature`, `top_p`, …) | yes | yes | yes | — | partial (system prompt, effort, thinking) |
 | separate `execute_tool` spans | yes | no (tool calls ride on messages) | no (tool calls ride on messages) | yes | yes |
 | TTFT on streaming | yes | yes | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
@@ -129,6 +129,20 @@ import {
 
 const result = await instrumentedChatCompletion(client, openai, { /* params */ });
 ```
+
+### Responses API
+
+`responses.create` is mapped alongside Chat Completions, with two differences:
+
+- `instructions` becomes `gen_ai.system_instructions`. Responses carries the system
+  prompt out-of-band, so it never appears as a message in the history.
+- Tool definitions are read from the top level of each tool (`name`, `description`,
+  `parameters`) instead of from a nested `function` object.
+
+Usage maps `input_tokens_details.cached_tokens` and
+`output_tokens_details.reasoning_tokens` onto the cache-read and reasoning
+counters. Streaming records TTFT from the first `*.delta` event and takes the
+final output and usage from the assembled `Response` on `response.completed`.
 
 ### Streaming behavior
 
