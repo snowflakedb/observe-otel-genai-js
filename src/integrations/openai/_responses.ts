@@ -300,7 +300,7 @@ function mapResponsesInput(params: ResponseCreateParams): Message[] {
 }
 
 /** Maps a response's `output` item list. */
-function mapResponsesOutput(output: unknown): Message[] {
+export function mapResponsesOutput(output: unknown): Message[] {
   if (!Array.isArray(output)) return [];
   return mapResponsesItems(output);
 }

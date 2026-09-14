@@ -14,7 +14,11 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from '@opentelemetry/sdk-metrics';
-import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import {
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  type SpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 import { Client } from '../src/client.js';
@@ -33,6 +37,8 @@ export interface Harness {
   collectMetrics(): Promise<ReturnType<InMemoryMetricExporter['getMetrics']>>;
   /** Resets the span exporter (useful when reusing a single harness). */
   resetSpans(): void;
+  /** Spans started but not yet ended. */
+  openSpanCount(): number;
 }
 
 /**
@@ -42,9 +48,16 @@ export interface Harness {
  */
 export function createHarness(input?: ClientConfig): Harness {
   const spans = new InMemorySpanExporter();
+  const open = new Set<string>();
+  const openTracker: SpanProcessor = {
+    onStart: (span) => open.add(span.spanContext().spanId),
+    onEnd: (span) => open.delete(span.spanContext().spanId),
+    forceFlush: async () => {},
+    shutdown: async () => {},
+  };
   const tracerProvider = new NodeTracerProvider({
     resource: resourceFromAttributes({ 'service.name': 'genai-otel-test' }),
-    spanProcessors: [new SimpleSpanProcessor(spans)],
+    spanProcessors: [openTracker, new SimpleSpanProcessor(spans)],
   });
   tracerProvider.register();
   trace.setGlobalTracerProvider(tracerProvider);
@@ -69,6 +82,7 @@ export function createHarness(input?: ClientConfig): Harness {
     metricReader,
     tracerProvider,
     meterProvider,
+    openSpanCount: () => open.size,
     async shutdown() {
       await client.shutdown();
       await tracerProvider.shutdown();
