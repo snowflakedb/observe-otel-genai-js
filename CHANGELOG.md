@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release
+  only. `^0.200.0` on a `0.x` version means `>=0.200.0 <0.201.0`, so a project on
+  any current release (0.201 and later) could not install this package without
+  `--legacy-peer-deps`. Both are now `>=0.200.0 <0.300.0`, matching
+  `@opentelemetry/instrumentation`. 0.300.x ships with OpenTelemetry JS SDK 3.0
+  and stays out until it is tested.
+
 ## [0.6.0] - 2026-09-29
 
 ### Added
