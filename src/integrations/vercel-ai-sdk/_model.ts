@@ -13,6 +13,32 @@ import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/m
  */
 export type VercelAdapterOptions = AdapterCallOptions;
 
+const AI_SDK_PROVIDER_MAPPINGS: readonly (readonly [prefix: string, provider: string])[] = [
+  ['google.generative-ai', 'gcp.gemini'],
+  ['azure.ai.openai', 'azure.ai.openai'],
+  ['amazon-bedrock', 'aws.bedrock'],
+  ['google.vertex', 'gcp.vertex_ai'],
+  ['google-vertex', 'gcp.vertex_ai'],
+  ['gcp.vertex_ai', 'gcp.vertex_ai'],
+  ['azure.openai', 'azure.ai.openai'],
+  ['aws.bedrock', 'aws.bedrock'],
+  ['gcp.gemini', 'gcp.gemini'],
+  ['anthropic', 'anthropic'],
+  ['snowflake', 'snowflake'],
+  ['openai', 'openai'],
+  ['vertex', 'gcp.vertex_ai'],
+  ['azure', 'azure.ai.openai'],
+];
+
+/** Maps AI SDK provider/API identifiers to OTel semantic provider names. */
+export function normalizeAiSdkProviderName(provider: string): string {
+  const normalized = provider.toLowerCase();
+  for (const [prefix, semanticProvider] of AI_SDK_PROVIDER_MAPPINGS) {
+    if (normalized === prefix || normalized.startsWith(`${prefix}.`)) return semanticProvider;
+  }
+  return provider;
+}
+
 export function identityFields(
   options: VercelAdapterOptions,
 ): Pick<
@@ -32,7 +58,7 @@ export function modelRefFromAi(model: unknown): ModelRef {
   // LanguageModelV3 (AI SDK v7) exposes `provider` and `modelId` properties.
   const m = model as { provider?: string; modelId?: string };
   return {
-    provider: m?.provider ?? 'unknown',
+    provider: normalizeAiSdkProviderName(m?.provider ?? 'unknown'),
     name: m?.modelId ?? 'unknown',
   };
 }
