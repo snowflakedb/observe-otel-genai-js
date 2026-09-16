@@ -55,7 +55,7 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
 
   it('emits a chat span with usage + response metadata mapped from the AI SDK result', async () => {
     const model = new MockLanguageModelV3({
-      provider: 'mock',
+      provider: 'snowflake.chat',
       modelId: 'mock-1',
       doGenerate: async () => ({
         content: [{ type: 'text', text: 'hello' }],
@@ -75,7 +75,7 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_OPERATION_NAME]).toBe(OP_CHAT);
-    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('mock');
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
     expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('mock-1');
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('mock-1-served');
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('aim-resp-1');
@@ -161,7 +161,7 @@ describe('Vercel AI SDK adapter — wrapEmbed', () => {
 
   it('emits an embeddings span with input tokens', async () => {
     const model = new MockEmbeddingModelV3({
-      provider: 'mock',
+      provider: 'snowflake.completion',
       modelId: 'text-embed-mock',
       doEmbed: async ({ values }: { values: string[] }) => ({
         embeddings: values.map(() => [0.1, 0.2, 0.3]),
@@ -180,7 +180,7 @@ describe('Vercel AI SDK adapter — wrapEmbed', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(7);
     expect(span?.attributes['gen_ai.embeddings.input_count']).toBe(1);
     expect(span?.attributes['gen_ai.embeddings.dimension.count']).toBe(3);
-    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('mock');
+    expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
     expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('text-embed-mock');
   });
 });

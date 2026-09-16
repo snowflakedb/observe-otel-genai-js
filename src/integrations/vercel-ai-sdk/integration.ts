@@ -38,7 +38,13 @@ import {
   mapProviderPrompt,
   mapStepContent,
 } from './_map.js';
-import { type VercelAdapterOptions, identityFields, mapAiUsage, modelRefFromAi } from './_model.js';
+import {
+  type VercelAdapterOptions,
+  identityFields,
+  mapAiUsage,
+  modelRefFromAi,
+  normalizeAiSdkProviderName,
+} from './_model.js';
 
 type GenerationRec = ReturnType<Client['startStreamingGeneration']>;
 type ToolRec = ReturnType<Client['startToolExecution']>;
@@ -137,7 +143,7 @@ class GenaiTelemetry {
         agentVersion: options.agentVersion,
         conversationId: options.conversationId,
         userId: options.userId,
-        requestProvider: event.provider,
+        requestProvider: event.provider ? normalizeAiSdkProviderName(event.provider) : undefined,
         requestModel: event.modelId,
         tags: options.tags,
         metadata: options.metadata,
@@ -370,7 +376,9 @@ class GenaiTelemetry {
             toolName: tc.toolName,
             toolCallId: tc.toolCallId,
             requestModel: event.model?.modelId,
-            requestProvider: event.model?.provider,
+            requestProvider: event.model?.provider
+              ? normalizeAiSdkProviderName(event.model.provider)
+              : undefined,
             agentName: op.options.agentName,
             agentVersion: op.options.agentVersion,
             conversationId: op.options.conversationId,

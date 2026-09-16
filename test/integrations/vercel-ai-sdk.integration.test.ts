@@ -11,6 +11,7 @@ import {
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
+  ATTR_PROVIDER_NAME,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_GENERATE_CONTENT,
@@ -54,7 +55,7 @@ function textStreamModel(text: string, provider = 'mock', modelId = 'mock-stream
 function toolLoopModel() {
   let call = 0;
   return new MockLanguageModelV3({
-    provider: 'mock',
+    provider: 'snowflake.chat',
     modelId: 'mock-tool',
     doStream: async () => {
       call += 1;
@@ -155,6 +156,25 @@ describe('genaiTelemetryIntegration', () => {
     expect(out.text).toBe('hello');
     expect(oneByName(h, 'invoke_agent')).toBeDefined();
     expect(oneByName(h, 'chat')?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
+  });
+
+  it('normalizes provider names on operation and generation spans', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockLanguageModelV3({
+      provider: 'snowflake.chat',
+      modelId: 'snowflake-gen',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'hello' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+    });
+
+    await generateText({ model, prompt: 'hi' });
+
+    expect(oneByName(h, 'invoke_agent')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
+    expect(oneByName(h, 'chat')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
   });
 
   it('nests execute_tool under chat under invoke_agent in a 2-step tool loop', async () => {

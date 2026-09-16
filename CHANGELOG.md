@@ -29,6 +29,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   precedence is the handler `conversationId`, then `withConversationId(...)`,
   then `thread_id`.
 
+### Fixed
+- Vercel adapter: normalize AI SDK provider/API identifiers such as
+  `snowflake.chat`, `openai.responses`, and `anthropic.messages` to canonical
+  `gen_ai.provider.name` values. Known Bedrock, Vertex AI, Gemini, and Azure
+  OpenAI families map to their OpenTelemetry semantic provider names; unknown
+  custom provider identifiers remain unchanged.
+
 ### Changed
 - **LangChain adapter: `gen_ai.provider.name` now emits the semconv well-known
   values.** `google` → `gcp.vertex_ai` / `gcp.gemini` / `gcp.gen_ai`,
