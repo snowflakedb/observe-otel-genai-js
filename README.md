@@ -120,6 +120,9 @@ import { wrapOpenAI } from '@genai-otel/core/openai';
 // Anthropic SDK
 import { wrapAnthropic } from '@genai-otel/core/anthropic';
 
+// Claude Agent SDK (registered as an OTel instrumentation)
+import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
+
 // LangChain.js (and LangGraph)
 import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
 ```
