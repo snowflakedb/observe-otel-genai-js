@@ -6,6 +6,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
 ### Added
 - LangChain adapter: emit `gen_ai.response.model` on `chat` spans — the model
   that served the call, which can be more specific than the requested one (ask
