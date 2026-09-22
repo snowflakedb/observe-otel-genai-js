@@ -111,6 +111,15 @@ export interface AiStepFinishEvent {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+    inputTokenDetails?: {
+      noCacheTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    };
+    outputTokenDetails?: {
+      textTokens?: number;
+      reasoningTokens?: number;
+    };
     cacheReadInputTokens?: number;
     cacheCreationInputTokens?: number;
     reasoningTokens?: number;

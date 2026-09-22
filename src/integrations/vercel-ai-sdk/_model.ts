@@ -69,9 +69,9 @@ export function embedModelRefFromAi(model: unknown): ModelRef {
 }
 
 /**
- * Maps AI SDK usage (v7 top-level shape) to a partial `TokenUsage` object.
+ * Maps AI SDK usage to a partial `TokenUsage` object.
  * Handles both the legacy `promptTokens`/`completionTokens` (v5) and
- * current `inputTokens`/`outputTokens` (v6/v7) names.
+ * current `inputTokens`/`outputTokens` names, including v7 token details.
  */
 export function mapAiUsage(usage: unknown):
   | {
@@ -84,13 +84,25 @@ export function mapAiUsage(usage: unknown):
     }
   | undefined {
   if (!usage || typeof usage !== 'object') return undefined;
-  const u = usage as Record<string, number | undefined>;
+  const u = usage as Record<string, unknown>;
+  const inputDetails =
+    u.inputTokenDetails && typeof u.inputTokenDetails === 'object'
+      ? (u.inputTokenDetails as Record<string, unknown>)
+      : undefined;
+  const outputDetails =
+    u.outputTokenDetails && typeof u.outputTokenDetails === 'object'
+      ? (u.outputTokenDetails as Record<string, unknown>)
+      : undefined;
   return {
-    inputTokens: u.promptTokens ?? u.inputTokens,
-    outputTokens: u.completionTokens ?? u.outputTokens,
-    totalTokens: u.totalTokens,
-    cacheReadInputTokens: u.cacheReadInputTokens,
-    cacheCreationInputTokens: u.cacheCreationInputTokens,
-    reasoningTokens: u.reasoningTokens,
+    inputTokens: (u.promptTokens ?? u.inputTokens) as number | undefined,
+    outputTokens: (u.completionTokens ?? u.outputTokens) as number | undefined,
+    totalTokens: u.totalTokens as number | undefined,
+    cacheReadInputTokens: (inputDetails?.cacheReadTokens ?? u.cacheReadInputTokens) as
+      | number
+      | undefined,
+    cacheCreationInputTokens: (inputDetails?.cacheWriteTokens ?? u.cacheCreationInputTokens) as
+      | number
+      | undefined,
+    reasoningTokens: (outputDetails?.reasoningTokens ?? u.reasoningTokens) as number | undefined,
   };
 }

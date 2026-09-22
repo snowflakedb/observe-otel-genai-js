@@ -12,8 +12,11 @@ import {
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
+  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
@@ -21,18 +24,22 @@ import { type Harness, createHarness } from '../_harness.js';
 // AI SDK v7 reports usage as a nested provider shape; the SDK flattens
 // `inputTokens.total` / `outputTokens.total` into the top-level
 // `result.usage.inputTokens` / `.outputTokens` that the adapter reads.
-function v7Usage(inputTokens: number, outputTokens: number) {
+function v7Usage(
+  inputTokens: number,
+  outputTokens: number,
+  details: { cacheRead?: number; cacheWrite?: number; reasoning?: number } = {},
+) {
   return {
     inputTokens: {
       total: inputTokens,
       noCache: undefined,
-      cacheRead: undefined,
-      cacheWrite: undefined,
+      cacheRead: details.cacheRead,
+      cacheWrite: details.cacheWrite,
     },
     outputTokens: {
       total: outputTokens,
       text: undefined,
-      reasoning: undefined,
+      reasoning: details.reasoning,
     },
   };
 }
@@ -60,7 +67,7 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
       doGenerate: async () => ({
         content: [{ type: 'text', text: 'hello' }],
         finishReason: v7Finish('stop'),
-        usage: v7Usage(9, 3),
+        usage: v7Usage(9, 3, { cacheRead: 4, cacheWrite: 2, reasoning: 1 }),
         warnings: [],
         response: { id: 'aim-resp-1', modelId: 'mock-1-served', timestamp: new Date() },
       }),
@@ -81,6 +88,9 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('aim-resp-1');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(4);
+    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(2);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
   });
 
   it('records call errors via setCallError when the provider throws', async () => {
