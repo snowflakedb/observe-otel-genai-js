@@ -1,14 +1,17 @@
 /**
  * Tests for the Claude Agent SDK adapter.
  *
- * The SDK spawns the Claude Code CLI, so there is nothing to stub at the HTTP
- * layer. Every test feeds a hand-built `SDKMessage[]` through a fake `query`.
- * The adapter reads nothing but the stream, so a message list is the whole input
- * and message order is what makes the ordering races testable.
+ * The SDK spawns the Claude Code CLI, so there is nothing to stub at the HTTP layer:
+ * each test feeds a message list through a fake `query`. Hand-built lists cover one
+ * rule at a time; the replay tests at the end use trimmed recordings of real CLI
+ * streams, whose message order is what the hand-built ones have to match.
  */
 
+import { readFileSync } from 'node:fs';
+import { SpanStatusCode } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { ClientConfig } from '../../src/config.js';
 import {
   type ClaudeAgentSdkOptions,
   wrapQuery,
@@ -16,98 +19,119 @@ import {
 import type {
   AgentMessage,
   AgentQueryOptions,
+  AgentQueryParams,
+  AgentUsage,
 } from '../../src/integrations/claude-agent-sdk/types.js';
 import { type Harness, createHarness } from '../_harness.js';
 
+const MODEL = 'claude-sonnet-4-5';
+const ROOT = 'invoke_agent claude-agent-sdk';
+const CHAT = `chat ${MODEL}`;
+
 // -----------------------------------------------------------------------------
-// Fake stream
+// Fake stream and message builders
 // -----------------------------------------------------------------------------
 
-function fakeQuery(messages: AgentMessage[]) {
-  return (_params: { prompt: unknown; options?: AgentQueryOptions }) =>
+/** Yields `messages` in order, waiting `pauses.get(i)` ms before message `i`. */
+function fakeQuery(messages: AgentMessage[], pauses = new Map<number, number>()) {
+  return (_params: AgentQueryParams) =>
     (async function* () {
-      for (const msg of messages) yield msg;
+      for (const [i, msg] of messages.entries()) {
+        const pause = pauses.get(i);
+        if (pause) await new Promise((resolve) => setTimeout(resolve, pause));
+        yield msg;
+      }
     })();
 }
 
-async function drain(it: AsyncIterable<AgentMessage>): Promise<AgentMessage[]> {
-  const out: AgentMessage[] = [];
+async function drain(it: AsyncIterable<unknown>): Promise<unknown[]> {
+  const out: unknown[] = [];
   for await (const m of it) out.push(m);
   return out;
 }
 
-// -----------------------------------------------------------------------------
-// Message builders
-// -----------------------------------------------------------------------------
-
-const MODEL = 'claude-sonnet-4-5';
-
 function init(sessionId = 'sess-1'): AgentMessage {
-  return {
-    type: 'system',
-    subtype: 'init',
-    session_id: sessionId,
-    model: MODEL,
-    tools: ['Read', 'Bash'],
-    permissionMode: 'default',
-    claude_code_version: '2.1.0',
-  };
+  return { type: 'system', subtype: 'init', session_id: sessionId, model: MODEL };
 }
 
 function assistant(
   id: string,
   content: Record<string, unknown>[],
-  extra: Partial<AgentMessage> = {},
+  extra: { parent?: string; usage?: AgentUsage; stopReason?: string } = {},
 ): AgentMessage {
   return {
     type: 'assistant',
-    message: { id, model: MODEL, role: 'assistant', content, stop_reason: null },
-    parent_tool_use_id: null,
-    ...extra,
+    message: {
+      id,
+      model: MODEL,
+      role: 'assistant',
+      content,
+      stop_reason: extra.stopReason ?? null,
+      usage: extra.usage,
+    },
+    parent_tool_use_id: extra.parent ?? null,
   };
 }
 
-function userToolResult(
+const text = (t: string) => ({ type: 'text', text: t });
+const toolUse = (id: string, name: string, input: Record<string, unknown> = {}) => ({
+  type: 'tool_use',
+  id,
+  name,
+  input,
+});
+const delegate = (id: string, subagentType: string, prompt = 'look at x') =>
+  toolUse(id, 'Agent', { subagent_type: subagentType, description: 'review x', prompt });
+
+function toolResult(
   toolUseId: string,
-  text: string,
-  extra: Partial<AgentMessage> = {},
+  content: string,
+  extra: { parent?: string; isError?: boolean } = {},
 ): AgentMessage {
   return {
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }],
+      content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: extra.isError }],
     },
-    parent_tool_use_id: null,
-    ...extra,
+    parent_tool_use_id: extra.parent ?? null,
   };
 }
 
-function taskStarted(
+function userText(t: string, parent?: string): AgentMessage {
+  return {
+    type: 'user',
+    message: { role: 'user', content: [text(t)] },
+    parent_tool_use_id: parent ?? null,
+  };
+}
+
+function taskStarted(toolUseId: string, taskType = 'local_agent'): AgentMessage {
+  return { type: 'system', subtype: 'task_started', tool_use_id: toolUseId, task_type: taskType };
+}
+
+function taskNotification(
   toolUseId: string,
-  subagentType: string | undefined = 'general-purpose',
-  taskType = 'local_agent',
+  summary: string,
+  status: AgentMessage['status'] = 'completed',
 ): AgentMessage {
+  return { type: 'system', subtype: 'task_notification', tool_use_id: toolUseId, status, summary };
+}
+
+function messageStart(id: string, ttftMs: number, usage?: AgentUsage): AgentMessage {
   return {
-    type: 'system',
-    subtype: 'task_started',
-    task_id: `task-${toolUseId}`,
-    tool_use_id: toolUseId,
-    task_type: taskType,
-    ...(subagentType ? { subagent_type: subagentType } : {}),
-    session_id: 'sess-1',
+    type: 'stream_event',
+    parent_tool_use_id: null,
+    ttft_ms: ttftMs,
+    event: { type: 'message_start', message: { id, model: MODEL, usage } },
   };
 }
 
-function taskNotification(toolUseId: string, summary: string, status = 'completed'): AgentMessage {
+function messageDelta(usage: AgentUsage, stopReason = 'end_turn'): AgentMessage {
   return {
-    type: 'system',
-    subtype: 'task_notification',
-    task_id: `task-${toolUseId}`,
-    tool_use_id: toolUseId,
-    status,
-    summary,
-    session_id: 'sess-1',
+    type: 'stream_event',
+    parent_tool_use_id: null,
+    event: { type: 'message_delta', delta: { stop_reason: stopReason }, usage },
   };
 }
 
@@ -116,23 +140,17 @@ function result(extra: Partial<AgentMessage> = {}): AgentMessage {
     type: 'result',
     subtype: 'success',
     is_error: false,
-    num_turns: 2,
-    duration_ms: 1200,
     result: 'done',
     stop_reason: 'end_turn',
     total_cost_usd: 0.0123,
-    usage: { input_tokens: 10, output_tokens: 5 },
     modelUsage: {
       [MODEL]: {
         inputTokens: 100,
         outputTokens: 50,
         cacheReadInputTokens: 20,
         cacheCreationInputTokens: 10,
-        costUSD: 0.0123,
-        provider: 'firstParty',
       },
     },
-    permission_denials: [],
     ...extra,
   };
 }
@@ -141,873 +159,1219 @@ function result(extra: Partial<AgentMessage> = {}): AgentMessage {
 // Span helpers
 // -----------------------------------------------------------------------------
 
-function spansByName(h: Harness) {
-  return h.spans.getFinishedSpans().map((s) => s.name);
-}
+type FinishedSpan = ReturnType<Harness['spans']['getFinishedSpans']>[number];
 
-function findSpan(h: Harness, name: string) {
-  const found = h.spans.getFinishedSpans().find((s) => s.name === name);
-  if (!found) throw new Error(`no span named ${name}; got ${spansByName(h).join(', ')}`);
-  return found;
-}
-
-function allSpans(h: Harness, name: string) {
+function allSpans(h: Harness, name: string): FinishedSpan[] {
   return h.spans.getFinishedSpans().filter((s) => s.name === name);
 }
 
-/** OTel hrtime `[seconds, nanos]` as fractional milliseconds. */
-function hrToMs([seconds, nanos]: [number, number]): number {
+function findSpan(h: Harness, name: string): FinishedSpan {
+  const found = allSpans(h, name)[0];
+  if (!found) {
+    const names = h.spans.getFinishedSpans().map((s) => s.name);
+    throw new Error(`no span named ${name}; got ${names.join(', ')}`);
+  }
+  return found;
+}
+
+function parentOf(h: Harness, child: FinishedSpan): FinishedSpan | undefined {
+  const id = child.parentSpanContext?.spanId;
+  return h.spans.getFinishedSpans().find((s) => s.spanContext().spanId === id);
+}
+
+function childrenOf(h: Harness, parent: FinishedSpan, name: string): FinishedSpan[] {
+  return allSpans(h, name).filter((s) => parentOf(h, s) === parent);
+}
+
+/** Span names in the order they ended. */
+function endOrder(h: Harness): string[] {
+  return h.spans.getFinishedSpans().map((s) => s.name);
+}
+
+function attr(span: FinishedSpan, key: string): unknown {
+  return span.attributes[key];
+}
+
+function msOf([seconds, nanos]: [number, number]): number {
   return seconds * 1000 + nanos / 1e6;
 }
 
-function parentOf(h: Harness, child: { parentSpanContext?: { spanId?: string } }) {
-  const pid = child.parentSpanContext?.spanId;
-  return h.spans.getFinishedSpans().find((s) => s.spanContext().spanId === pid);
+function run(
+  h: Harness,
+  messages: AgentMessage[],
+  config: ClaudeAgentSdkOptions = {},
+  options: AgentQueryOptions = {},
+) {
+  const traced = wrapQuery(h.client, fakeQuery(messages), config);
+  return drain(traced({ prompt: 'do the thing', options: { model: MODEL, ...options } }));
 }
 
-function run(h: Harness, messages: AgentMessage[], opts?: ClaudeAgentSdkOptions) {
-  const traced = wrapQuery(h.client, fakeQuery(messages), opts ?? {});
-  return drain(traced({ prompt: 'do the thing', options: { model: MODEL } }));
+const streamed = { includePartialMessages: true };
+
+function useHarness(config?: ClientConfig): () => Harness {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness(config);
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+  return () => h;
 }
 
 // -----------------------------------------------------------------------------
 
-describe('Claude Agent SDK adapter — span structure', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
+describe('Claude Agent SDK adapter: model calls', () => {
+  const harness = useHarness();
 
-  it('emits one invoke_agent and one chat for a plain text answer', async () => {
-    await run(h, [init(), assistant('msg_1', [{ type: 'text', text: 'hello' }]), result()]);
+  it('emits one invoke_agent and one chat for a plain answer', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hello')]), result()]);
 
-    expect(allSpans(h, `chat ${MODEL}`)).toHaveLength(1);
-    expect(allSpans(h, 'invoke_agent claude-agent-sdk')).toHaveLength(1);
-    const chat = findSpan(h, `chat ${MODEL}`);
-    expect(parentOf(h, chat)?.name).toBe('invoke_agent claude-agent-sdk');
+    const root = findSpan(h, ROOT);
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+    expect(childrenOf(h, root, CHAT)).toHaveLength(1);
+    expect(attr(findSpan(h, CHAT), 'gen_ai.response.id')).toBe('msg_1');
   });
 
-  it('merges consecutive assistant messages that share a message.id into one chat span', async () => {
+  it('merges the content blocks of one call into one chat span', async () => {
+    const h = harness();
     await run(h, [
       init(),
       assistant('msg_1', [{ type: 'thinking', thinking: 'hmm' }]),
-      assistant('msg_1', [{ type: 'text', text: 'the answer' }]),
-      assistant('msg_1', [{ type: 'text', text: ' continues' }]),
+      assistant('msg_1', [text('the answer')]),
       result(),
     ]);
 
-    // One API call delivered as three content blocks -> one chat span.
-    expect(allSpans(h, `chat ${MODEL}`)).toHaveLength(1);
-    const out = findSpan(h, `chat ${MODEL}`).attributes['gen_ai.output.messages'] as string;
-    expect(out).toContain('hmm');
-    expect(out).toContain('the answer');
-    expect(out).toContain(' continues');
+    expect(allSpans(h, CHAT)).toHaveLength(1);
+    const output = String(attr(findSpan(h, CHAT), 'gen_ai.output.messages'));
+    expect(output).toContain('hmm');
+    expect(output).toContain('the answer');
   });
 
-  it('cuts a new chat span when message.id changes', async () => {
+  it('starts a new chat span when message.id changes', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { path: '/a' } }]),
-      userToolResult('tu_1', 'file body'),
-      assistant('msg_2', [{ type: 'text', text: 'done reading' }]),
+      assistant('msg_1', [text('first')]),
+      assistant('msg_2', [text('second')]),
       result(),
     ]);
 
-    expect(allSpans(h, `chat ${MODEL}`)).toHaveLength(2);
-    expect(allSpans(h, 'execute_tool Read')).toHaveLength(1);
+    const [first, second] = allSpans(h, CHAT);
+    expect(allSpans(h, CHAT)).toHaveLength(2);
+    expect(attr(first!, 'gen_ai.response.id')).toBe('msg_1');
+    expect(attr(second!, 'gen_ai.response.id')).toBe('msg_2');
   });
 
-  it('carries the running history into each chat span input', async () => {
+  it('keeps one chat span when a tool result arrives between blocks of a call', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'text', text: 'first' }]),
-      userToolResult('tu_x', 'result text'),
-      assistant('msg_2', [{ type: 'text', text: 'second' }]),
+      assistant('msg_1', [toolUse('tu_a', 'Read')]),
+      toolResult('tu_a', 'a'),
+      assistant('msg_1', [toolUse('tu_b', 'Read')]),
+      toolResult('tu_b', 'b'),
+      assistant('msg_2', [text('done')]),
       result(),
     ]);
 
-    const [, second] = allSpans(h, `chat ${MODEL}`);
-    const input = second?.attributes['gen_ai.input.messages'] as string;
+    const [first, second] = allSpans(h, CHAT);
+    expect(allSpans(h, CHAT)).toHaveLength(2);
+    const output = String(attr(first!, 'gen_ai.output.messages'));
+    expect(output).toContain('tu_a');
+    expect(output).toContain('tu_b');
+    // The next call sees both tool calls in one assistant message, then both results.
+    const input = JSON.parse(String(attr(second!, 'gen_ai.input.messages'))) as { role: string }[];
+    expect(input.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'tool']);
+  });
+
+  it('replays the conversation so far as each chat input, across results', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('first answer')]),
+      result(),
+      userText('a follow-up'),
+      assistant('msg_2', [text('second answer')]),
+      result(),
+    ]);
+
+    const input = String(attr(allSpans(h, CHAT)[1]!, 'gen_ai.input.messages'));
     expect(input).toContain('do the thing');
-    expect(input).toContain('first');
+    expect(input).toContain('first answer');
+    expect(input).toContain('a follow-up');
   });
 
-  it('marks chat-span usage as partial and puts authoritative totals on the turn', async () => {
+  it('flags snapshot usage as partial and puts the run totals on invoke_agent', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'text', text: 'hi' }], {
-        message: {
-          id: 'msg_1',
-          model: MODEL,
-          role: 'assistant',
-          content: [{ type: 'text', text: 'hi' }],
-          usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 2 },
-        },
+      assistant('msg_1', [text('hi')], {
+        usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 2 },
+        stopReason: 'end_turn',
       }),
       result(),
     ]);
 
-    const chat = findSpan(h, `chat ${MODEL}`);
-    // No message_delta in this fixture, so the snapshot is all we have.
-    expect(chat.attributes['genai.usage.is_partial']).toBe(true);
-    // Cache reads folded into input_tokens: 7 + 2 = 9.
-    expect(chat.attributes['gen_ai.usage.input_tokens']).toBe(9);
+    const chat = findSpan(h, CHAT);
+    expect(attr(chat, 'genai.usage.is_partial')).toBe(true);
+    expect(attr(chat, 'gen_ai.usage.input_tokens')).toBe(9); // cache reads count as input
+    expect(attr(chat, 'gen_ai.response.finish_reasons')).toEqual(['end_turn']);
 
-    const turn = findSpan(h, 'invoke_agent claude-agent-sdk');
-    // modelUsage: 100 + 20 cache read + 10 cache write = 130.
-    expect(turn.attributes['gen_ai.usage.input_tokens']).toBe(130);
-    expect(turn.attributes['gen_ai.usage.output_tokens']).toBe(50);
-    expect(turn.attributes['gen_ai.usage.cache_write.input_tokens']).toBe(10);
-    expect(turn.attributes['genai.usage.cost_usd']).toBeCloseTo(0.0123);
-  });
-});
-
-describe('Claude Agent SDK adapter — tools', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(130); // 100 + 20 read + 10 write
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
+    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(10);
+    expect(attr(root, 'gen_ai.usage.cache_creation.input_tokens')).toBe(10);
+    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0123);
   });
 
-  it('closes a tool span from the stream tool_result, with the response', async () => {
+  it('keeps one invoke_agent span per query, with the latest result totals', async () => {
+    const h = harness();
+    const totals = (input: number, cost: number) => ({
+      modelUsage: { [MODEL]: { inputTokens: input, outputTokens: 1 } },
+      total_cost_usd: cost,
+    });
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('one')]),
+      result({ ...totals(100, 0.01), result: 'one' }),
+      assistant('msg_2', [text('two')]),
+      result({ ...totals(250, 0.03), result: 'two' }),
+    ]);
+
+    const root = findSpan(h, ROOT);
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(250);
+    expect(attr(root, 'genai.usage.cost_usd')).toBe(0.03);
+    expect(String(attr(root, 'gen_ai.output.messages'))).toContain('two');
+    expect(childrenOf(h, root, CHAT)).toHaveLength(2);
+  });
+
+  it('only gives the main thread the caller system prompt, effort and thinking settings', async () => {
+    const h = harness();
     await run(
       h,
       [
         init(),
-        assistant('msg_1', [
-          { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } },
-        ]),
-        userToolResult('tu_1', 'a\nb'),
+        assistant('msg_1', [delegate('task_1', 'helper')]),
+        assistant('msg_s1', [text('sub')], { parent: 'task_1' }),
+        taskNotification('task_1', 'ok'),
         result(),
       ],
-      { contentCapture: 'full' },
+      {},
+      { systemPrompt: 'be brief', effort: 'high', thinking: { type: 'enabled', budgetTokens: 99 } },
     );
 
-    const tool = findSpan(h, 'execute_tool Bash');
-    expect(tool.attributes['gen_ai.tool.call.id']).toBe('tu_1');
-    expect(tool.attributes['gen_ai.tool.type']).toBe('function');
-    expect(String(tool.attributes['gen_ai.tool.call.result'])).toContain('a\\nb');
+    const mainChat = childrenOf(h, findSpan(h, ROOT), CHAT)[0];
+    const subChat = childrenOf(h, findSpan(h, 'invoke_agent helper'), CHAT)[0];
+    expect(String(attr(mainChat!, 'gen_ai.system_instructions'))).toContain('be brief');
+    expect(attr(mainChat!, 'gen_ai.request.reasoning.level')).toBe('high');
+    expect(attr(mainChat!, 'gen_ai.request.thinking.enabled')).toBe(true);
+    expect(attr(mainChat!, 'gen_ai.request.thinking.budget_tokens')).toBe(99);
+    expect(attr(subChat!, 'gen_ai.request.thinking.enabled')).toBeUndefined();
+    expect(attr(subChat!, 'gen_ai.system_instructions')).toBeUndefined();
+    expect(attr(subChat!, 'gen_ai.request.reasoning.level')).toBeUndefined();
+    expect(attr(subChat!, 'gen_ai.agent.name')).toBe('helper');
+    expect(attr(findSpan(h, ROOT), 'gen_ai.request.reasoning.level')).toBe('high');
   });
 
-  it('records a tool failure from is_error on the tool_result', async () => {
+  it('leaves out the snapshot output count and infers a tool_use finish', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }]),
+      assistant('msg_1', [toolUse('tu_1', 'Read')], {
+        usage: { input_tokens: 7, output_tokens: 2 },
+      }),
+      toolResult('tu_1', 'body'),
+      result(),
+    ]);
+
+    const chat = findSpan(h, CHAT);
+    expect(attr(chat, 'gen_ai.usage.input_tokens')).toBe(7);
+    expect(attr(chat, 'gen_ai.usage.output_tokens')).toBeUndefined();
+    expect(attr(chat, 'gen_ai.response.finish_reasons')).toEqual(['tool_use']);
+  });
+
+  it('dates a call from when the thread handed control back to its last block', async () => {
+    const h = harness();
+    const messages: AgentMessage[] = [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash')]),
+      toolResult('tu_1', 'out'),
+      assistant('msg_2', [text('done')]),
+      result(),
+    ];
+    const pauses = new Map([
+      [2, 30],
+      [3, 30],
+    ]);
+    await drain(wrapQuery(h.client, fakeQuery(messages, pauses))({ prompt: 'p' }));
+
+    const [first, second] = allSpans(h, CHAT);
+    const tool = findSpan(h, 'execute_tool Bash');
+    // The first call ends at its block, not when the tool result arrives 30ms later.
+    expect(msOf(first!.endTime)).toBeLessThan(msOf(tool.endTime) - 20);
+    // The second starts when the tool result went back, not when the first call ended.
+    expect(msOf(second!.startTime)).toBeGreaterThanOrEqual(msOf(tool.endTime));
+    expect(msOf(second!.startTime)).toBeLessThan(msOf(second!.endTime) - 20);
+  });
+
+  it('records a failed API call on a span named for the session model', async () => {
+    // The CLI makes up an assistant message for the failure, with model <synthetic>.
+    const h = harness();
+    await run(h, [
+      init(),
       {
-        ...userToolResult('tu_1', 'exit 1'),
-        message: {
-          role: 'user',
-          content: [
-            { type: 'tool_result', tool_use_id: 'tu_1', content: 'exit 1', is_error: true },
-          ],
-        },
+        type: 'assistant',
+        message: { id: 'uuid-1', model: '<synthetic>', content: [text('API Error: 404 model')] },
+        parent_tool_use_id: null,
       },
+      result({ is_error: true, result: 'API Error: 404 model', api_error_status: 404 }),
+    ]);
+
+    const chat = findSpan(h, CHAT);
+    expect(chat.status.code).toBe(SpanStatusCode.ERROR);
+    expect(chat.status.message).toBe('API Error: 404 model (HTTP 404)');
+    expect(attr(chat, 'gen_ai.response.id')).toBeUndefined();
+    expect(attr(chat, 'gen_ai.output.messages')).toBeUndefined();
+  });
+
+  it('fails a subagent call that the API rejected', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      assistant('msg_s1', [text('first')], { parent: 'task_1' }),
+      {
+        type: 'assistant',
+        message: {
+          id: 'uuid-2',
+          model: '<synthetic>',
+          content: [text('API Error: 400 bad model')],
+        },
+        parent_tool_use_id: 'task_1',
+      },
+      taskNotification('task_1', 'failed', 'failed'),
+      result(),
+    ]);
+
+    const [, failed] = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT);
+    expect(failed!.status.message).toBe('API Error: 400 bad model');
+  });
+
+  it('marks an aborted call as failed', async () => {
+    const h = harness();
+    await run(h, [init(), { ...assistant('msg_1', [text('par')]), aborted: true }, result()]);
+    expect(findSpan(h, CHAT).status.message).toBe('assistant message aborted');
+  });
+
+  it('sums the run totals across models', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('hi')]),
+      result({
+        modelUsage: {
+          [MODEL]: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 1 },
+          'claude-haiku-4-5': { inputTokens: 20, outputTokens: 7, cacheCreationInputTokens: 2 },
+        },
+      }),
+    ]);
+
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(33);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(12);
+    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBe(1);
+    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(2);
+  });
+
+  it('applies the run options to each span type that has a field for them', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        assistant('msg_1', [toolUse('tu_1', 'Read'), delegate('task_1', 'helper')]),
+        assistant('msg_s1', [text('sub')], { parent: 'task_1' }),
+        toolResult('tu_1', 'body'),
+        toolResult('task_1', 'report'),
+        result(),
+      ],
+      {
+        userId: 'user-7',
+        agentVersion: '2.0',
+        conversationTitle: 'Billing question',
+        parentGenerationIds: ['gen-parent'],
+      },
+    );
+
+    const root = findSpan(h, ROOT);
+    const mainChat = childrenOf(h, root, CHAT)[0]!;
+    const tool = findSpan(h, 'execute_tool Read');
+    expect(attr(root, 'user.id')).toBe('user-7');
+    expect(attr(root, 'genai.parent_generation_ids')).toEqual(['gen-parent']);
+    expect(attr(mainChat, 'user.id')).toBe('user-7');
+    expect(attr(mainChat, 'genai.conversation.title')).toBe('Billing question');
+    expect(attr(mainChat, 'gen_ai.agent.version')).toBe('2.0');
+    expect(attr(findSpan(h, 'invoke_agent helper'), 'user.id')).toBe('user-7');
+    expect(attr(tool, 'gen_ai.conversation.id')).toBe('sess-1');
+    expect(attr(tool, 'gen_ai.agent.version')).toBe('2.0');
+  });
+
+  it('prefers the caller conversation id over the session id', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {
+      conversationId: 'conv-9',
+    });
+
+    expect(attr(findSpan(h, ROOT), 'gen_ai.conversation.id')).toBe('conv-9');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.conversation.id')).toBe('conv-9');
+  });
+});
+
+describe('Claude Agent SDK adapter: stream events', () => {
+  const harness = useHarness();
+
+  it('takes final usage, stop reason and reasoning tokens from message_delta', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 500, {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_read_input_tokens: 40,
+        }),
+        assistant('msg_1', [text('hi')], { usage: { input_tokens: 10, output_tokens: 3 } }),
+        // Only output figures: the rest comes from the snapshot.
+        messageDelta(
+          { output_tokens: 155, output_tokens_details: { thinking_tokens: 71 } },
+          'tool_use',
+        ),
+        result(),
+      ],
+      {},
+      streamed,
+    );
+
+    const chat = findSpan(h, CHAT);
+    expect(attr(chat, 'gen_ai.usage.output_tokens')).toBe(155);
+    expect(attr(chat, 'gen_ai.usage.input_tokens')).toBe(50);
+    expect(attr(chat, 'gen_ai.usage.reasoning.output_tokens')).toBe(71);
+    expect(attr(chat, 'gen_ai.response.finish_reasons')).toEqual(['tool_use']);
+    expect(attr(chat, 'genai.usage.is_partial')).toBeUndefined();
+  });
+
+  it('keeps the call open for a message_delta that arrives after the tool result', async () => {
+    // The CLI's real order for a delegation: the launch receipt comes back before the
+    // call's own message_delta.
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100),
+        assistant('msg_1', [delegate('task_1', 'worker')]),
+        taskStarted('task_1'),
+        toolResult('task_1', 'Async agent launched successfully.'),
+        messageDelta({ input_tokens: 5, output_tokens: 255 }),
+        messageStart('msg_2', 100),
+        assistant('msg_2', [text('waiting')]),
+        messageDelta({ input_tokens: 5, output_tokens: 20 }),
+        result(),
+        taskNotification('task_1', 'report'),
+      ],
+      {},
+      streamed,
+    );
+
+    const [first, second] = allSpans(h, CHAT);
+    expect(attr(first!, 'gen_ai.usage.output_tokens')).toBe(255);
+    expect(attr(first!, 'genai.usage.is_partial')).toBeUndefined();
+    expect(attr(second!, 'gen_ai.usage.output_tokens')).toBe(20);
+  });
+
+  it('closes a subagent call on its tool result, since subagents get no stream events', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100),
+        assistant('msg_1', [delegate('task_1', 'worker')]),
+        messageDelta({ input_tokens: 5, output_tokens: 40 }),
+        assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+        toolResult('tu_9', 'ok', { parent: 'task_1' }),
+        assistant('msg_s2', [text('report')], { parent: 'task_1' }),
+        toolResult('task_1', 'report'),
+        result(),
+      ],
+      {},
+      streamed,
+    );
+
+    const subChats = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT);
+    expect(subChats).toHaveLength(2);
+    for (const chat of subChats) expect(attr(chat, 'genai.usage.is_partial')).toBe(true);
+  });
+
+  it('records time to first token and starts the span when the request did', async () => {
+    const h = harness();
+    const before = Date.now();
+    await run(
+      h,
+      [init(), messageStart('msg_1', 640), assistant('msg_1', [text('hi')]), result()],
+      {},
+      streamed,
+    );
+
+    const chat = findSpan(h, CHAT);
+    expect(attr(chat, 'gen_ai.response.time_to_first_chunk')).toBe(0.64);
+    expect(msOf(chat.startTime)).toBeLessThanOrEqual(before - 600);
+  });
+});
+
+describe('Claude Agent SDK adapter: tools', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
+
+  it('closes a tool span on its tool_result, with the result', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { command: 'ls' })]),
+      toolResult('tu_1', 'a\nb'),
       result(),
     ]);
 
     const tool = findSpan(h, 'execute_tool Bash');
-    expect(tool.attributes['error.type']).toBe('tool_execution_error');
-    expect(tool.status.code).toBe(2); // ERROR
+    expect(attr(tool, 'gen_ai.tool.call.id')).toBe('tu_1');
+    expect(attr(tool, 'gen_ai.tool.type')).toBe('function');
+    expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('a\\nb');
+    expect(parentOf(h, tool)?.name).toBe(ROOT);
   });
 
-  it('closes a tool from the stream alone, with no hook involved', async () => {
-    // The span opens from the tool_use block and closes from the
-    // tool_result block. Coarser (the duration then includes permission waiting
-    // and queueing) but never missing.
+  it('records a failed tool call', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { path: '/a' } }]),
-      userToolResult('tu_1', 'body'),
+      assistant('msg_1', [toolUse('tu_1', 'Bash')]),
+      toolResult('tu_1', 'exit 1', { isError: true }),
       result(),
     ]);
 
-    const tool = findSpan(h, 'execute_tool Read');
-    expect(allSpans(h, 'execute_tool Read')).toHaveLength(1);
-    expect(tool.status.code).not.toBe(2);
+    const tool = findSpan(h, 'execute_tool Bash');
+    expect(tool.status.code).toBe(SpanStatusCode.ERROR);
+    expect(attr(tool, 'error.type')).toBe('tool_execution_error');
   });
 
-  it('marks mcp tools as extension type', async () => {
+  it('marks MCP tools as extensions', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'tu_1', name: 'mcp__weather__get', input: { city: 'Berlin' } },
-      ]),
-      userToolResult('tu_1', 'sunny'),
+      assistant('msg_1', [toolUse('tu_1', 'mcp__weather__get')]),
+      toolResult('tu_1', 'sunny'),
       result(),
     ]);
 
-    expect(findSpan(h, 'execute_tool mcp__weather__get').attributes['gen_ai.tool.type']).toBe(
+    expect(attr(findSpan(h, 'execute_tool mcp__weather__get'), 'gen_ai.tool.type')).toBe(
       'extension',
     );
   });
 
-  it('waits for the notification on a backgrounded Bash, not its launch receipt', async () => {
-    // Not only delegations: a `run_in_background` command is registered as a task too
-    // (`task_type: local_bash`), and its tool_result is likewise just a receipt. The
-    // rule keys off being a task at all, so this needs no special case.
-    await run(
-      h,
-      [
-        init(),
-        assistant('msg_1', [
-          {
-            type: 'tool_use',
-            id: 'tu_1',
-            name: 'Bash',
-            input: { command: 'sleep 8 && echo done', run_in_background: true },
-          },
-        ]),
-        taskStarted('tu_1', undefined, 'local_bash'),
-        userToolResult('tu_1', 'Command running in background with ID: bxnmsd4ot'),
-        assistant('msg_2', [{ type: 'text', text: 'waiting' }]),
-        taskNotification('tu_1', 'done'),
-        result(),
-      ],
-      { contentCapture: 'full' },
-    );
-
-    const tool = findSpan(h, 'execute_tool Bash');
-    expect(allSpans(h, 'execute_tool Bash')).toHaveLength(1);
-    expect(String(tool.attributes['gen_ai.tool.call.result'])).toContain('done');
-    expect(String(tool.attributes['gen_ai.tool.call.result'])).not.toContain(
-      'running in background',
-    );
-    // It outlived the model call that came after the receipt, which is the point.
-    const order = h.spans.getFinishedSpans().map((sp) => sp.name);
-    expect(order.indexOf(`chat ${MODEL}`)).toBeLessThan(order.indexOf('execute_tool Bash'));
-  });
-
-  it('force-closes a tool that never returned', async () => {
+  it('closes a background command on its notification, not its launch receipt', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }]),
+      assistant('msg_1', [
+        toolUse('tu_1', 'Bash', { command: 'sleep 8', run_in_background: true }),
+      ]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
+      assistant('msg_2', [text('waiting')]),
+      result(),
+      taskNotification('tu_1', 'finished'),
+    ]);
+
+    const tool = findSpan(h, 'execute_tool Bash');
+    expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('finished');
+    const order = endOrder(h);
+    expect(order.indexOf(CHAT)).toBeLessThan(order.indexOf('execute_tool Bash'));
+  });
+
+  it('closes a background command still running at the end without an error', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
       result(),
     ]);
 
     const tool = findSpan(h, 'execute_tool Bash');
-    expect(tool.attributes['error.type']).toBe('tool_execution_error');
+    expect(tool.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('running in background');
   });
 
-  it("passes the caller's options through to the SDK untouched", async () => {
-    // Nothing is injected any more, so the object the SDK receives should be the
-    // very one the caller handed us — not a copy, and not augmented.
-    let seen: AgentQueryOptions | undefined;
-    const callerOptions: AgentQueryOptions = { model: MODEL };
-    const traced = wrapQuery(
-      h.client,
-      (params) => {
-        seen = params.options;
-        return fakeQuery([init(), result()])(params);
-      },
-      {},
-    );
-    await drain(traced({ prompt: 'x', options: callerOptions }));
+  it('does not treat a stopped task as a failure', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      taskNotification('tu_1', 'stopped by user', 'stopped'),
+      result(),
+    ]);
 
-    expect(seen).toBe(callerOptions);
-    expect(Object.keys(callerOptions)).toEqual(['model']);
+    expect(findSpan(h, 'execute_tool Bash').status.code).not.toBe(SpanStatusCode.ERROR);
   });
 });
 
-describe('Claude Agent SDK adapter — subagents', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
+describe('Claude Agent SDK adapter: subagents', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
 
-  it('nests a subagent invoke_agent under the Task tool span', async () => {
+  it('nests a background subagent under its delegation until the notification', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        {
-          type: 'tool_use',
-          id: 'task_1',
-          name: 'Task',
-          input: { subagent_type: 'code-reviewer', description: 'review', prompt: 'look at x' },
-        },
-      ]),
-      assistant('msg_sub_1', [{ type: 'text', text: 'reviewing' }], {
-        parent_tool_use_id: 'task_1',
-      }),
-      userToolResult('task_1', 'review done'),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      toolResult('task_1', 'Async agent launched successfully.'),
+      assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+      toolResult('tu_9', 'from-subagent', { parent: 'task_1' }),
+      assistant('msg_s2', [text('report')], { parent: 'task_1' }),
+      taskNotification('task_1', 'the real report'),
       result(),
     ]);
 
-    const sub = findSpan(h, 'invoke_agent code-reviewer');
-    expect(parentOf(h, sub)?.name).toBe('execute_tool Task');
-    expect(parentOf(h, findSpan(h, 'execute_tool Task'))?.name).toBe(
-      'invoke_agent claude-agent-sdk',
-    );
-    expect(sub.attributes['gen_ai.agent.description']).toBe('review');
-    // The subagent's own chat span nests under the subagent, not the turn.
-    const subChats = allSpans(h, `chat ${MODEL}`).filter(
-      (s) => parentOf(h, s)?.name === 'invoke_agent code-reviewer',
-    );
-    expect(subChats).toHaveLength(1);
+    const delegation = findSpan(h, 'execute_tool Agent');
+    const sub = findSpan(h, 'invoke_agent worker');
+    expect(parentOf(h, sub)).toBe(delegation);
+    expect(parentOf(h, findSpan(h, 'execute_tool Bash'))).toBe(sub);
+    expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
+    expect(String(attr(delegation, 'gen_ai.tool.call.result'))).toContain('the real report');
+    expect(String(attr(sub, 'gen_ai.output.messages'))).toContain('the real report');
+    expect(String(attr(sub, 'gen_ai.input.messages'))).toContain('look at x');
+    const order = endOrder(h);
+    expect(order.indexOf('invoke_agent worker')).toBeLessThan(order.indexOf('execute_tool Agent'));
   });
 
-  it('ends a subagent before the Task tool span that owns it', async () => {
-    // The Task tool's tool_result closes its span, so unless closing a tool finishes
-    // its subagent first, the child outlives its parent.
+  it('closes an inline delegation on its notification and ignores the tool_result after', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'alpha' } },
-      ]),
-      assistant('msg_s1', [{ type: 'text', text: 'sub work' }], {
-        parent_tool_use_id: 'task_1',
-      }),
-      userToolResult('task_1', 'done'),
+      assistant('msg_1', [delegate('task_1', 'worker', 'check it')]),
+      taskStarted('task_1'),
+      userText('check it', 'task_1'),
+      assistant('msg_s1', [text('working')], { parent: 'task_1' }),
+      taskNotification('task_1', 'inline report'),
+      toolResult('task_1', 'inline report'),
       result(),
     ]);
 
-    const tool = findSpan(h, 'execute_tool Task');
-    const sub = findSpan(h, 'invoke_agent alpha');
-    expect(parentOf(h, sub)?.spanContext().spanId).toBe(tool.spanContext().spanId);
-
-    // Assert the order they *ended*, not their timestamps: host.now() is
-    // millisecond-resolution and all of this happens inside one millisecond, so
-    // comparing endTime cannot tell the two apart. The exporter records spans as
-    // they end, so its ordering is exact.
-    const order = h.spans.getFinishedSpans().map((s) => s.name);
-    expect(order.indexOf('invoke_agent alpha')).toBeLessThan(order.indexOf('execute_tool Task'));
-    expect(hrToMs(sub.startTime)).toBeGreaterThanOrEqual(hrToMs(tool.startTime));
+    expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
+    const subChat = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT)[0]!;
+    // The echoed prompt is not added a second time.
+    const input = String(attr(subChat, 'gen_ai.input.messages'));
+    expect(input.split('check it')).toHaveLength(2);
   });
 
-  it('keeps a backgrounded delegation open until its task notification', async () => {
-    // Run in the background, the Task tool_result comes back in milliseconds saying
-    // only that the agent launched, and the subagent's messages arrive long after.
-    // Closing on that receipt would report a near-instant delegation and leave the
-    // subagent nothing open to nest under.
-    await run(
-      h,
-      [
-        init(),
-        assistant('msg_1', [
-          { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'worker' } },
-        ]),
-        taskStarted('task_1', 'worker'),
-        userToolResult('task_1', 'Async agent launched successfully. agentId: abc'),
-        // …the subagent only starts working now.
-        assistant('msg_s1', [{ type: 'tool_use', id: 'tu_9', name: 'Bash', input: {} }], {
-          parent_tool_use_id: 'task_1',
-        }),
-        userToolResult('tu_9', 'from-subagent', { parent_tool_use_id: 'task_1' }),
-        assistant('msg_s2', [{ type: 'text', text: 'report' }], { parent_tool_use_id: 'task_1' }),
-        taskNotification('task_1', 'the real report'),
-        result(),
-      ],
-      { contentCapture: 'full' },
-    );
-
-    const tool = findSpan(h, 'execute_tool Task');
-    // Nesting survives: the tool was still open when the subagent first spoke.
-    expect(parentOf(h, findSpan(h, 'invoke_agent worker'))?.name).toBe('execute_tool Task');
-    expect(parentOf(h, findSpan(h, 'execute_tool Bash'))?.name).toBe('invoke_agent worker');
-    // The notification's summary is the result, not the launch receipt.
-    expect(String(tool.attributes['gen_ai.tool.call.result'])).toContain('the real report');
-    expect(String(tool.attributes['gen_ai.tool.call.result'])).not.toContain('launched');
-    // Child still ends before its parent.
-    const order = h.spans.getFinishedSpans().map((sp) => sp.name);
-    expect(order.indexOf('invoke_agent worker')).toBeLessThan(order.indexOf('execute_tool Task'));
-  });
-
-  it('closes an inline delegation on its notification, ignoring the tool_result after', async () => {
-    // Run inline the notification arrives first and the tool_result that follows is a
-    // no-op, so one uniform rule covers both modes.
-    await run(
-      h,
-      [
-        init(),
-        assistant('msg_1', [
-          { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'worker' } },
-        ]),
-        taskStarted('task_1', 'worker'),
-        assistant('msg_s1', [{ type: 'text', text: 'working' }], { parent_tool_use_id: 'task_1' }),
-        taskNotification('task_1', 'inline report'),
-        userToolResult('task_1', 'inline report'),
-        result(),
-      ],
-      { contentCapture: 'full' },
-    );
-
-    expect(allSpans(h, 'execute_tool Task')).toHaveLength(1);
-    expect(parentOf(h, findSpan(h, 'invoke_agent worker'))?.name).toBe('execute_tool Task');
-    expect(
-      String(findSpan(h, 'execute_tool Task').attributes['gen_ai.tool.call.result']),
-    ).toContain('inline report');
-  });
-
-  it('marks a delegation that ended in a failure state', async () => {
+  it('marks a failed delegation, and its subagent, as errors', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'worker' } },
-      ]),
-      taskStarted('task_1', 'worker'),
-      userToolResult('task_1', 'Async agent launched successfully.'),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      assistant('msg_s1', [text('trying')], { parent: 'task_1' }),
       taskNotification('task_1', 'gave up', 'failed'),
       result(),
     ]);
 
-    const tool = findSpan(h, 'execute_tool Task');
-    expect(tool.status.code).toBe(2);
-    expect(tool.attributes['error.type']).toBe('tool_execution_error');
+    expect(findSpan(h, 'execute_tool Agent').status.code).toBe(SpanStatusCode.ERROR);
+    expect(findSpan(h, 'invoke_agent worker').status.code).toBe(SpanStatusCode.ERROR);
   });
 
   it('keeps two parallel subagents apart when they finish out of order', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'task_a', name: 'Task', input: { subagent_type: 'alpha' } },
-        { type: 'tool_use', id: 'task_b', name: 'Task', input: { subagent_type: 'beta' } },
-      ]),
-      assistant('msg_b1', [{ type: 'text', text: 'from beta' }], { parent_tool_use_id: 'task_b' }),
-      assistant('msg_a1', [{ type: 'text', text: 'from alpha' }], { parent_tool_use_id: 'task_a' }),
-      // b returns first, a second — reverse of launch order.
-      userToolResult('task_b', 'beta done'),
-      userToolResult('task_a', 'alpha done'),
+      assistant('msg_1', [delegate('task_a', 'alpha'), delegate('task_b', 'beta')]),
+      assistant('msg_b1', [text('from beta')], { parent: 'task_b' }),
+      assistant('msg_a1', [text('from alpha')], { parent: 'task_a' }),
+      toolResult('task_b', 'beta done'),
+      toolResult('task_a', 'alpha done'),
       result(),
     ]);
 
     const alpha = findSpan(h, 'invoke_agent alpha');
-    const beta = findSpan(h, 'invoke_agent beta');
-    expect(parentOf(h, alpha)?.attributes['gen_ai.tool.call.id']).toBe('task_a');
-    expect(parentOf(h, beta)?.attributes['gen_ai.tool.call.id']).toBe('task_b');
-
-    const alphaChat = allSpans(h, `chat ${MODEL}`).find(
-      (s) => parentOf(h, s)?.name === 'invoke_agent alpha',
+    expect(attr(parentOf(h, alpha)!, 'gen_ai.tool.call.id')).toBe('task_a');
+    expect(attr(parentOf(h, findSpan(h, 'invoke_agent beta'))!, 'gen_ai.tool.call.id')).toBe(
+      'task_b',
     );
-    expect(String(alphaChat?.attributes['gen_ai.output.messages'])).toContain('from alpha');
+    const alphaChat = childrenOf(h, alpha, CHAT)[0]!;
+    expect(String(attr(alphaChat, 'gen_ai.output.messages'))).toContain('from alpha');
+    expect(String(attr(alphaChat, 'gen_ai.output.messages'))).not.toContain('from beta');
   });
 
-  it('synthesizes a subagent span when the launching Task block was never seen', async () => {
+  it('leaves a running subagent alone when the main thread emits a result', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_orphan', [{ type: 'text', text: 'orphan work' }], {
-        parent_tool_use_id: 'task_missing',
-      }),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      toolResult('task_1', 'Async agent launched successfully.'),
+      assistant('msg_s1', [text('part one')], { parent: 'task_1' }),
+      result(),
+      // Same id: the subagent's call is still delivering its blocks across the result.
+      assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+      toolResult('tu_9', 'ok', { parent: 'task_1' }),
+      taskNotification('task_1', 'report'),
       result(),
     ]);
 
-    expect(allSpans(h, 'invoke_agent subagent')).toHaveLength(1);
+    const subChats = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT);
+    expect(subChats).toHaveLength(1);
+    expect(String(attr(subChats[0]!, 'gen_ai.output.messages'))).toContain('part one');
   });
 
-  it('opens the subagent while its Task tool is still open', async () => {
-    // Why parenting needs nothing more than the live-tool map: a Task tool's
-    // tool_result *is* the subagent's report, so it can never arrive before the
-    // subagent's own messages. The tool is still open when the subagent span opens.
+  it('dates a subagent from the start of its delegation', async () => {
+    const h = harness();
+    const messages: AgentMessage[] = [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      toolResult('task_1', 'Async agent launched successfully.'),
+      assistant('msg_s1', [text('late start')], { parent: 'task_1' }),
+      taskNotification('task_1', 'report'),
+      result(),
+    ];
+    await drain(wrapQuery(h.client, fakeQuery(messages, new Map([[4, 30]])))({ prompt: 'p' }));
+
+    const delegation = findSpan(h, 'execute_tool Agent');
+    const sub = findSpan(h, 'invoke_agent worker');
+    expect(msOf(sub.startTime)).toBe(msOf(delegation.startTime));
+  });
+
+  it('closes the tools of a subagent that is stopped mid-call', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'late' } },
-      ]),
-      assistant('msg_sub', [{ type: 'text', text: 'working' }], {
-        parent_tool_use_id: 'task_1',
-      }),
-      userToolResult('task_1', 'ok'),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+      taskNotification('task_1', 'stopped', 'stopped'),
       result(),
     ]);
 
-    expect(parentOf(h, findSpan(h, 'invoke_agent late'))?.name).toBe('execute_tool Task');
+    expect(endOrder(h)).toEqual([
+      'execute_tool Bash',
+      CHAT,
+      'invoke_agent worker',
+      'execute_tool Agent',
+      CHAT,
+      ROOT,
+    ]);
   });
 
-  it('routes subagent tool calls under the subagent', async () => {
+  it('nests a subagent that delegates again', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [
-        { type: 'tool_use', id: 'task_1', name: 'Task', input: { subagent_type: 'searcher' } },
-      ]),
-      assistant('msg_s1', [{ type: 'tool_use', id: 'tu_9', name: 'Grep', input: { q: 'x' } }], {
-        parent_tool_use_id: 'task_1',
-      }),
-      userToolResult('tu_9', 'match', { parent_tool_use_id: 'task_1' }),
-      userToolResult('task_1', 'search done'),
+      assistant('msg_1', [delegate('task_1', 'outer')]),
+      assistant('msg_s1', [delegate('task_2', 'inner')], { parent: 'task_1' }),
+      assistant('msg_t1', [text('deep')], { parent: 'task_2' }),
+      toolResult('task_2', 'inner done', { parent: 'task_1' }),
+      toolResult('task_1', 'outer done'),
       result(),
     ]);
 
-    expect(parentOf(h, findSpan(h, 'execute_tool Grep'))?.name).toBe('invoke_agent searcher');
+    const outer = findSpan(h, 'invoke_agent outer');
+    const inner = findSpan(h, 'invoke_agent inner');
+    expect(parentOf(h, parentOf(h, inner)!)).toBe(outer);
+    expect(childrenOf(h, inner, CHAT)).toHaveLength(1);
+  });
+
+  it('ignores messages for a delegation that is not open', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      assistant('msg_s1', [text('work')], { parent: 'task_1' }),
+      toolResult('task_1', 'done'),
+      assistant('msg_s2', [text('late')], { parent: 'task_1' }),
+      assistant('msg_x', [text('orphan')], { parent: 'task_unknown' }),
+      result(),
+    ]);
+
+    expect(allSpans(h, 'invoke_agent worker')).toHaveLength(1);
+    expect(
+      h.spans.getFinishedSpans().filter((s) => s.name.startsWith('invoke_agent')),
+    ).toHaveLength(2);
+    expect(allSpans(h, CHAT)).toHaveLength(2);
   });
 });
 
-describe('Claude Agent SDK adapter — lifecycle and edge cases', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
+describe('Claude Agent SDK adapter: content capture', () => {
+  const messages = [
+    init(),
+    assistant('msg_1', [delegate('task_1', 'worker', 'secret prompt')]),
+    assistant('msg_s1', [toolUse('tu_9', 'Bash', { command: 'cat secret' })], { parent: 'task_1' }),
+    toolResult('tu_9', 'secret file', { parent: 'task_1' }),
+    assistant('msg_s2', [text('summary')], { parent: 'task_1' }),
+    toolResult('task_1', 'secret report'),
+    result(),
+  ];
 
-  it('flags compaction on the turn and on later chat spans', async () => {
-    await run(h, [
-      init(),
-      assistant('msg_1', [{ type: 'text', text: 'before' }]),
-      {
-        type: 'system',
-        subtype: 'compact_boundary',
-        compact_metadata: { trigger: 'auto', pre_tokens: 150_000, post_tokens: 20_000 },
-      },
-      userToolResult('tu_none', 'x'),
-      assistant('msg_2', [{ type: 'text', text: 'after' }]),
-      result(),
-    ]);
+  describe('default mode (no tool content)', () => {
+    const harness = useHarness();
 
-    const turn = findSpan(h, 'invoke_agent claude-agent-sdk');
-    expect(turn.attributes['gen_ai.conversation.compacted']).toBe(true);
-    // The semconv boolean is all we emit; there is no bespoke compaction event.
-    expect(turn.events).toHaveLength(0);
+    it('leaves tool content, including the delegation prompt and report, off every span', async () => {
+      const h = harness();
+      await run(h, messages);
 
-    const [, after] = allSpans(h, `chat ${MODEL}`);
-    expect(after?.attributes['gen_ai.conversation.compacted']).toBe(true);
-  });
-
-  it('takes final usage, stop reason, and reasoning tokens from message_delta', async () => {
-    // `message.usage` on a streamed assistant message is a mid-stream snapshot —
-    // 3 output tokens here against a real 155. Only `message_delta` carries the
-    // call's totals, and it arrives after the content blocks but before the span
-    // closes.
-    const traced = wrapQuery(
-      h.client,
-      fakeQuery([
-        init(),
-        {
-          type: 'stream_event',
-          parent_tool_use_id: null,
-          ttft_ms: 500,
-          event: { type: 'message_start' },
-        },
-        assistant('msg_1', [{ type: 'text', text: 'hi' }], {
-          message: {
-            id: 'msg_1',
-            model: MODEL,
-            role: 'assistant',
-            content: [{ type: 'text', text: 'hi' }],
-            stop_reason: null,
-            usage: { input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 40 },
-          },
-        }),
-        {
-          type: 'stream_event',
-          parent_tool_use_id: null,
-          event: {
-            type: 'message_delta',
-            delta: { stop_reason: 'tool_use' },
-            usage: {
-              input_tokens: 10,
-              output_tokens: 155,
-              cache_read_input_tokens: 40,
-              output_tokens_details: { thinking_tokens: 71 },
-            },
-          },
-        },
-        result(),
-      ]),
-      {},
-    );
-    await drain(traced({ prompt: 'p', options: { model: MODEL, includePartialMessages: true } }));
-
-    const chat = findSpan(h, `chat ${MODEL}`);
-    expect(chat.attributes['gen_ai.usage.output_tokens']).toBe(155);
-    expect(chat.attributes['gen_ai.usage.input_tokens']).toBe(50); // 10 + 40 cache read
-    expect(chat.attributes['gen_ai.usage.reasoning.output_tokens']).toBe(71);
-    expect(chat.attributes['gen_ai.response.finish_reasons']).toEqual(['tool_use']);
-    // Authoritative now, so the partial marker is gone.
-    expect(chat.attributes['genai.usage.is_partial']).toBeUndefined();
-  });
-
-  it('flags usage as partial when no message_delta arrives', async () => {
-    await run(h, [
-      init(),
-      assistant('msg_1', [{ type: 'text', text: 'hi' }], {
-        message: {
-          id: 'msg_1',
-          model: MODEL,
-          role: 'assistant',
-          content: [{ type: 'text', text: 'hi' }],
-          usage: { input_tokens: 10, output_tokens: 3 },
-        },
-      }),
-      result(),
-    ]);
-
-    const chat = findSpan(h, `chat ${MODEL}`);
-    expect(chat.attributes['genai.usage.is_partial']).toBe(true);
-    expect(chat.attributes['gen_ai.usage.output_tokens']).toBe(3);
-  });
-
-  it('records TTFT from stream_event', async () => {
-    const traced = wrapQuery(
-      h.client,
-      fakeQuery([
-        init(),
-        // ttft_ms rides on message_start, which precedes the assistant messages
-        // of that call — so there is no chat span open yet when it arrives.
-        {
-          type: 'stream_event',
-          parent_tool_use_id: null,
-          ttft_ms: 640,
-          event: { type: 'message_start' },
-        },
-        assistant('msg_1', [{ type: 'text', text: 'hi' }]),
-        result(),
-      ]),
-      {},
-    );
-    await drain(traced({ prompt: 'p', options: { model: MODEL, includePartialMessages: true } }));
-
-    expect(findSpan(h, `chat ${MODEL}`).attributes['gen_ai.response.time_to_first_chunk']).toBe(
-      0.64,
-    );
-  });
-
-  it('reads the reasoning level, and emits none of the cut extensions', async () => {
-    const traced = wrapQuery(h.client, fakeQuery([init(), result()]), {});
-    await drain(traced({ prompt: 'p', options: { model: MODEL, effort: 'xhigh' } }));
-
-    const turn = findSpan(h, 'invoke_agent claude-agent-sdk');
-    expect(turn.attributes['gen_ai.request.reasoning.level']).toBe('xhigh');
-    expect(turn.attributes['gen_ai.conversation.id']).toBe('sess-1');
-    // Everything below was considered and cut: already covered by a convention,
-    // derivable from the span tree, or wanted by nobody.
-    for (const gone of [
-      'genai.agent.session_id',
-      'genai.agent.num_turns',
-      'genai.agent.tools_available',
-      'genai.agent.permission_mode',
-      'genai.agent.permission_denials',
-      'genai.agent.cli_version',
-      'genai.agent.api_provider',
-      'prompt.id',
-      'genai.conversation.turn_index',
-    ]) {
-      expect(turn.attributes[gone]).toBeUndefined();
-    }
-  });
-
-  it('marks the turn as failed on an error result', async () => {
-    await run(h, [
-      init(),
-      assistant('msg_1', [{ type: 'text', text: 'partial' }]),
-      result({ subtype: 'error_max_turns', is_error: true }),
-    ]);
-
-    const turn = findSpan(h, 'invoke_agent claude-agent-sdk');
-    expect(turn.status.code).toBe(2);
-    // Usage is still recorded on a failed run.
-    expect(turn.attributes['gen_ai.usage.output_tokens']).toBe(50);
-  });
-
-  it('closes every span when the caller breaks out of the loop early', async () => {
-    const traced = wrapQuery(
-      h.client,
-      fakeQuery([
-        init(),
-        assistant('msg_1', [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }]),
-        userToolResult('tu_1', 'out'),
-        result(),
-      ]),
-      {},
-    );
-
-    let seen = 0;
-    for await (const _msg of traced({ prompt: 'p', options: { model: MODEL } })) {
-      seen += 1;
-      if (seen === 2) break;
-    }
-
-    const names = spansByName(h);
-    expect(names).toContain('invoke_agent claude-agent-sdk');
-    expect(names).toContain(`chat ${MODEL}`);
-    expect(names).toContain('execute_tool Bash');
-    expect(findSpan(h, 'invoke_agent claude-agent-sdk').status.code).toBe(2);
-  });
-
-  it('propagates a stream error and still closes spans', async () => {
-    const boom = new Error('cli died');
-    const traced = wrapQuery(
-      h.client,
-      () =>
-        (async function* () {
-          yield init();
-          yield assistant('msg_1', [{ type: 'text', text: 'hi' }]);
-          throw boom;
-        })(),
-      {},
-    );
-
-    await expect(drain(traced({ prompt: 'p', options: { model: MODEL } }))).rejects.toThrow(
-      'cli died',
-    );
-    expect(findSpan(h, 'invoke_agent claude-agent-sdk').status.code).toBe(2);
-    expect(findSpan(h, `chat ${MODEL}`).status.code).toBe(2);
-  });
-
-  it('keeps one agent span for the whole query, whatever the result count', async () => {
-    // A single query() can emit several results — a backgrounded delegation keeps the
-    // run going past the first. They are checkpoints, so the span count does not move
-    // and the totals are the latest result's, read as-is rather than differenced.
-    const cumulative = (input: number, output: number) => ({
-      [MODEL]: { inputTokens: input, outputTokens: output, costUSD: 0.01 },
+      for (const span of h.spans.getFinishedSpans()) {
+        for (const value of Object.values(span.attributes)) {
+          expect(String(value)).not.toMatch(/secret/);
+        }
+      }
     });
-    await run(h, [
-      init(),
-      assistant('msg_1', [{ type: 'text', text: 'one' }]),
-      result({ modelUsage: cumulative(100, 40), total_cost_usd: 0.01 }),
-      assistant('msg_2', [{ type: 'text', text: 'two' }]),
-      result({ modelUsage: cumulative(250, 90), total_cost_usd: 0.02 }),
-    ]);
-
-    const agents = allSpans(h, 'invoke_agent claude-agent-sdk');
-    expect(agents).toHaveLength(1);
-    expect(agents[0]?.attributes['gen_ai.usage.input_tokens']).toBe(250);
-    expect(agents[0]?.attributes['gen_ai.usage.output_tokens']).toBe(90);
-    expect(agents[0]?.attributes['genai.usage.cost_usd']).toBe(0.01);
-    // Both model calls hang off that one span, in one trace.
-    const chats = allSpans(h, `chat ${MODEL}`);
-    expect(chats).toHaveLength(2);
-    expect(new Set(chats.map((c) => c.spanContext().traceId)).size).toBe(1);
-    expect(parentOf(h, chats[0]!)?.name).toBe('invoke_agent claude-agent-sdk');
-    expect(parentOf(h, chats[1]!)?.name).toBe('invoke_agent claude-agent-sdk');
   });
 
-  it('records an API failure on the model call, and still ends the run green', async () => {
-    // subtype stays 'success' when a call fails on an API error, and the error text
-    // is in `result`. The call is what failed, so that is where it belongs; a later
-    // result that succeeds leaves the run itself green.
+  describe('metadata_only', () => {
+    const harness = useHarness({ contentCaptureMode: 'metadata_only' });
+
+    it('emits no content', async () => {
+      const h = harness();
+      await run(h, messages);
+
+      for (const span of h.spans.getFinishedSpans()) {
+        expect(attr(span, 'gen_ai.input.messages')).toBeUndefined();
+        expect(attr(span, 'gen_ai.output.messages')).toBeUndefined();
+        expect(attr(span, 'gen_ai.tool.call.arguments')).toBeUndefined();
+        expect(attr(span, 'gen_ai.tool.call.result')).toBeUndefined();
+      }
+    });
+  });
+});
+
+describe('Claude Agent SDK adapter: errors and lifecycle', () => {
+  const harness = useHarness();
+
+  it('puts an API failure on the model call, and a later success leaves the run green', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'text', text: 'API Error: 400 unknown model' }]),
+      assistant('msg_1', [text('API Error: 400 unknown model')]),
       result({ is_error: true, result: 'API Error: 400 unknown model', api_error_status: 400 }),
-      assistant('msg_2', [{ type: 'text', text: 'recovered' }]),
+      assistant('msg_2', [text('recovered')]),
       result({ result: 'recovered' }),
     ]);
 
-    const chats = allSpans(h, `chat ${MODEL}`);
-    expect(chats[0]?.status.code).toBe(2);
-    expect(String(chats[0]?.status.message)).toContain('400 unknown model');
-    expect(chats[1]?.status.code).toBe(1);
-    expect(findSpan(h, 'invoke_agent claude-agent-sdk').status.code).toBe(1);
+    const [failed, recovered] = allSpans(h, CHAT);
+    expect(failed!.status.code).toBe(SpanStatusCode.ERROR);
+    expect(failed!.status.message).toBe('API Error: 400 unknown model (HTTP 400)');
+    expect(recovered!.status.code).toBe(SpanStatusCode.OK);
+    const root = findSpan(h, ROOT);
+    expect(root.status.code).toBe(SpanStatusCode.OK);
+    expect(String(attr(root, 'gen_ai.output.messages'))).toContain('recovered');
+    expect(String(attr(root, 'gen_ai.output.messages'))).toContain('end_turn');
   });
 
-  it('puts an early-stop failure on the run, not on the model call', async () => {
-    // error_max_turns means the loop hit a limit; the call before it succeeded, so
-    // marking that call failed would be a lie. The text lives in `errors`.
+  it('puts an early stop on the run, not the model call', async () => {
+    const h = harness();
     await run(h, [
       init(),
-      assistant('msg_1', [{ type: 'text', text: 'one' }]),
+      assistant('msg_1', [text('one')]),
       result({
         subtype: 'error_max_turns',
         is_error: true,
         result: undefined,
         errors: ['Reached maximum number of turns (1)'],
-        terminal_reason: 'max_turns',
       }),
     ]);
 
-    expect(findSpan(h, `chat ${MODEL}`).status.code).toBe(1);
-    const agent = findSpan(h, 'invoke_agent claude-agent-sdk');
-    expect(agent.status.code).toBe(2);
-    expect(String(agent.status.message)).toContain('Reached maximum number of turns');
+    expect(findSpan(h, CHAT).status.code).toBe(SpanStatusCode.OK);
+    const root = findSpan(h, ROOT);
+    expect(root.status.code).toBe(SpanStatusCode.ERROR);
+    expect(root.status.message).toBe('Reached maximum number of turns (1)');
+    expect(attr(root, 'gen_ai.output.messages')).toBeUndefined();
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
   });
 
-  it('resolves a bedrock-served run from the routing env, before the span opens', async () => {
-    const traced = wrapQuery(
-      h.client,
-      fakeQuery([init(), assistant('msg_1', [{ type: 'text', text: 'hi' }]), result()]),
-      {},
-    );
-    // options.env replaces rather than merges, so it is exactly what the CLI
-    // subprocess sees — which is why the platform is knowable up front.
-    await drain(
-      traced({
-        prompt: 'p',
-        options: { model: MODEL, env: { CLAUDE_CODE_USE_BEDROCK: '1' } },
+  it('marks the run failed when the last result is an error', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('one')]),
+      result(),
+      assistant('msg_2', [text('two')]),
+      result({
+        subtype: 'error_during_execution',
+        is_error: true,
+        errors: [],
+        terminal_reason: 'x',
       }),
-    );
+    ]);
 
-    // The conformant attribute, on every span — no extension needed.
-    expect(findSpan(h, 'invoke_agent claude-agent-sdk').attributes['gen_ai.provider.name']).toBe(
-      'aws.bedrock',
-    );
-    expect(findSpan(h, `chat ${MODEL}`).attributes['gen_ai.provider.name']).toBe('aws.bedrock');
+    const root = findSpan(h, ROOT);
+    expect(root.status.code).toBe(SpanStatusCode.ERROR);
+    expect(root.status.message).toBe('claude agent run failed: x');
   });
 
-  it('defaults to anthropic when no routing env var is set', async () => {
-    await run(h, [init(), assistant('msg_1', [{ type: 'text', text: 'hi' }]), result()]);
-    expect(findSpan(h, `chat ${MODEL}`).attributes['gen_ai.provider.name']).toBe('anthropic');
+  it('flags compaction on the run and on later chat spans', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('before')]),
+      { type: 'system', subtype: 'compact_boundary' },
+      assistant('msg_2', [text('after')]),
+      result(),
+    ]);
+
+    const [before, after] = allSpans(h, CHAT);
+    expect(attr(findSpan(h, ROOT), 'gen_ai.conversation.compacted')).toBe(true);
+    expect(attr(before!, 'gen_ai.conversation.compacted')).toBeUndefined();
+    expect(attr(after!, 'gen_ai.conversation.compacted')).toBe(true);
   });
 
-  it('emits no content under metadata_only', async () => {
+  it('ends every span without an error when the caller breaks out early', async () => {
+    const h = harness();
+    const closed: string[] = [];
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        try {
+          yield init();
+          yield assistant('msg_1', [toolUse('tu_1', 'Bash')]);
+          yield toolResult('tu_1', 'out');
+        } finally {
+          closed.push('stream');
+        }
+      })();
+
+    for await (const msg of wrapQuery(h.client, query)({ prompt: 'p' })) {
+      if ((msg as AgentMessage).type === 'assistant') break;
+    }
+
+    expect(closed).toEqual(['stream']);
+    expect(endOrder(h)).toEqual(['execute_tool Bash', CHAT, ROOT]);
+    for (const span of h.spans.getFinishedSpans())
+      expect(span.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('marks the run failed when the stream ends with no result', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [toolUse('tu_1', 'Bash')])]);
+
+    expect(findSpan(h, ROOT).status.message).toBe('agent stream ended before any result message');
+    expect(findSpan(h, 'execute_tool Bash').status.code).toBe(SpanStatusCode.ERROR);
+    // The call had already delivered its reply; it did not fail.
+    expect(findSpan(h, CHAT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('propagates a stream error and records it', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield init();
+        yield assistant('msg_1', [text('hi')]);
+        throw new Error('cli died');
+      })();
+
+    await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toThrow('cli died');
+    expect(findSpan(h, ROOT).status.message).toBe('cli died');
+  });
+
+  it('fails a call cut off mid-stream when the stream breaks', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield init();
+        yield messageStart('msg_1', 100);
+        yield assistant('msg_1', [text('hal')]);
+        throw new Error('cli died');
+      })();
+
+    const traced = wrapQuery(h.client, query)({ prompt: 'p', options: streamed });
+    await expect(drain(traced)).rejects.toThrow('cli died');
+    expect(findSpan(h, CHAT).status.message).toBe('cli died');
+  });
+
+  it('records a run that fails before its first message', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield* [];
+        throw new Error('spawn claude ENOENT');
+      })();
+
+    await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toThrow('ENOENT');
+    expect(findSpan(h, ROOT).status.message).toBe('spawn claude ENOENT');
+  });
+
+  it('records a query() that throws synchronously, and rethrows it', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) => {
+      throw new Error('bad options');
+    };
+
+    expect(() => wrapQuery(h.client, query)({ prompt: 'p' })).toThrow('bad options');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(findSpan(h, ROOT).status.message).toBe('bad options');
+  });
+
+  it("does not replace the caller's error when recording fails", async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield init();
+        throw new Error('cli died');
+      })();
+    await h.client.shutdown();
+
+    await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toThrow('cli died');
+  });
+
+  it('does not treat the result of an interrupted turn as a failure', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(
+        fakeQuery([
+          init(),
+          assistant('msg_1', [text('working')]),
+          result({ subtype: 'error_during_execution', is_error: true, errors: ['interrupted'] }),
+        ])({ prompt: '' }),
+        { interrupt: async () => {} },
+      );
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    for await (const msg of q) {
+      if ((msg as AgentMessage).type === 'assistant') await q.interrupt();
+    }
+
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('ends the run when the caller closes it between manual reads', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(
+        fakeQuery([init(), assistant('msg_1', [text('hi')]), result()])({ prompt: '' }),
+        {
+          close: () => {},
+        },
+      );
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    await q.next();
+    await q.next();
+    q.close();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const root = findSpan(h, ROOT);
+    expect(root.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(allSpans(h, CHAT)).toHaveLength(1);
+  });
+
+  it('does not mark a run the caller closed as failed', async () => {
+    const h = harness();
+    let closed = false;
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(
+        (async function* () {
+          yield init();
+          yield assistant('msg_1', [text('hi')]);
+          if (!closed) yield result();
+        })(),
+        {
+          close: () => {
+            closed = true;
+          },
+        },
+      );
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    for await (const msg of q) {
+      if ((msg as AgentMessage).type === 'assistant') q.close();
+    }
+
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it("stops the CLI through the SDK's own return(), even while a read is waiting", async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const query = (_params: AgentQueryParams) => {
+      let stopCli: () => void = () => {};
+      const stream = (async function* () {
+        yield init();
+        await new Promise<void>((resolve) => {
+          stopCli = resolve;
+        });
+      })();
+      const generatorReturn = stream.return.bind(stream);
+      // Like the real SDK: return() kills the CLI, which ends the read in progress.
+      return Object.assign(stream, {
+        return: (value?: unknown) => {
+          calls.push('sdk return');
+          stopCli();
+          return generatorReturn(value as undefined);
+        },
+      });
+    };
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    await q.next();
+    const waiting = q.next();
+    await q.return(undefined);
+    await waiting;
+
+    expect(calls[0]).toBe('sdk return');
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it("keeps the SDK's Query methods and observes iteration", async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(
+        fakeQuery([init(), assistant('msg_1', [text('hi')]), result()])({ prompt: '' }),
+        {
+          interrupt(this: unknown) {
+            calls.push('interrupt');
+            return this;
+          },
+        },
+      );
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    const target = q.interrupt();
+    await drain(q);
+
+    expect(calls).toEqual(['interrupt']);
+    expect(target).not.toBe(q); // called on the SDK's own object
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+  });
+
+  it('does not wrap a query twice', async () => {
+    const h = harness();
+    const once = wrapQuery(h.client, fakeQuery([init(), result()]));
+    expect(wrapQuery(h.client, once)).toBe(once);
+  });
+
+  it('calls query() once, with the caller options untouched', async () => {
+    const h = harness();
+    const seen: AgentQueryParams[] = [];
+    const options: AgentQueryOptions = { model: MODEL };
+    const traced = wrapQuery(h.client, (params: AgentQueryParams) => {
+      seen.push(params);
+      return fakeQuery([init(), result()])(params);
+    });
+    const messages = await drain(traced({ prompt: 'x', options }));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.options).toBe(options);
+    expect(Object.keys(options)).toEqual(['model']);
+    expect(messages).toHaveLength(2);
+  });
+
+  it('reads the hosting platform from the env the CLI will see', async () => {
+    const h = harness();
     await run(
       h,
-      [
-        init(),
-        assistant('msg_1', [
-          { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'secret' } },
-        ]),
-        userToolResult('tu_1', 'sensitive output'),
-        result(),
-      ],
-      { contentCapture: 'metadata_only' },
+      [init(), assistant('msg_1', [text('hi')]), result()],
+      {},
+      {
+        env: { CLAUDE_CODE_USE_BEDROCK: '1' },
+      },
     );
 
-    for (const span of h.spans.getFinishedSpans()) {
-      expect(span.attributes['gen_ai.input.messages']).toBeUndefined();
-      expect(span.attributes['gen_ai.output.messages']).toBeUndefined();
-      expect(span.attributes['gen_ai.tool.call.arguments']).toBeUndefined();
-      expect(span.attributes['gen_ai.tool.call.result']).toBeUndefined();
-    }
+    expect(attr(findSpan(h, ROOT), 'gen_ai.provider.name')).toBe('aws.bedrock');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('aws.bedrock');
   });
 
-  it('keeps two concurrent runs from bleeding into each other', async () => {
-    const runOne = wrapQuery(
-      h.client,
-      fakeQuery([
-        init('sess-a'),
-        assistant('a_1', [{ type: 'text', text: 'A' }]),
-        result({ session_id: 'sess-a' }),
-      ]),
-      { agentName: 'agent-a' },
+  it('defaults the provider to anthropic, including for a switched-off platform', async () => {
+    const h = harness();
+    await run(
+      h,
+      [init(), assistant('msg_1', [text('hi')]), result()],
+      {},
+      {
+        env: { CLAUDE_CODE_USE_VERTEX: '0' },
+      },
     );
-    const runTwo = wrapQuery(
-      h.client,
-      fakeQuery([
-        init('sess-b'),
-        assistant('b_1', [{ type: 'text', text: 'B' }]),
-        result({ session_id: 'sess-b' }),
-      ]),
-      { agentName: 'agent-b' },
-    );
+    expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('anthropic');
+  });
 
-    await Promise.all([
-      drain(runOne({ prompt: 'a', options: { model: MODEL } })),
-      drain(runTwo({ prompt: 'b', options: { model: MODEL } })),
-    ]);
+  it('keeps two concurrent runs apart', async () => {
+    const h = harness();
+    const queryA = fakeQuery([init('sess-a'), assistant('a_1', [text('A')]), result()]);
+    const queryB = fakeQuery([init('sess-b'), assistant('b_1', [text('B')]), result()]);
+    const runA = wrapQuery(h.client, queryA, { agentName: 'agent-a' });
+    const runB = wrapQuery(h.client, queryB, { agentName: 'agent-b' });
+    await Promise.all([drain(runA({ prompt: 'a' })), drain(runB({ prompt: 'b' }))]);
 
     const a = findSpan(h, 'invoke_agent agent-a');
-    const b = findSpan(h, 'invoke_agent agent-b');
-    expect(a.attributes['gen_ai.conversation.id']).toBe('sess-a');
-    expect(b.attributes['gen_ai.conversation.id']).toBe('sess-b');
+    expect(attr(a, 'gen_ai.conversation.id')).toBe('sess-a');
+    expect(attr(findSpan(h, 'invoke_agent agent-b'), 'gen_ai.conversation.id')).toBe('sess-b');
+    const aOutput = String(attr(childrenOf(h, a, CHAT)[0]!, 'gen_ai.output.messages'));
+    expect(aOutput).toContain('"A"');
+    expect(aOutput).not.toContain('"B"');
+  });
+});
 
-    const aChat = allSpans(h, `chat ${MODEL}`).find(
-      (s) => parentOf(h, s)?.name === 'invoke_agent agent-a',
-    );
-    expect(String(aChat?.attributes['gen_ai.output.messages'])).toContain('A');
-    expect(String(aChat?.attributes['gen_ai.output.messages'])).not.toContain('B');
+describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
+
+  function recording(name: string): AgentMessage[] {
+    const path = new URL(`../fixtures/claude-agent-sdk/${name}.jsonl`, import.meta.url);
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as AgentMessage);
+  }
+
+  it('background delegation', async () => {
+    const h = harness();
+    await run(h, recording('background-delegation'), {}, streamed);
+
+    const root = findSpan(h, ROOT);
+    const delegation = findSpan(h, 'execute_tool Agent');
+    const sub = findSpan(h, 'invoke_agent general-purpose');
+    expect(parentOf(h, delegation)).toBe(root);
+    expect(parentOf(h, sub)).toBe(delegation);
+    expect(parentOf(h, findSpan(h, 'execute_tool Bash'))).toBe(sub);
+
+    const mainChats = childrenOf(h, root, CHAT);
+    expect(mainChats.map((c) => attr(c, 'gen_ai.usage.output_tokens'))).toEqual([255, 115, 432]);
+    for (const chat of mainChats) expect(attr(chat, 'genai.usage.is_partial')).toBeUndefined();
+    expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
+    expect(String(attr(delegation, 'gen_ai.tool.call.result'))).not.toContain('launched');
+    expect(root.status.code).toBe(SpanStatusCode.OK);
   });
 
-  it('yields every message unchanged to the caller', async () => {
-    const messages = [init(), assistant('msg_1', [{ type: 'text', text: 'hi' }]), result()];
-    const out = await run(h, messages);
-    expect(out).toHaveLength(3);
-    expect(out[1]).toBe(messages[1]);
+  it('background command', async () => {
+    const h = harness();
+    await run(h, recording('background-bash'), {}, streamed);
+
+    const [bash, read] = [findSpan(h, 'execute_tool Bash'), findSpan(h, 'execute_tool Read')];
+    expect(String(attr(bash, 'gen_ai.tool.call.result'))).not.toContain('running in background');
+    expect(bash.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(read.status.code).not.toBe(SpanStatusCode.ERROR);
+    const outputs = allSpans(h, CHAT).map((c) => attr(c, 'gen_ai.usage.output_tokens'));
+    expect(outputs).toEqual([282, 119, 154, 63]);
+  });
+
+  it('inline delegation', async () => {
+    const h = harness();
+    await run(h, recording('inline-delegation'), {}, streamed);
+
+    const sub = findSpan(h, 'invoke_agent general-purpose');
+    expect(parentOf(h, sub)?.name).toBe('execute_tool Agent');
+    expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
+    expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
+    expect(childrenOf(h, findSpan(h, ROOT), CHAT)).toHaveLength(2);
   });
 });

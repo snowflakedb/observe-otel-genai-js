@@ -1,22 +1,19 @@
 /**
  * Tests for `ClaudeAgentSdkInstrumentation`.
  *
- * These drive the patch through the `InstrumentationNodeModuleDefinition` that
- * `init()` returns — the same function import-in-the-middle calls when the loader
- * hook rewrites the module. That is the only way the patch runs in production, so
- * it is what the tests exercise.
- *
- * The SDK is ESM-only, so the interesting cases are all about whether the module
- * namespace accepts the patch: a plain object does, a frozen namespace does not,
- * and a namespace with a lying property descriptor must be detected rather than
- * silently no-op'd.
+ * These drive the patch through the definition `init()` returns, which is what the
+ * ESM loader hook calls. The interesting cases are about whether the module object
+ * accepts the patch.
  */
 
 import { DiagLogLevel, diag } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ClaudeAgentSdkInstrumentation } from '../../src/integrations/claude-agent-sdk/instrumentation.js';
-import type { AgentMessage, AgentQueryFn } from '../../src/integrations/claude-agent-sdk/types.js';
+import type {
+  AgentMessage,
+  AgentQueryParams,
+} from '../../src/integrations/claude-agent-sdk/types.js';
 import { type Harness, createHarness } from '../_harness.js';
 
 const MODEL = 'claude-sonnet-4-5';
@@ -55,9 +52,35 @@ function rawQuery() {
   };
 }
 
-/** A mutable module namespace, like a bundled or IITM-rewritten module. */
-function mutableModule(): { query: AgentQueryFn; other: () => string } {
-  return { query: rawQuery() as unknown as AgentQueryFn, other: () => 'untouched' };
+type QueryFn = (params: AgentQueryParams) => AsyncIterable<AgentMessage>;
+
+/** A mutable module namespace, like a bundled or loader-hook-rewritten module. */
+function mutableModule(): { query: QueryFn; other: () => string } {
+  return { query: rawQuery(), other: () => 'untouched' };
+}
+
+/** Like the loader hook's module object: accepts writes to exports, drops anything else. */
+function hookModule(): { query: QueryFn } {
+  const mod = { query: rawQuery() };
+  return new Proxy(mod, {
+    defineProperty: (target, key, desc) =>
+      key !== 'query' || Reflect.defineProperty(target, key, desc),
+    set: (target, key, value) => key !== 'query' || Reflect.set(target, key, value),
+  });
+}
+
+/** Captures diag warnings. OTel's component logger passes its namespace first. */
+function captureWarnings() {
+  const warn = vi.fn();
+  diag.setLogger(
+    { verbose: () => {}, debug: () => {}, info: () => {}, warn, error: () => {} },
+    DiagLogLevel.WARN,
+  );
+  return warn;
+}
+
+function agentSpans(h: Harness) {
+  return h.spans.getFinishedSpans().filter((s) => s.name.startsWith('invoke_agent'));
 }
 
 /**
@@ -109,7 +132,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     expect(names).toContain(`chat ${MODEL}`);
   });
 
-  it('passes adapter options through and strips the instrumentation-level ones', async () => {
+  it('passes adapter options through to the adapter', async () => {
     const mod = mutableModule();
     instrumentation = new ClaudeAgentSdkInstrumentation({
       client: h.client,
@@ -123,12 +146,10 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
     const turn = h.spans.getFinishedSpans().find((s) => s.name === 'invoke_agent configured');
     expect(turn).toBeDefined();
-    // `contentCapture` reached the adapter; `client` and `enabled` did not leak
-    // into it as attributes.
     expect(turn?.attributes['gen_ai.input.messages']).toBeUndefined();
   });
 
-  it('is idempotent — patching twice does not double-wrap', async () => {
+  it('does not double-wrap when patched twice', async () => {
     const mod = mutableModule();
     instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
     patchModule(instrumentation, mod);
@@ -137,9 +158,19 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     expect(mod.query).toBe(afterFirst);
 
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
-    expect(
-      h.spans.getFinishedSpans().filter((s) => s.name.startsWith('invoke_agent')),
-    ).toHaveLength(1);
+    expect(agentSpans(h)).toHaveLength(1);
+  });
+
+  it('does not double-wrap when a second instrumentation patches the same module', async () => {
+    const mod = hookModule();
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    const second = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchModule(instrumentation, mod);
+    patchModule(second, mod);
+
+    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    expect(agentSpans(h)).toHaveLength(1);
+    second.disable();
   });
 
   it('restores the original export on disable', () => {
@@ -153,6 +184,19 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     expect(mod.query).toBe(before);
   });
 
+  it('restores and re-patches a loader-hook module across disable and enable', async () => {
+    const mod = hookModule();
+    const before = mod.query;
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchModule(instrumentation, mod);
+    instrumentation.disable();
+    expect(mod.query).toBe(before);
+
+    patchModule(instrumentation, mod);
+    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    expect(agentSpans(h)).toHaveLength(1);
+  });
+
   it('leaves other exports alone', () => {
     const mod = mutableModule();
     const other = mod.other;
@@ -162,11 +206,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
   });
 
   it('warns and leaves the module untouched when the namespace is frozen', async () => {
-    const warn = vi.fn();
-    diag.setLogger(
-      { verbose: () => {}, debug: () => {}, info: () => {}, warn, error: () => {} },
-      DiagLogLevel.WARN,
-    );
+    const warn = captureWarnings();
 
     const mod = Object.freeze(mutableModule());
     const before = mod.query;
@@ -174,23 +214,18 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     patchModule(instrumentation, mod);
 
     expect(mod.query).toBe(before);
-    // OTel's component logger prepends its namespace, so the message is arg 2.
     expect(warn).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('rejects assignment'),
     );
 
-    // The caller's stream still works — a failed patch must not break the SDK.
+    // The caller's stream still works: a failed patch must not break the SDK.
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
     expect(h.spans.getFinishedSpans()).toHaveLength(0);
   });
 
   it('detects a namespace whose descriptor lies about being writable', () => {
-    const warn = vi.fn();
-    diag.setLogger(
-      { verbose: () => {}, debug: () => {}, info: () => {}, warn, error: () => {} },
-      DiagLogLevel.WARN,
-    );
+    const warn = captureWarnings();
 
     // A no-op setter: assignment "succeeds" but the binding never changes. This
     // is the case a descriptor check would miss and the probe catches.
@@ -209,7 +244,6 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     patchModule(instrumentation, mod);
 
     expect(mod.query).toBe(original);
-    // OTel's component logger prepends its namespace, so the message is arg 2.
     expect(warn).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('rejects assignment'),
@@ -235,6 +269,19 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     expect(h.spans.getFinishedSpans().some((s) => s.name === `chat ${MODEL}`)).toBe(true);
   });
 
+  it('shuts down the client it created', async () => {
+    const mod = mutableModule();
+    instrumentation = new ClaudeAgentSdkInstrumentation();
+    patchModule(instrumentation, mod);
+    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    const owned = (instrumentation as unknown as { ownedClient: Harness['client'] }).ownedClient;
+
+    await instrumentation.shutdown();
+    expect(() =>
+      owned.startGeneration({ model: { provider: 'anthropic', name: MODEL } }),
+    ).toThrow();
+  });
+
   it('creates its own client when none is supplied', async () => {
     const mod = mutableModule();
     instrumentation = new ClaudeAgentSdkInstrumentation({ agentName: 'self-client' });
@@ -243,7 +290,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
 
     // The self-created client uses the globally-registered providers, which the
-    // harness owns — so its spans land in the harness exporter.
+    // harness owns, so its spans land in the harness exporter.
     expect(h.spans.getFinishedSpans().map((s) => s.name)).toContain('invoke_agent self-client');
     await instrumentation.shutdown();
   });

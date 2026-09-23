@@ -7,7 +7,7 @@
 | Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
 | OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30 <1 |
-| Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation` | none — types are vendored |
+| Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation`, or `/claude-agent-sdk` for `wrapQuery` | none declared; works with `@anthropic-ai/claude-agent-sdk` >=0.3 <1 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
 
 All peer deps are declared optional — the core install does not pull them in.
@@ -35,10 +35,10 @@ bootstrap — see [exporting.md](exporting.md#redacting-content).
 |---|---|---|---|---|---|
 | input / output messages | yes | yes | yes | yes | yes (reconstructed from the message stream) |
 | tool definitions (`gen_ai.tool.definitions`) | — | — | — | yes | — |
-| request params (`temperature`, `top_p`, …) | yes | yes | yes | — | — (the CLI builds the request) |
+| request params (`temperature`, `top_p`, …) | yes | yes | yes | — | partial (system prompt, effort, thinking) |
 | separate `execute_tool` spans | yes | no (tool calls ride on messages) | no (tool calls ride on messages) | yes | yes |
-| TTFT on streaming | yes | yes | yes | yes (`handleLLMNewToken`) | yes |
-| per-call metadata | hooks / options | `withMetadata` | `withMetadata` | handler options | — |
+| TTFT on streaming | yes | yes | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
+| per-call metadata | hooks / options | `withMetadata` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
 | `invoke_agent` spans | via hooks | — | — | via chains | yes |
 | nested `invoke_agent` for subagents | — | — | — | — | yes |
 
@@ -298,24 +298,28 @@ With a checkpointer, the `thread_id` you pass in `configurable` is read from the
 
 ## Claude Agent SDK
 
-The Claude Agent SDK does not run the agent in your process — it spawns the Claude
-Code CLI and streams JSON messages back. There is no model call to wrap, so the
-adapter rebuilds the span tree from that message stream alone. Your `query()`
-options are passed through untouched — no hooks are injected.
+The Claude Agent SDK does not run the agent in your process. It starts the Claude
+Code CLI and streams JSON messages back, so there is no model call to wrap: the
+adapter rebuilds the span tree from that message stream. Your `query()` options are
+passed through unchanged, and the returned `Query` keeps all its methods
+(`interrupt()`, `setModel()`, …).
 
-It is registered as an OpenTelemetry instrumentation. The SDK ships an ESM build
-only, so this needs the OTel ESM loader hook — put both in a preload so they are in
-place before the app imports the SDK:
+### Setup
+
+Register it as an OpenTelemetry instrumentation, which needs
+`@opentelemetry/instrumentation` installed. The SDK ships an ESM build only, so this
+also needs the OpenTelemetry ESM loader hook, registered before your app first
+imports the SDK. A preload does that:
 
 ```js
 // preload.mjs
 import { register } from 'node:module';
-register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
-
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
 import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
 
+// Register the hook before the app imports the SDK.
+register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 bootstrapOtel({ serviceName: 'my-agent' });
 registerInstrumentations({
   instrumentations: [new ClaudeAgentSdkInstrumentation({ agentName: 'support-bot' })],
@@ -326,111 +330,116 @@ registerInstrumentations({
 node --import ./preload.mjs app.mjs
 ```
 
-The application needs no changes. The config takes the usual per-call metadata
-(`agentName`, `conversationId`, `userId`, `contentCapture`, …) plus an optional
-`client`; omit `client` and one is built from the registered providers.
+The config takes the usual metadata (`agentName`, `conversationId`, `userId`,
+`contentCapture`, …) plus an optional `client`; without one, a client is built from
+the registered providers.
 
-Registering in the app's own entry file works too, as long as the SDK is imported
-with `await import()` — a static import is hoisted above the `register()` call and
-loads the module before the hook exists.
+Without the hook, or if the SDK was imported before the hook was registered, nothing
+is traced and nothing is logged. An app that loads the SDK with `require()` is not
+patched either; the instrumentation logs a warning in that case. Either way, or to
+avoid the hook entirely, wrap the call site instead:
 
-### Required options
+```ts
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { wrapQuery } from '@genai-otel/core/claude-agent-sdk';
 
-Two SDK options are off by default, and nothing in the adapter substitutes for either:
+const tracedQuery = wrapQuery(client, query, { agentName: 'support-bot' });
+for await (const msg of tracedQuery({ prompt, options })) { /* ... */ }
+```
+
+### Options worth turning on
+
+Two SDK options are off by default. The adapter does not turn them on for you,
+because both change what your own loop receives.
 
 ```ts
 options: {
-  model: 'claude-sonnet-4-5',
-  forwardSubagentText: true,     // subagent chat spans and their content
-  includePartialMessages: true,  // accurate per-call tokens, stop reasons, TTFT
+  forwardSubagentText: true,     // subagent model calls and their content
+  includePartialMessages: true,  // exact per-call tokens, stop reasons, time to first token
 }
 ```
 
-Without `forwardSubagentText` the SDK forwards only a subagent's `tool_use` /
-`tool_result` blocks: the delegation still appears and is timed, but its model calls
-never reach the stream, so the nested `invoke_agent` span has no `chat` children and
-no output. `includePartialMessages` is covered under tokens below.
-
-Neither is set for you — both change what your own `for await` loop receives, and an
-instrumentation should not quietly alter the data path it is observing.
+Without `forwardSubagentText`, a delegation still gets its `execute_tool` span and
+timing, but none of the subagent's messages reach the stream, so there is no nested
+`invoke_agent` span. `includePartialMessages` is covered under tokens below.
 
 ### Span tree
 
-One `query()` call is one agent invocation, so it gets one `invoke_agent` span, and
-everything else hangs off it. That span sits under whatever OpenTelemetry context you
-call from, so it is the trace root only when you have no span of your own.
-
-The SDK's `result` messages are checkpoints inside the run, not boundaries — a single
-`query()` can emit several, because a backgrounded delegation keeps the run going past
-the first one. Several user turns means several `query()` calls, threaded by
-`gen_ai.conversation.id`.
+Each `query()` call gets one `invoke_agent` span, and everything else hangs off it.
+That span sits under whatever OpenTelemetry context you call from. Several user turns
+means several `query()` calls, linked by `gen_ai.conversation.id` (the CLI session id,
+unless you set `conversationId`).
 
 ```
 invoke_agent <agentName>          one per query() call
   chat <model>                    one per API call
   execute_tool Read
-  execute_tool Agent              the delegation (the tool's own name)
+  execute_tool Agent              the delegation tool (called Task on older CLIs)
     invoke_agent <subagent_type>  the subagent's own run
       chat <model>
       execute_tool Grep
 ```
 
-`chat` spans are cut on `message.id`: the CLI delivers one assistant message per
-*content block*, so a single API call returning thinking + text + a tool call
-arrives as three messages sharing one id, and they become one span.
+- The CLI sends one assistant message per content block, so a call that returns
+  thinking, text and a tool call arrives as three messages sharing a `message.id`.
+  They become one `chat` span.
+- Subagents nest under the delegation that started them, matched by
+  `parent_tool_use_id`, so parallel delegations stay apart.
+- A task (a delegation, or `Bash` with `run_in_background`) answers its tool call
+  with a launch receipt within milliseconds while the work goes on. Its span stays
+  open until the CLI reports the task finished, so it covers the real work. A task
+  still running when the run ends is closed with its receipt, not as an error.
+- The SDK's `result` messages are checkpoints: a background task can keep the run
+  going past the first one. The run ends when the stream does, and its status follows
+  the last result.
+- Breaking out of your loop early, or calling `close()`, ends every span without
+  marking an error.
+- A failed API call gets a `chat` span of its own, marked with the error.
 
-Subagents nest under the delegation span that spawned them, keyed by
-`parent_tool_use_id`. Parallel delegations are handled — nothing depends on
-completion order.
+### Other attributes
 
-A delegation's span stays open until the CLI reports the task finished, not until its
-`tool_result` arrives. Run in the background — which the model chooses per call — that
-result comes back in milliseconds carrying only a launch receipt, so closing on it
-would report a near-instant delegation and leave the subagent nothing to nest under.
-A `Bash` call with `run_in_background` works the same way: its span covers the command,
-not the launch.
+- `gen_ai.provider.name` comes from the platform the CLI is told to use:
+  `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY`,
+  read from `options.env` when you set it (it replaces the CLI's environment), and
+  from the process environment otherwise. Without any of them it is `anthropic`.
+- `options.effort` becomes `gen_ai.request.reasoning.level` on the run's
+  `invoke_agent` span and the main thread's `chat` spans. A string
+  `options.systemPrompt` and `options.thinking` go on the main thread's `chat` spans
+  only; subagents have their own.
+- After the CLI compacts the conversation, the run and every later `chat` span carry
+  `gen_ai.conversation.compacted`.
 
-### Tokens, cost, and TTFT
+### Tokens, cost, and time to first token
 
-Run totals come from `result.modelUsage`, the field Anthropic documents as correct
-for accounting and the only one that includes subagents. It is cumulative over the
-whole `query()` call, so the `invoke_agent` span carries the latest result's figures
-as they stand. Cost rides on `genai.usage.cost_usd`.
+The `invoke_agent` span carries the run totals from the latest `result.modelUsage`,
+which is the only source that includes subagents, plus the cost in
+`genai.usage.cost_usd`. Each `chat` span carries its own call's figures, so summing
+token attributes across every span in a trace counts them twice; use either the
+`invoke_agent` span or the `chat` spans. The token metric is recorded from `chat`
+spans only.
 
-Per-call counts need `includePartialMessages`. The `usage` on a streamed assistant
-message is a mid-stream snapshot that never gets corrected — it understates output
-tokens by around 98%. Only the `message_delta` stream event carries a call's real
-totals, its stop reason, and its reasoning-token breakdown, and that event exists
-only with the option on. With it, per-call figures sum exactly to the run total;
-without it the `chat` span is marked `genai.usage.is_partial`, and the `invoke_agent`
-span is the number to read.
+Exact per-call counts need `includePartialMessages`. Without it, a `chat` span only
+has the `usage` snapshot taken as the reply starts. Its input and cache figures are
+kept, its output count is left out rather than reported low, and the span is marked
+`genai.usage.is_partial`. With the option on, the `message_delta` event supplies each
+call's final usage, stop reason and reasoning tokens, and the `message_start` event
+supplies time to first token and the real start of the call.
 
-Subagent `chat` spans stay `is_partial` either way: the SDK forwards subagent
-assistant messages but not subagent stream events, so there is no `message_delta`
-for them. Their tokens are still counted in the run total.
+Subagent `chat` spans are always marked `is_partial`: the SDK does not forward stream
+events for subagents. Their tokens are still in the run totals.
 
-Cache tokens are folded into `gen_ai.usage.input_tokens` per current semconv; note
-this differs from the `/anthropic` adapter, which still reports the raw uncached
-count.
-
-It also gives each `chat` span `gen_ai.response.time_to_first_chunk` and feeds the
-`gen_ai.client.time_to_first_token` metric, both from the SDK's own `ttft_ms`.
+Cached tokens are counted in `gen_ai.usage.input_tokens`, as the GenAI conventions
+ask. The `/anthropic` adapter does not do this yet, so the two report different input
+counts for the same call.
 
 ### Content capture
 
-The standard three modes apply. The default `no_tool_content` matters more here
-than elsewhere: tool arguments are shell commands and file paths, and tool results
-are file bodies and command output.
-
-### Composing with Claude Code's own telemetry
-
-The SDK propagates `TRACEPARENT` into the CLI subprocess, so with
-`CLAUDE_CODE_ENABLE_TELEMETRY=1` and `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` the
-CLI's `claude_code.*` spans attach under our `invoke_agent` span automatically.
-That layer adds per-API-request spans, permission-wait time, and hook execution —
-things no in-process adapter can see. It uses a private attribute namespace, so a
-backend expecting GenAI conventions needs collector-side translation. Off by
-default.
+The standard modes apply. The default hides tool arguments and results, which here
+are shell commands, file paths, file bodies and command output. A subagent's prompt
+and report are the delegation tool's argument and result, so they follow the same
+rule: they appear on its `invoke_agent` span, and as its first `chat` input, only
+with full capture. What the subagent's model writes is a completion like any other,
+so its `chat` output follows the completion rule.
 
 ## Composing with `bootstrapOtel`
 
@@ -456,5 +465,5 @@ const openai = wrapOpenAI(client, new OpenAI());
 - Google Gemini SDK (`@google/genai`).
 - LlamaIndex.TS (`llamaindex`).
 - OpenAI Agents SDK (`@openai/agents`).
-- `plan` / `invoke_workflow` / memory spans for the Claude Agent SDK — the conventions define them, `OperationName` does not carry them yet.
+- `plan` / `invoke_workflow` / memory spans for the Claude Agent SDK. The GenAI conventions define them, but this library does not support those operation names yet.
 - Mastra.

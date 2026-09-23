@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Claude Agent SDK adapter. `ClaudeAgentSdkInstrumentation`
+  (`@genai-otel/core/claude-agent-sdk/instrumentation`) patches the SDK's `query`
+  through the OpenTelemetry ESM loader hook; `wrapQuery`
+  (`@genai-otel/core/claude-agent-sdk`) wraps a call site without the hook. Each
+  `query()` gets an `invoke_agent` span with `chat` and `execute_tool` children and a
+  nested `invoke_agent` per subagent, rebuilt from the CLI's message stream. Works with
+  `@anthropic-ai/claude-agent-sdk` `>=0.3 <1`.
 - Every adapter: `chat` spans also carry `gen_ai.usage.cache_write.input_tokens` (the
   current name for `cache_creation`), and streaming `chat` spans carry
   `gen_ai.response.time_to_first_chunk`.

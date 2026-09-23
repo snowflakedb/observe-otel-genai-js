@@ -1,41 +1,29 @@
 /**
  * Claude Agent SDK adapter.
  *
- * The Claude Agent SDK does not run the agent in your process — it spawns the
- * Claude Code CLI and streams JSON messages back. There is no model call to
- * wrap, so this adapter reconstructs the span tree entirely from the message
- * stream: `message.id` delimits API calls, `parent_tool_use_id` identifies
- * subagents, and a `tool_result` block ends the tool span it names.
+ * The SDK does not run the agent in your process: it spawns the Claude Code CLI and
+ * streams JSON messages back. There is no model call to wrap, so this adapter
+ * rebuilds the span tree from the message stream alone.
  *
- * The caller's options are passed through untouched — nothing is injected.
- *
- * One `query()` call is one agent invocation, so it gets one `invoke_agent` span
- * that is the common ancestor of everything else this adapter emits. That span sits
- * under whatever context the caller is in, so it is the trace root only when the
- * caller has no span of their own.
- *
- * `result` messages are internal checkpoints, not boundaries: the CLI emits one per
- * *its* notion of a turn (a main-loop model call), and a single `query()` can emit
- * several — a delegated background task keeps the run going past the first one. Each
- * result supersedes the last; its totals are cumulative over the whole call.
- *
- * Emits:
+ * Emits, per `query()` call:
  *
  *     invoke_agent <agentName>
- *       chat <model>                one per API call, cut on message.id
+ *       chat <model>                one per API call, keyed by message.id
  *       execute_tool <name>
- *       execute_tool Task
- *         invoke_agent <subagent>   nested, keyed by parent_tool_use_id
+ *       execute_tool Agent          the delegation tool (named Task on older CLIs)
+ *         invoke_agent <subagent>   keyed by parent_tool_use_id
  *           chat <model>
  *
- * Attribute names follow the current GenAI semantic conventions, taken from
- * `src/semconv.ts`. Where core's recorders still emit an older spelling for one,
- * both names are written so a consumer sees the current one either way.
+ * A `result` message is a checkpoint, not the end of the run: a background task can
+ * keep the run going past it, and each result's totals cover the whole call so far.
+ * The run ends when the stream does.
  */
 
-import { type Attributes, trace } from '@opentelemetry/api';
+import { diag } from '@opentelemetry/api';
 
 import type { Client } from '../../client.js';
+import { resolveContentCaptureMode } from '../../content/capture.js';
+import { contentCaptureModeFromContext } from '../../context.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart } from '../../models/message.js';
@@ -46,220 +34,237 @@ import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import {
   ATTR_CONVERSATION_COMPACTED,
   ATTR_REQUEST_REASONING_LEVEL,
-  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
-  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_COST_USD,
   ATTR_USAGE_IS_PARTIAL,
-  OP_CHAT,
 } from '../../semconv.js';
+import { usageAttributes } from '../../spans/attributes.js';
 import { blockToParts } from '../_common/anthropic-blocks.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
+import { isTracedQuery, markTraced } from './traced-queries.js';
 import type {
   AgentContentBlock,
   AgentMessage,
   AgentModelUsage,
   AgentQueryFn,
   AgentQueryOptions,
+  AgentQueryParams,
   AgentUsage,
 } from './types.js';
 
 const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
 
+/** The model the CLI puts on the assistant message it makes up for a failed API call. */
+const SYNTHETIC_MODEL = '<synthetic>';
+
 /**
- * Routing env vars the CLI reads to pick a hosting platform, mapped to the
- * semconv `gen_ai.provider.name` value. A hosting platform wins over the vendor
- * it hosts, so a Bedrock-served Claude model reports `aws.bedrock`.
+ * Env vars the CLI reads to pick a hosting platform, and the `gen_ai.provider.name`
+ * each maps to. When `options.env` is set, it is the CLI's whole environment.
  */
 const PROVIDER_ENV: readonly (readonly [string, string])[] = [
   ['CLAUDE_CODE_USE_BEDROCK', 'aws.bedrock'],
   ['CLAUDE_CODE_USE_VERTEX', 'gcp.vertex_ai'],
-  ['CLAUDE_CODE_USE_FOUNDRY', 'azure.ai.foundry'],
+  ['CLAUDE_CODE_USE_FOUNDRY', 'azure.ai.inference'],
 ];
 
-/**
- * Resolves the provider before the run starts, so `gen_ai.provider.name` is
- * correct from the moment the span opens.
- *
- * The platform is decided by the environment, not by the response, so there is no
- * need to wait for `result.modelUsage[*].provider` — which would be too late
- * anyway, since the recorder re-applies its seed when the span ends.
- *
- * `options.env` replaces rather than merges, so it is exactly what the CLI
- * subprocess will see; fall back to our own environment when it is absent.
- */
-function resolveProvider(sdkOptions: AgentQueryOptions | undefined): string {
-  const env = (sdkOptions?.env as Record<string, string | undefined> | undefined) ?? process.env;
-  for (const [key, provider] of PROVIDER_ENV) {
-    const value = env[key];
-    if (value && value !== '0' && value !== 'false') return provider;
-  }
-  return 'anthropic';
-}
-/** Map key for the main thread's chat context; a space cannot collide with a tool_use_id. */
-const MAIN = ' main';
-
-/**
- * Per-run metadata for the Claude Agent SDK adapter.
- *
- * Deliberately just the shared adapter options — no structural toggles. What the
- * adapter emits is fixed; how much of it carries content is the client's
- * `contentCaptureMode` (per-call `contentCapture`, or ambient
- * `withContentCaptureMode`), and span volume is a sampler's job.
- */
+/** Metadata for the run, applied wherever each span type has a field for it. */
 export type ClaudeAgentSdkOptions = AdapterCallOptions;
 
 /**
- * Wraps the SDK's `query` function. The returned function has the same
- * signature and yields the same messages; each one is observed on the way past.
+ * Wraps the SDK's `query` function. The returned function has the same signature and
+ * returns the SDK's own `Query` object, so `interrupt()`, `setModel()` and the other
+ * control methods keep working; only iteration is observed.
  *
  * ```ts
  * const traced = wrapQuery(client, query, { agentName: 'support-bot' });
  * for await (const msg of traced({ prompt: 'hi', options })) { ... }
  * ```
  */
-export function wrapQuery(
+export function wrapQuery<F extends AgentQueryFn>(
   client: Client,
-  query: AgentQueryFn,
+  query: F,
   options: ClaudeAgentSdkOptions = {},
-): AgentQueryFn {
-  return function tracedQuery(params: { prompt: unknown; options?: AgentQueryOptions }) {
-    const run = new AgentRun(client, options, params.options);
-    return run.iterate(() => query(params), params.prompt);
+): F {
+  if (isTracedQuery(query)) return query;
+  const traced = (params: Parameters<F>[0]) => {
+    const run = new AgentRun(client, options, params as AgentQueryParams);
+    let stream: AsyncIterable<unknown>;
+    try {
+      stream = query(params);
+    } catch (err) {
+      void run.end(err).catch(logRecordingFailure);
+      throw err;
+    }
+    return observeIteration(stream, run);
   };
+  markTraced(traced);
+  return traced as F;
+}
+
+/**
+ * Returns the SDK's `Query` with iteration routed through the run. Everything else is
+ * passed to the SDK object unchanged.
+ */
+function observeIteration<T extends object>(stream: T, run: AgentRun): T {
+  const observed = run.observe(stream as AsyncIterable<AgentMessage>);
+  // Ending the SDK's query ends our loop too, but only once it is resumed.
+  const finish = () => void observed.return().catch(logRecordingFailure);
+  return new Proxy(stream as T & SdkQuery, {
+    get(target, prop) {
+      switch (prop) {
+        case Symbol.asyncIterator:
+          return () => observed;
+        case 'next':
+        case 'throw':
+          return observed[prop].bind(observed);
+        case 'return':
+          // The SDK's own return() stops the CLI, which also releases a read in progress.
+          return async (value?: unknown) => {
+            run.markStoppedByCaller();
+            await target.return?.(value);
+            return observed.return();
+          };
+        case Symbol.asyncDispose:
+          return async () => {
+            run.markStoppedByCaller();
+            await target[Symbol.asyncDispose]?.();
+            finish();
+          };
+        case 'close':
+          return () => {
+            run.markStoppedByCaller();
+            target.close?.();
+            finish();
+          };
+        case 'interrupt':
+          return () => {
+            run.markInterrupted();
+            return target.interrupt?.();
+          };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+/** The members of the SDK's `Query` the proxy intercepts. */
+type SdkQuery = Partial<
+  AsyncGenerator<unknown> & AsyncDisposable & { close(): void; interrupt(): Promise<unknown> }
+>;
+
+function logRecordingFailure(err: unknown): void {
+  diag.debug('genai-otel: failed to record Claude Agent SDK telemetry', err);
 }
 
 // -----------------------------------------------------------------------------
 // Per-run state
 // -----------------------------------------------------------------------------
 
-/** Chat-span state for one agent context: the main thread, or one subagent. */
-interface ChatContext {
-  /** Map key: `MAIN`, or the `parent_tool_use_id` of the owning subagent. */
-  key: string;
-  /** Owning agent span: the root agent, or a subagent's invoke_agent span. */
-  owner: AgentInvocationRecorder;
-  rec: GenerationRecorder | undefined;
-  messageId: string | undefined;
-  blocks: AgentContentBlock[];
-  /** Mid-stream snapshot from `message.usage`; superseded by `finalUsage`. */
-  usage: AgentUsage | undefined;
-  /** Final per-call usage from the `message_delta` stream event, when available. */
-  finalUsage: AgentUsage | undefined;
-  /** Reasoning tokens from `message_delta`. */
-  reasoningTokens: number | undefined;
-  /** Real per-call stop reason; `message.stop_reason` is null while streaming. */
-  stopReason: string | undefined;
-  model: string | undefined;
-  ttftSeconds: number | undefined;
-  /** Running conversation, replayed as each chat span's input messages. */
+/** One agent's conversation: the main thread, or a subagent. */
+interface AgentThread {
+  agent: AgentInvocationRecorder;
+  agentName: string;
+  isMain: boolean;
+  /** Replayed as each chat span's input messages. */
   history: Message[];
+  /** When the thread last handed control back to the model; the next call starts here. */
+  readyAt: number;
+  call?: ModelCall;
+  lastModel?: string;
+}
+
+/** The API call in flight on a thread. */
+interface ModelCall {
+  rec: GenerationRecorder;
+  messageId: string | undefined;
+  model: string;
+  blocks: AgentContentBlock[];
+  lastBlockAt: number;
+  historyMessage?: Message;
+  /** Mid-stream snapshot; undercounts output tokens. */
+  usage?: AgentUsage;
+  /** The call's real totals, from `message_delta`. */
+  finalUsage?: AgentUsage;
+  stopReason?: string;
 }
 
 interface OpenTool {
   rec: ToolExecutionRecorder;
   name: string;
+  input: Record<string, unknown>;
+  owner: AgentThread;
+  startedAt: number;
+  /** The CLI runs this call as a task, so its `tool_result` may be only a launch receipt. */
+  isTask: boolean;
+  receipt?: unknown;
+  subagent?: AgentThread;
 }
-
-interface OpenSubagent {
-  rec: AgentInvocationRecorder;
-  output: Message[];
-}
-
-// -----------------------------------------------------------------------------
 
 class AgentRun {
   private readonly client: Client;
-  private readonly opts: ClaudeAgentSdkOptions;
-  private readonly sdkOptions: AgentQueryOptions | undefined;
-
-  private rootAgent: AgentInvocationRecorder | undefined;
-  private rootAgentStartedAt = Date.now();
-  /**
-   * The run's error, as last known. Everything else a `result` reports is written to
-   * the span as it arrives, but an error cannot be: a recorder's error has no way to
-   * be cleared, so a later result that succeeds could not undo an earlier failure.
-   * Held here instead and applied once, at teardown.
-   */
-  private finalError: unknown;
-  private sawResult = false;
-  private disposed = false;
-
-  private readonly chats = new Map<string, ChatContext>();
-  private readonly tools = new Map<string, OpenTool>();
-  private readonly subagents = new Map<string, OpenSubagent>();
-  /** tool_use_id -> the Task/Agent tool_use block that launched a subagent. */
-  private readonly launches = new Map<string, AgentContentBlock>();
-  /**
-   * tool_use_ids of calls the CLI runs as a task, keyed off `system/task_started`.
-   *
-   * Their `tool_result` cannot be trusted to mean the work finished. Run in the
-   * background it arrives in milliseconds carrying only a receipt — "async agent
-   * launched", or "command running in background with ID" — while the real work goes
-   * on for another half a minute. Closing on it would report a near-instant tool call
-   * and, for a delegation, leave the subagent with no open parent to nest under.
-   *
-   * `system/task_notification` is the signal that holds throughout: it carries the
-   * `tool_use_id`, the real status, and the output. So these close on that and ignore
-   * their `tool_result`. Run inline the notification simply arrives first, and the
-   * `tool_result` behind it is a no-op.
-   *
-   * Covers both task types the CLI registers — `local_agent` (a Task delegation) and
-   * `local_bash` (a backgrounded command). Nothing here reads the type: being a task
-   * at all is what decides where completion comes from.
-   */
-  private readonly taskTools = new Set<string>();
-  /**
-   * TTFT seen on a `message_start` stream event, keyed by context.
-   *
-   * `message_start` carries `ttft_ms` and arrives *before* the first assistant
-   * message of that call, so there is no chat span to put it on yet. Held here
-   * and consumed when the span opens.
-   */
-  private readonly pendingTtft = new Map<string, number>();
-
+  private readonly config: ClaudeAgentSdkOptions;
+  private readonly queryOptions: AgentQueryOptions;
+  private readonly prompt: unknown;
   private readonly provider: string;
+  private readonly agentName: string;
+  private readonly startedAt = Date.now();
+
+  private root: AgentInvocationRecorder | undefined;
+  private main: AgentThread | undefined;
+  private readonly tools = new Map<string, OpenTool>();
+
   private sessionId: string | undefined;
   private model: string | undefined;
   private compacted = false;
-  private prompt: unknown;
+  private sawResult = false;
+  /** The caller ended the run with `close()` or `return()`, which is not a failure. */
+  private stoppedByCaller = false;
+  /** The caller interrupted the turn; the error result that follows is expected. */
+  private interrupted = false;
+  /**
+   * Held until teardown rather than set on the span: a recorder's error cannot be
+   * cleared, and a later result that succeeds should leave the run green.
+   */
+  private lastResultError: Error | undefined;
 
-  constructor(client: Client, opts: ClaudeAgentSdkOptions, sdkOptions?: AgentQueryOptions) {
+  constructor(client: Client, config: ClaudeAgentSdkOptions, params: AgentQueryParams) {
     this.client = client;
-    this.opts = opts;
-    this.sdkOptions = sdkOptions;
-    this.provider = resolveProvider(sdkOptions);
+    this.config = config;
+    this.queryOptions = params.options ?? {};
+    this.prompt = params.prompt;
+    this.provider = resolveProvider(this.queryOptions);
+    this.agentName = config.agentName ?? DEFAULT_AGENT_NAME;
   }
 
-  // --- main loop ------------------------------------------------------------
+  markStoppedByCaller(): void {
+    this.stoppedByCaller = true;
+  }
 
-  async *iterate(
-    start: () => AsyncIterable<AgentMessage>,
-    prompt: unknown,
-  ): AsyncGenerator<AgentMessage, void> {
-    this.prompt = prompt;
-    let stream: AsyncIterable<AgentMessage>;
-    try {
-      stream = start();
-    } catch (err) {
-      this.openRootAgent();
-      await this.failRootAgent(err);
-      throw err;
-    }
+  markInterrupted(): void {
+    this.interrupted = true;
+  }
 
+  async *observe(stream: AsyncIterable<AgentMessage>): AsyncGenerator<AgentMessage, void> {
+    let error: unknown;
+    let completed = false;
     try {
       for await (const msg of stream) {
         try {
           this.onMessage(msg);
-        } catch {
-          // A mapping slip must not interrupt the caller's stream.
+        } catch (err) {
+          logRecordingFailure(err);
         }
         yield msg;
       }
+      completed = true;
     } catch (err) {
-      await this.failRootAgent(err);
+      error = err;
       throw err;
     } finally {
-      await this.dispose();
+      if (completed && !this.sawResult && !this.stoppedByCaller) {
+        error = new Error('agent stream ended before any result message');
+      }
+      await this.end(error).catch(logRecordingFailure);
     }
   }
 
@@ -280,521 +285,438 @@ class AgentRun {
       case 'result':
         this.onResult(msg);
         break;
-      default:
-        break;
     }
   }
 
-  // --- root agent lifecycle -------------------------------------------------------
-
-  private openRootAgent(): AgentInvocationRecorder {
-    if (this.rootAgent) return this.rootAgent;
-    this.rootAgentStartedAt = Date.now();
-    this.rootAgent = this.client.invokeAgent({
-      agentName: this.opts.agentName ?? DEFAULT_AGENT_NAME,
-      agentVersion: this.opts.agentVersion,
-      requestProvider: this.provider,
-      requestModel: this.sdkOptions?.model ?? this.model,
-      conversationId: this.opts.conversationId ?? this.sessionId,
-      userId: this.opts.userId,
-      input: promptToMessages(this.prompt),
-      contentCapture: this.opts.contentCapture,
-      metadata: this.opts.metadata,
-      startedAt: this.rootAgentStartedAt,
-    });
-
-    const effort = this.sdkOptions?.effort;
-    if (typeof effort === 'string') {
-      setAttrs(this.rootAgent, { [ATTR_REQUEST_REASONING_LEVEL]: effort });
-    }
-    return this.rootAgent;
-  }
-
-  private chatContext(parentToolUseId: string | null | undefined): ChatContext {
-    const key = parentToolUseId ?? MAIN;
-    const existing = this.chats.get(key);
-    if (existing) return existing;
-
-    const owner = parentToolUseId ? this.subagent(parentToolUseId).rec : this.openRootAgent();
-    const ctx: ChatContext = {
-      key,
-      owner,
-      rec: undefined,
-      messageId: undefined,
-      blocks: [],
-      usage: undefined,
-      finalUsage: undefined,
-      reasoningTokens: undefined,
-      stopReason: undefined,
-      model: undefined,
-      ttftSeconds: undefined,
-      history: key === MAIN ? promptToMessages(this.prompt) : [],
-    };
-    this.chats.set(key, ctx);
-    return ctx;
-  }
-
-  /**
-   * Lazily opens a subagent span, reading its identity from the Task tool call
-   * that launched it. Started but never made "current" — parallel delegations
-   * finish out of launch order, so children are parented explicitly.
-   */
-  private subagent(parentToolUseId: string): OpenSubagent {
-    const existing = this.subagents.get(parentToolUseId);
-    if (existing) return existing;
-
-    const launch = this.launches.get(parentToolUseId);
-    const input = (launch?.input ?? {}) as Record<string, unknown>;
-    const name =
-      pickString(input.subagent_type) ?? pickString(input.agent_type) ?? launch?.name ?? 'subagent';
-    // Still open: a Task tool's `tool_result` *is* the subagent's report, so it
-    // cannot arrive before the subagent's own messages have opened this span.
-    const parentTool = this.tools.get(parentToolUseId);
-    const turn = this.openRootAgent();
-    const promptText = pickString(input.prompt);
-
-    const open = (): AgentInvocationRecorder =>
-      this.client.invokeAgent({
-        agentName: name,
-        agentDescription: pickString(input.description),
-        requestProvider: this.provider,
-        requestModel: pickString(input.model) ?? this.model,
-        conversationId: this.opts.conversationId ?? this.sessionId,
-        input: promptText ? [{ role: 'user', parts: [textPart(promptText)] }] : [],
-        contentCapture: this.opts.contentCapture,
-        startedAt: Date.now(),
-      });
-
-    const rec = parentTool ? parentTool.rec.withActiveContext(open) : turn.withActiveContext(open);
-    const entry: OpenSubagent = { rec, output: [] };
-    this.subagents.set(parentToolUseId, entry);
-    return entry;
-  }
-
-  // --- assistant / user -----------------------------------------------------
+  // --- messages -------------------------------------------------------------
 
   private onAssistant(msg: AgentMessage): void {
+    const thread = this.threadFor(msg.parent_tool_use_id);
+    if (!thread) return;
     const inner = msg.message ?? {};
-    const parent = msg.parent_tool_use_id ?? null;
-    const blocks = blocksOf(inner);
-    if (inner.model) this.model = inner.model;
 
-    // Tool spans open from the stream, not from a tool result: only the stream
-    // carries `parent_tool_use_id`, which is what puts the span in the right place.
-    // block.id is the tool call id.
-    for (const block of blocks) {
-      if (block.type === 'tool_use' && block.id) this.launches.set(block.id, block);
+    // A failed API call: the message stands for the call, and its text is the error.
+    if (inner.model === SYNTHETIC_MODEL) {
+      const text = blocksOf(inner.content)
+        .map((b) => b.text ?? '')
+        .join('');
+      this.openCall(thread).rec.setCallError(new Error(text || 'API call failed'));
+      return;
     }
 
-    const ctx = this.chatContext(parent);
-
-    // A new message.id means a new API call. The same id means another content
-    // block of the call already in flight.
-    if (!ctx.rec || (inner.id && inner.id !== ctx.messageId)) {
-      this.closeChat(ctx);
-      this.openChat(ctx, inner.id, inner.model);
+    let call = thread.call;
+    if (!call || (inner.id && inner.id !== call.messageId)) {
+      call = this.openCall(thread, inner.id, inner.model);
     }
-    ctx.blocks.push(...blocks);
-    if (inner.usage) ctx.usage = inner.usage;
-    if (inner.stop_reason) ctx.rec?.setResult({ stopReason: inner.stop_reason });
-    if (msg.aborted) ctx.rec?.setCallError(new Error('assistant message aborted'));
+    const blocks = blocksOf(inner.content);
+    call.blocks.push(...blocks);
+    call.lastBlockAt = Date.now();
+    if (inner.usage) call.usage = { ...call.usage, ...inner.usage };
+    if (inner.stop_reason) call.stopReason = inner.stop_reason;
+    if (msg.aborted) call.rec.setCallError(new Error('assistant message aborted'));
 
     for (const block of blocks) {
-      if (block.type === 'tool_use' && block.id) this.openTool(block, parent);
+      if (block.type === 'tool_use' && block.id) this.openTool(block, thread);
     }
-
-    const asMessage = blocksToMessage(blocks, 'assistant');
-    if (asMessage) {
-      ctx.history.push(asMessage);
-      if (parent) this.subagents.get(parent)?.output.push(asMessage);
+    // One history message per call, even when tool results arrive between its blocks.
+    const parts = blocks.flatMap((b) => blockToParts(b));
+    if (call.historyMessage) call.historyMessage.parts.push(...parts);
+    else if (parts.length > 0) {
+      call.historyMessage = { role: 'assistant', parts };
+      thread.history.push(call.historyMessage);
     }
   }
 
   private onUser(msg: AgentMessage): void {
-    const parent = msg.parent_tool_use_id ?? null;
-    const ctx = this.chatContext(parent);
-    const blocks = blocksOf(msg.message ?? {});
+    const thread = this.threadFor(msg.parent_tool_use_id);
+    if (!thread) return;
+    // No call closes here: the CLI runs a tool as soon as its block arrives, so
+    // results can come back while the same call is still sending blocks.
 
-    // A user message closes the API call in flight — the next assistant message
-    // belongs to a fresh request.
-    this.closeChat(ctx);
+    const blocks = blocksOf(msg.message?.content);
+    const toolResults = blocks.filter((b) => b.type === 'tool_result' && b.tool_use_id);
+    // A subagent's only plain user message is its prompt echoed back, which its
+    // history already starts with.
+    if (!thread.isMain && toolResults.length === 0) return;
 
-    let sawToolResult = false;
-    for (const block of blocks) {
-      if (block.type === 'tool_result' && block.tool_use_id) {
-        sawToolResult = true;
-        // A task waits for its notification; this may only be a launch receipt.
-        if (this.taskTools.has(block.tool_use_id)) continue;
-        this.closeTool(block.tool_use_id, block.content, block.is_error ? 'tool error' : undefined);
-      }
+    for (const block of toolResults) {
+      const id = block.tool_use_id as string;
+      const tool = this.tools.get(id);
+      if (tool?.isTask) tool.receipt = block.content;
+      else this.closeTool(id, block.content, block.is_error ? new Error('tool error') : undefined);
     }
-
-    const asMessage = blocksToMessage(blocks, sawToolResult ? 'tool' : 'user');
-    if (asMessage) ctx.history.push(asMessage);
+    const message = blocksToMessage(blocks, toolResults.length > 0 ? 'tool' : 'user');
+    if (message) thread.history.push(message);
+    thread.readyAt = Date.now();
   }
 
+  /** Sent only with `includePartialMessages`. */
   private onStreamEvent(msg: AgentMessage): void {
-    const key = msg.parent_tool_use_id ?? MAIN;
+    const thread = this.threadFor(msg.parent_tool_use_id);
+    const event = msg.event;
+    if (!thread || !event) return;
 
-    // `message_delta` closes a call on the wire: it is the one event carrying the
-    // call's final usage and stop reason. Without it we would be left with the
-    // `message_start` snapshot, which understates output tokens by ~98%.
-    //
-    // Measured on CLI 2.1.220: these events always arrive with
-    // `parent_tool_use_id` null, immediately after their own call's assistant
-    // messages, and never interleaved with another call's — the main loop is
-    // blocked while a subagent runs, and subagent calls emit no stream events at
-    // all. So routing by `key` lands on the right span. The set-once guard is
-    // there in case a future CLI interleaves them.
-    if (msg.event?.type === 'message_delta') {
-      const ctx = this.chats.get(key);
-      if (!ctx?.rec || ctx.finalUsage !== undefined) return;
-      const usage = msg.event.usage;
-      if (usage) {
-        ctx.finalUsage = usage;
-        const thinking = usage.output_tokens_details?.thinking_tokens;
-        if (typeof thinking === 'number' && thinking > 0) ctx.reasoningTokens = thinking;
-      }
-      const stop = msg.event.delta?.stop_reason;
-      if (stop) ctx.stopReason = stop;
-      return;
+    if (event.type === 'message_start') {
+      const call = this.openCall(thread, event.message?.id, event.message?.model, msg.ttft_ms);
+      call.usage = event.message?.usage;
+    } else if (event.type === 'message_delta' && thread.call) {
+      thread.call.finalUsage = event.usage;
+      if (event.delta?.stop_reason) thread.call.stopReason = event.delta.stop_reason;
+      this.closeCall(thread);
     }
-
-    if (typeof msg.ttft_ms !== 'number') return;
-    const ctx = this.chats.get(key);
-    if (ctx?.rec) {
-      if (ctx.ttftSeconds === undefined) this.applyTtft(ctx, msg.ttft_ms);
-      return;
-    }
-    this.pendingTtft.set(key, msg.ttft_ms);
-  }
-
-  private applyTtft(ctx: ChatContext, ttftMs: number): void {
-    if (!ctx.rec) return;
-    ctx.ttftSeconds = ttftMs / 1000;
-    ctx.rec.setTimeToFirstToken(ctx.ttftSeconds);
-    setAttrs(ctx.rec, { [ATTR_RESPONSE_TIME_TO_FIRST_CHUNK]: ctx.ttftSeconds });
   }
 
   private onSystem(msg: AgentMessage): void {
-    if (msg.subtype === 'init') {
-      this.sessionId = msg.session_id ?? this.sessionId;
-      if (msg.model) this.model = msg.model;
-      this.openRootAgent();
-      return;
+    switch (msg.subtype) {
+      case 'init':
+        this.sessionId = msg.session_id;
+        this.model = msg.model;
+        // A new turn: an interrupt sent while idle has no result to excuse.
+        this.interrupted = false;
+        // The CLI is up; the first request goes out now.
+        this.mainThread().readyAt = Date.now();
+        return;
+      case 'task_started': {
+        const tool = msg.tool_use_id ? this.tools.get(msg.tool_use_id) : undefined;
+        if (tool) tool.isTask = true;
+        return;
+      }
+      case 'task_notification':
+        // The real end of a task; `summary` is its output.
+        if (msg.tool_use_id) {
+          const error = msg.status === 'failed' ? new Error('task failed') : undefined;
+          this.closeTool(msg.tool_use_id, msg.summary, error);
+        }
+        return;
+      case 'compact_boundary':
+        this.compacted = true;
+        this.openRoot().setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
+        return;
     }
+  }
 
-    // The CLI has registered this call as a task. Always ahead of that call's
-    // `tool_result`, whether it then runs in the background or inline.
-    if (msg.subtype === 'task_started') {
-      if (msg.tool_use_id) this.taskTools.add(msg.tool_use_id);
-      return;
-    }
+  private onResult(msg: AgentMessage): void {
+    const root = this.openRoot();
+    this.sawResult = true;
+    this.lastResultError = this.interrupted ? undefined : resultError(msg);
+    this.interrupted = false;
 
-    // The task really finished. `summary` is its output — the same text an inline
-    // `tool_result` carries, and what a backgrounded one lacks.
-    if (msg.subtype === 'task_notification') {
-      const id = msg.tool_use_id;
-      if (!id) return;
-      this.taskTools.delete(id);
-      const failed = msg.status !== undefined && msg.status !== 'completed';
-      this.closeTool(id, msg.summary, failed ? `task ${msg.status}` : undefined);
-      return;
+    // An API failure keeps subtype `success`; it belongs on the call that failed.
+    // The other error subtypes are early stops, where the last call went fine.
+    const main = this.mainThread();
+    if (this.lastResultError && msg.subtype === 'success') {
+      main.call?.rec.setCallError(this.lastResultError);
     }
+    this.closeCall(main);
 
-    // Compaction is reported with the semconv boolean only. The pre/post token
-    // counts would need a bespoke event, and nothing consumes one yet.
-    if (msg.subtype === 'compact_boundary') {
-      this.compacted = true;
-      setAttrs(this.openRootAgent(), { [ATTR_CONVERSATION_COMPACTED]: true });
-    }
+    root.setAttributes({
+      ...usageAttributes(sumModelUsage(msg.modelUsage)),
+      ...(msg.total_cost_usd ? { [ATTR_USAGE_COST_USD]: msg.total_cost_usd } : {}),
+    });
+    root.setOutput(
+      !msg.is_error && typeof msg.result === 'string' && msg.result
+        ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
+        : [],
+    );
+    if (msg.stop_reason) root.setStopReason(msg.stop_reason);
+  }
+
+  // --- threads --------------------------------------------------------------
+
+  /** Opened on the first message, so the span can carry the session id from `init`. */
+  private openRoot(): AgentInvocationRecorder {
+    if (this.root) return this.root;
+    this.root = this.client.invokeAgent({
+      ...this.sharedSeed(this.agentName),
+      requestProvider: this.provider,
+      requestModel: this.queryOptions.model ?? this.model,
+      input: promptMessages(this.prompt),
+      parentGenerationIds: this.config.parentGenerationIds,
+      startedAt: this.startedAt,
+    });
+    this.setReasoningLevel(this.root);
+    return this.root;
+  }
+
+  private mainThread(): AgentThread {
+    this.main ??= {
+      agent: this.openRoot(),
+      agentName: this.agentName,
+      isMain: true,
+      history: promptMessages(this.prompt),
+      readyAt: this.startedAt,
+    };
+    return this.main;
+  }
+
+  /**
+   * The thread a message belongs to. A subagent's messages only count while the tool
+   * that launched it is open: that is what its span nests under.
+   */
+  private threadFor(parentToolUseId: string | null | undefined): AgentThread | undefined {
+    if (!parentToolUseId) return this.mainThread();
+    const tool = this.tools.get(parentToolUseId);
+    if (!tool) return undefined;
+    tool.subagent ??= this.openSubagent(tool);
+    return tool.subagent;
+  }
+
+  /** Dated from the delegation's start: the subagent's first message comes much later. */
+  private openSubagent(tool: OpenTool): AgentThread {
+    const name = pickString(tool.input.subagent_type) ?? tool.name;
+    // The subagent's prompt is the delegation tool's argument, so it follows the
+    // tool-content rule rather than the prompt rule.
+    const showToolContent = this.capturesToolContent();
+    const prompt = pickString(tool.input.prompt);
+    const input: Message[] =
+      prompt && showToolContent ? [{ role: 'user', parts: [textPart(prompt)] }] : [];
+
+    const agent = tool.rec.withActiveContext(() =>
+      this.client.invokeAgent({
+        ...this.sharedSeed(name),
+        requestProvider: this.provider,
+        input,
+        startedAt: tool.startedAt,
+      }),
+    );
+    return {
+      agent,
+      agentName: name,
+      isMain: false,
+      history: [...input],
+      readyAt: tool.startedAt,
+    };
+  }
+
+  private finishSubagent(thread: AgentThread, report: unknown, error: Error | undefined): void {
+    this.closeToolsOf(thread, error);
+    this.closeCall(thread);
+    const output = this.capturesToolContent()
+      ? blocksToMessage(blocksOf(report), 'assistant')
+      : undefined;
+    if (output) thread.agent.setOutput([output]);
+    if (error) thread.agent.setError(error);
+    void thread.agent.end();
   }
 
   // --- chat spans -----------------------------------------------------------
 
-  private openChat(
-    ctx: ChatContext,
-    messageId: string | undefined,
-    model: string | undefined,
-  ): void {
-    const resolvedModel = model ?? this.model ?? this.sdkOptions?.model ?? 'unknown';
-    const streaming = this.sdkOptions?.includePartialMessages === true;
+  /** Ends the thread's call in flight, if any, and starts the next one. */
+  private openCall(
+    thread: AgentThread,
+    messageId?: string,
+    model?: string,
+    ttftMs?: number,
+  ): ModelCall {
+    this.closeCall(thread);
+    const now = Date.now();
+    const resolvedModel = model ?? thread.lastModel ?? this.model ?? 'unknown';
     const seed: GenerationStart = {
+      ...this.sharedSeed(thread.agentName),
+      ...(thread.isMain ? this.mainRequestSettings() : {}),
       model: { provider: this.provider, name: resolvedModel },
-      operationName: OP_CHAT,
-      conversationId: this.opts.conversationId ?? this.sessionId,
-      userId: this.opts.userId,
-      agentName: this.opts.agentName ?? DEFAULT_AGENT_NAME,
-      systemPrompt: systemPromptText(this.sdkOptions?.systemPrompt),
-      thinkingEnabled: this.sdkOptions?.thinking?.type === 'enabled' ? true : undefined,
-      thinkingBudgetTokens: this.sdkOptions?.thinking?.budgetTokens,
-      contentCapture: this.opts.contentCapture,
-      startedAt: Date.now(),
+      conversationTitle: this.config.conversationTitle,
+      turnIndex: this.config.turnIndex,
+      turnRole: this.config.turnRole,
+      startedAt: ttftMs === undefined ? thread.readyAt : now - ttftMs,
     };
-    ctx.rec = ctx.owner.withActiveContext(() =>
-      streaming ? this.client.startStreamingGeneration(seed) : this.client.startGeneration(seed),
+    const rec = thread.agent.withActiveContext(() =>
+      this.expectsStreamEvents(thread)
+        ? this.client.startStreamingGeneration(seed)
+        : this.client.startGeneration(seed),
     );
-    ctx.messageId = messageId;
-    ctx.blocks = [];
-    ctx.usage = undefined;
-    ctx.finalUsage = undefined;
-    ctx.reasoningTokens = undefined;
-    ctx.stopReason = undefined;
-    ctx.model = resolvedModel;
-    ctx.ttftSeconds = undefined;
+    rec.setResult({ input: [...thread.history], responseId: messageId });
+    if (ttftMs !== undefined) rec.setTimeToFirstToken(ttftMs / 1000);
+    if (this.compacted) rec.setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
+    if (thread.isMain) this.setReasoningLevel(rec);
 
-    ctx.rec.setResult({ input: [...ctx.history] });
-    const attrs: Attributes = {};
-    if (messageId) attrs['gen_ai.response.id'] = messageId;
-    if (this.compacted) attrs[ATTR_CONVERSATION_COMPACTED] = true;
-    const effort = this.sdkOptions?.effort;
-    if (typeof effort === 'string') attrs[ATTR_REQUEST_REASONING_LEVEL] = effort;
-    setAttrs(ctx.rec, attrs);
-
-    const pending = this.pendingTtft.get(ctx.key);
-    if (pending !== undefined) {
-      this.pendingTtft.delete(ctx.key);
-      this.applyTtft(ctx, pending);
-    }
+    thread.call = { rec, messageId, model: resolvedModel, blocks: [], lastBlockAt: now };
+    thread.lastModel = resolvedModel;
+    return thread.call;
   }
 
-  private closeChat(ctx: ChatContext): void {
-    const rec = ctx.rec;
-    if (!rec) return;
-    ctx.rec = undefined;
+  /**
+   * Ends the call in flight. Without `message_delta` the real end is unknown by the
+   * time a later message closes the call, so it is dated to the call's last block.
+   */
+  private closeCall(thread: AgentThread): void {
+    const call = thread.call;
+    if (!call) return;
+    thread.call = undefined;
 
-    // `message_delta` carries the call's real totals; `message.usage` is only a
-    // mid-stream snapshot. Prefer the former and flag the span when we had to
-    // settle for the latter (no `includePartialMessages`, or an aborted call).
-    const usage = ctx.finalUsage ?? ctx.usage;
-    const isFinal = ctx.finalUsage !== undefined;
-
-    const output = blocksToMessage(ctx.blocks, 'assistant');
-    rec.setResult({
+    const output = blocksToMessage(call.blocks, 'assistant');
+    // A snapshot's input figures are final, but its output count is taken as the reply
+    // starts, so it is left out rather than reported low.
+    const usage = call.finalUsage
+      ? { ...call.usage, ...call.finalUsage }
+      : { ...call.usage, output_tokens: undefined };
+    call.rec.setResult({
       output: output ? [output] : [],
-      usage: foldUsage(usage, ctx.reasoningTokens),
-      responseModel: ctx.model,
-      stopReason: ctx.stopReason,
+      usage: toTokenUsage(usage),
+      responseModel: call.model,
+      stopReason: call.stopReason ?? (hasToolUse(call.blocks) ? 'tool_use' : undefined),
     });
-
-    const attrs: Attributes = {};
-    if (usage?.cache_creation_input_tokens) {
-      attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cache_creation_input_tokens;
-    }
-    if (!isFinal) attrs[ATTR_USAGE_IS_PARTIAL] = true;
-    setAttrs(rec, attrs);
-    void rec.end();
+    const endedAt = call.finalUsage ? Date.now() : call.lastBlockAt;
+    if (!call.finalUsage) call.rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
+    call.rec.setEndedAt(endedAt);
+    void call.rec.end();
+    thread.readyAt = Math.max(thread.readyAt, endedAt);
   }
 
   // --- tool spans -----------------------------------------------------------
 
-  private openTool(block: AgentContentBlock, parentToolUseId: string | null): void {
-    const id = block.id;
-    if (!id || this.tools.has(id)) return;
+  private openTool(block: AgentContentBlock, thread: AgentThread): void {
+    const id = block.id as string;
     const name = block.name ?? 'unknown_tool';
-
-    const owner = parentToolUseId
-      ? (this.subagents.get(parentToolUseId)?.rec ?? this.openRootAgent())
-      : this.openRootAgent();
-
-    const rec = owner.withActiveContext(() =>
+    const startedAt = Date.now();
+    const rec = thread.agent.withActiveContext(() =>
       this.client.startToolExecution({
         toolName: name,
         toolCallId: id,
         toolType: name.startsWith('mcp__') ? 'extension' : 'function',
         requestProvider: this.provider,
-        requestModel: this.model,
-        conversationId: this.opts.conversationId ?? this.sessionId,
-        agentName: this.opts.agentName ?? DEFAULT_AGENT_NAME,
-        contentCapture: this.opts.contentCapture,
-        startedAt: Date.now(),
+        requestModel: thread.call?.model,
+        conversationId: this.conversationId,
+        agentName: thread.agentName,
+        agentVersion: this.config.agentVersion,
+        contentCapture: this.config.contentCapture,
+        startedAt,
       }),
     );
     rec.setResult({ arguments: block.input });
-    this.tools.set(id, { rec, name });
+    const input = (block.input ?? {}) as Record<string, unknown>;
+    this.tools.set(id, { rec, name, input, owner: thread, startedAt, isTask: false });
   }
 
-  private closeTool(id: string | undefined, response: unknown, error: unknown): void {
-    if (!id) return;
-    // A Task tool owns a nested subagent span. End the child first: OTel does not
-    // enforce it, but a child outliving its parent renders as a bar sticking out
-    // past its parent and some backends flag it.
-    this.finishSubagent(id);
-    const open = this.tools.get(id);
-    if (!open) return;
+  private closeTool(id: string, response: unknown, error: Error | undefined): void {
+    const tool = this.tools.get(id);
+    if (!tool) return;
     this.tools.delete(id);
-    if (response !== undefined) open.rec.setResult({ result: response });
-    if (error !== undefined) open.rec.setExecError(error);
-    void open.rec.end();
+    // End the child first, so it does not outlive its parent.
+    if (tool.subagent) this.finishSubagent(tool.subagent, response, error);
+    if (response !== undefined) tool.rec.setResult({ result: response });
+    if (error) tool.rec.setExecError(error);
+    void tool.rec.end();
   }
 
-  /** Ends a subagent span once the Task tool that spawned it has returned. */
-  private finishSubagent(toolUseId: string): void {
-    const entry = this.subagents.get(toolUseId);
-    if (!entry) return;
-    this.subagents.delete(toolUseId);
-    const ctx = this.chats.get(toolUseId);
-    if (ctx) {
-      this.closeChat(ctx);
-      this.chats.delete(toolUseId);
+  /** Closes the tools a thread still has open; a background task keeps its receipt. */
+  private closeToolsOf(thread: AgentThread, error: Error | undefined): void {
+    for (const [id, tool] of this.tools) {
+      if (tool.owner === thread) this.closeTool(id, tool.receipt, error);
     }
-    if (entry.output.length > 0) entry.rec.setOutput(entry.output);
-    void entry.rec.end();
   }
 
-  // --- result / teardown ----------------------------------------------------
+  // --- teardown -------------------------------------------------------------
 
   /**
-   * A `result` is a checkpoint, not the end of the run: it closes the model call in
-   * flight and supersedes the previous result, but the span stays open until the
-   * stream does. Tools are deliberately left alone — a backgrounded delegation
-   * legitimately outlives the result that announced it.
+   * Closes everything still open. `error` is set when the run broke (the stream threw,
+   * or ended with no result); the caller stopping early is not an error.
    */
-  private onResult(msg: AgentMessage): void {
-    const rec = this.openRootAgent();
-    this.sessionId = msg.session_id ?? this.sessionId;
-    this.sawResult = true;
-
-    // An API failure is the one result error that belongs on the model call: the
-    // CLI relays it as a synthetic assistant message, so that call's span is open
-    // and would otherwise close as a success. The early-stop subtypes are the
-    // opposite — the loop hit a limit and the call before it went fine.
-    const err = resultError(msg);
-    const apiError = msg.subtype === 'success' ? err : undefined;
-    for (const [, ctx] of this.chats) {
-      if (apiError && ctx.key === MAIN) ctx.rec?.setCallError(apiError);
-      this.closeChat(ctx);
+  async end(error: unknown): Promise<void> {
+    const failure = error === undefined ? undefined : asError(error);
+    if (this.main) {
+      this.closeToolsOf(this.main, failure);
+      // Without stream events an open call has already delivered its reply, so only a
+      // call cut off mid-stream shares the failure.
+      if (failure && this.expectsStreamEvents(this.main)) this.main.call?.rec.setCallError(failure);
+      this.closeCall(this.main);
     }
-    this.chats.clear();
-    this.finalError = err;
 
-    // Written straight to the span: `modelUsage` and the cost are cumulative over the
-    // whole `query()` call, so a later result only ever raises them and the last one
-    // to arrive leaves the right value behind.
-    const totals = foldModelUsage(msg.modelUsage);
-    const attrs: Attributes = {};
-    if (totals.cacheWrite > 0) attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = totals.cacheWrite;
-    if (totals.costUsd > 0) attrs[ATTR_USAGE_COST_USD] = totals.costUsd;
-    else if (typeof msg.total_cost_usd === 'number' && msg.total_cost_usd > 0) {
-      attrs[ATTR_USAGE_COST_USD] = msg.total_cost_usd;
-    }
-    if (this.compacted) attrs[ATTR_CONVERSATION_COMPACTED] = true;
-    // `AgentInvocationRecorder` has no usage channel and records no token metric, so
-    // the authoritative totals ride on the span as attributes. The per-call token
-    // metric comes from the chat spans.
-    setAttrs(rec, { ...attrs, ...usageAttributes(totals.usage) });
+    // A run that broke before its first message still gets a span to carry the error.
+    const root = failure ? this.openRoot() : this.root;
+    if (!root) return;
+    const runError = failure ?? this.lastResultError;
+    if (runError) root.setError(runError);
+    await root.end();
+  }
 
-    rec.setOutput(
-      typeof msg.result === 'string' && msg.result && !msg.is_error
-        ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
-        : [],
+  // --- helpers --------------------------------------------------------------
+
+  private get conversationId(): string | undefined {
+    return this.config.conversationId ?? this.sessionId;
+  }
+
+  /** Seed fields every agent and chat span in the run carries. */
+  private sharedSeed(agentName: string) {
+    return {
+      agentName,
+      agentVersion: this.config.agentVersion,
+      userId: this.config.userId,
+      conversationId: this.conversationId,
+      contentCapture: this.config.contentCapture,
+      tags: this.config.tags,
+      metadata: this.config.metadata,
+    };
+  }
+
+  /** Request settings from the caller's options, which only the main thread uses. */
+  private mainRequestSettings(): Partial<GenerationStart> {
+    const { systemPrompt, thinking } = this.queryOptions;
+    return {
+      systemPrompt: typeof systemPrompt === 'string' && systemPrompt ? systemPrompt : undefined,
+      thinkingEnabled: thinking?.type === 'enabled' ? true : undefined,
+      thinkingBudgetTokens: thinking?.budgetTokens,
+    };
+  }
+
+  private setReasoningLevel(rec: AgentInvocationRecorder | GenerationRecorder): void {
+    const { effort } = this.queryOptions;
+    if (effort) rec.setAttributes({ [ATTR_REQUEST_REASONING_LEVEL]: effort });
+  }
+
+  /** The SDK sends stream events only for the main thread, and only when asked to. */
+  private expectsStreamEvents(thread: AgentThread): boolean {
+    return thread.isMain && this.queryOptions.includePartialMessages === true;
+  }
+
+  private capturesToolContent(): boolean {
+    const mode = resolveContentCaptureMode(
+      this.config.contentCapture,
+      contentCaptureModeFromContext(),
+      this.client.config.contentCaptureMode,
     );
-    if (msg.stop_reason) rec.setStopReason(msg.stop_reason);
-  }
-
-  /**
-   * Ends the run: the stream is over, so everything still open closes here and the
-   * last result is written onto the span.
-   */
-  private async endRootAgent(): Promise<void> {
-    for (const [id] of [...this.subagents]) this.finishSubagent(id);
-    for (const [id] of [...this.tools]) this.closeTool(id, undefined, 'tool never returned');
-    for (const [, ctx] of this.chats) this.closeChat(ctx);
-    this.chats.clear();
-
-    const rec = this.rootAgent;
-    this.rootAgent = undefined;
-    this.compacted = false;
-    if (!rec) return;
-
-    if (this.finalError) rec.setError(this.finalError);
-    await rec.end();
-  }
-
-  private async failRootAgent(err: unknown): Promise<void> {
-    for (const [, ctx] of this.chats) ctx.rec?.setCallError(err);
-    this.finalError = err;
-    await this.endRootAgent();
-  }
-
-  /** Closes anything the stream left open — abandoned generators, early breaks. */
-  private async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
-    if (!this.sawResult) {
-      const err = new Error('agent stream ended before any result message');
-      for (const [, ctx] of this.chats) ctx.rec?.setCallError(err);
-      this.finalError = err;
-    }
-    await this.endRootAgent();
+    return mode === 'full';
   }
 }
 
 // -----------------------------------------------------------------------------
-// Helpers
+// Mapping
 // -----------------------------------------------------------------------------
 
-/**
- * Sets attributes on a recorder's span through the public recorder API.
- *
- * Recorders own their span and do not expose it. `withActiveContext` installs it
- * as the active span for the synchronous duration of the callback, which is all
- * a `setAttributes` call needs — and it works identically from the stream loop
- * and from a hook running in one of the SDK's own async contexts.
- */
-function setAttrs(rec: { withActiveContext<T>(fn: () => T): T }, attrs: Attributes): void {
-  if (Object.keys(attrs).length === 0) return;
-  rec.withActiveContext(() => {
-    trace.getActiveSpan()?.setAttributes(attrs);
-  });
+function resolveProvider(options: AgentQueryOptions): string {
+  const env = options.env ?? process.env;
+  for (const [key, provider] of PROVIDER_ENV) {
+    const value = env[key];
+    if (value && value !== '0' && value !== 'false') return provider;
+  }
+  return 'anthropic';
 }
 
-function blocksOf(inner: { content?: AgentContentBlock[] | string }): AgentContentBlock[] {
-  const content = inner.content;
-  if (Array.isArray(content)) return content;
+function hasToolUse(blocks: AgentContentBlock[]): boolean {
+  return blocks.some((b) => b.type === 'tool_use');
+}
+
+function blocksOf(content: unknown): AgentContentBlock[] {
+  if (Array.isArray(content)) return content as AgentContentBlock[];
   if (typeof content === 'string' && content) return [{ type: 'text', text: content }];
   return [];
 }
 
 function blocksToMessage(blocks: AgentContentBlock[], role: Message['role']): Message | undefined {
-  const parts: Part[] = [];
-  for (const b of blocks) parts.push(...blockToParts(b));
-  if (parts.length === 0) return undefined;
-  return { role, parts };
+  const parts: Part[] = blocks.flatMap((b) => blockToParts(b));
+  return parts.length > 0 ? { role, parts } : undefined;
 }
 
-function promptToMessages(prompt: unknown): Message[] {
-  if (typeof prompt === 'string' && prompt) return [{ role: 'user', parts: [textPart(prompt)] }];
-  if (prompt && typeof prompt === 'object' && 'message' in prompt) {
-    const inner = (prompt as { message: { content?: AgentContentBlock[] | string } }).message;
-    const msg = blocksToMessage(blocksOf(inner ?? {}), 'user');
-    return msg ? [msg] : [];
-  }
-  return [];
-}
-
-function systemPromptText(sp: AgentQueryOptions['systemPrompt']): string | undefined {
-  if (typeof sp === 'string') return sp || undefined;
-  if (sp && typeof sp === 'object') {
-    const parts = [sp.preset ? `preset: ${sp.preset}` : undefined, sp.append].filter(Boolean);
-    return parts.length > 0 ? parts.join('\n') : undefined;
-  }
-  return undefined;
+/** A string prompt; a streamed prompt is not replayed onto spans. */
+function promptMessages(prompt: unknown): Message[] {
+  return typeof prompt === 'string' && prompt ? [{ role: 'user', parts: [textPart(prompt)] }] : [];
 }
 
 /**
- * Folds Anthropic's cache counters into `inputTokens`.
- *
- * Anthropic reports `input_tokens` excluding cache reads and writes; current
- * GenAI semconv requires `gen_ai.usage.input_tokens` to include them, with the
- * cache attributes as subsets. This differs from the `/anthropic` adapter, which
- * still reports the raw uncached count.
+ * Anthropic's `input_tokens` excludes cache reads and writes. The GenAI conventions
+ * count them in, with the cache figures as subsets.
  */
-function foldUsage(
-  usage: AgentUsage | undefined,
-  reasoningTokens?: number,
-): TokenUsage | undefined {
-  if (!usage) return undefined;
+function toTokenUsage(usage: AgentUsage): TokenUsage {
   const read = usage.cache_read_input_tokens ?? 0;
   const write = usage.cache_creation_input_tokens ?? 0;
   return {
@@ -802,86 +724,51 @@ function foldUsage(
     outputTokens: usage.output_tokens ?? 0,
     cacheReadInputTokens: read,
     cacheCreationInputTokens: write,
-    reasoningTokens,
+    reasoningTokens: usage.output_tokens_details?.thinking_tokens || undefined,
   };
 }
 
-interface RunTotals {
-  usage: TokenUsage;
-  cacheWrite: number;
-  costUsd: number;
-}
-
-/**
- * Sums `modelUsage` across models.
- *
- * No subtraction: `modelUsage` is cumulative over the whole `query()` call, which is
- * exactly the span it lands on. It also covers subagents and compaction, which
- * `result.usage` does not.
- */
-function foldModelUsage(current: Record<string, AgentModelUsage> | undefined): RunTotals {
-  let input = 0;
-  let output = 0;
-  let read = 0;
-  let write = 0;
-  let cost = 0;
-
-  for (const mu of Object.values(current ?? {})) {
-    input += mu.inputTokens ?? 0;
-    output += mu.outputTokens ?? 0;
-    read += mu.cacheReadInputTokens ?? 0;
-    write += mu.cacheCreationInputTokens ?? 0;
-    cost += mu.costUSD ?? 0;
-  }
-
+/** `modelUsage` covers subagents too, and is cumulative over the whole call. */
+function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined): TokenUsage {
+  const perModel = Object.values(modelUsage ?? {}).map((m) =>
+    toTokenUsage({
+      input_tokens: m.inputTokens,
+      output_tokens: m.outputTokens,
+      cache_read_input_tokens: m.cacheReadInputTokens,
+      cache_creation_input_tokens: m.cacheCreationInputTokens,
+    }),
+  );
+  const sum = (key: keyof TokenUsage) => perModel.reduce((n, u) => n + (u[key] ?? 0), 0);
   return {
-    usage: {
-      inputTokens: input + read + write,
-      outputTokens: output,
-      cacheReadInputTokens: read,
-      cacheCreationInputTokens: write,
-    },
-    cacheWrite: write,
-    costUsd: cost,
+    inputTokens: sum('inputTokens'),
+    outputTokens: sum('outputTokens'),
+    cacheReadInputTokens: sum('cacheReadInputTokens'),
+    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
   };
 }
 
 /**
- * The error a result reports, if any.
- *
- * Which field holds the text depends on the subtype, and this follows the rule the
- * SDK applies to its own thrown error: on an API failure the subtype is still
- * `success` and the text sits in `result`; the early-stop subtypes put it in
- * `errors`.
+ * The error a result reports. On an API failure the subtype stays `success` and the
+ * text is in `result`; the early-stop subtypes put it in `errors`.
  */
-function resultError(msg: AgentMessage | undefined): Error | undefined {
-  if (!msg?.is_error) return undefined;
+function resultError(msg: AgentMessage): Error | undefined {
+  if (!msg.is_error) return undefined;
   const text =
     msg.subtype === 'success'
       ? (pickString(msg.result) ?? '')
-      : (Array.isArray(msg.errors) ? msg.errors : [])
-          .filter((e): e is string => typeof e === 'string' && e.trim() !== '')
-          .join('; ');
-  const status = msg.api_error_status;
-  const suffix = typeof status === 'number' ? ` (HTTP ${status})` : '';
+      : (msg.errors ?? []).filter((e) => e.trim() !== '').join('; ');
+  const status = typeof msg.api_error_status === 'number' ? ` (HTTP ${msg.api_error_status})` : '';
   return new Error(
-    text ? `${text}${suffix}` : `claude agent run failed: ${msg.terminal_reason ?? msg.subtype}`,
+    text ? `${text}${status}` : `claude agent run failed: ${msg.terminal_reason ?? msg.subtype}`,
   );
+}
+
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 function pickString(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
-}
-
-/** Renders a `TokenUsage` as span attributes, skipping zeros. */
-function usageAttributes(usage: TokenUsage): Attributes {
-  const attrs: Attributes = {};
-  if (usage.inputTokens) attrs['gen_ai.usage.input_tokens'] = usage.inputTokens;
-  if (usage.outputTokens) attrs['gen_ai.usage.output_tokens'] = usage.outputTokens;
-  if (usage.cacheReadInputTokens) {
-    attrs['gen_ai.usage.cache_read.input_tokens'] = usage.cacheReadInputTokens;
-  }
-  return attrs;
 }
 
 export type { AgentMessage, AgentQueryFn, AgentQueryOptions } from './types.js';

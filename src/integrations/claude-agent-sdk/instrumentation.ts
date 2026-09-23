@@ -1,50 +1,18 @@
 /**
  * OpenTelemetry instrumentation for the Claude Agent SDK.
  *
- * Registers like any other OTel instrumentation:
- *
  *   import { registerInstrumentations } from '@opentelemetry/instrumentation';
  *   import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
  *
  *   registerInstrumentations({ instrumentations: [new ClaudeAgentSdkInstrumentation()] });
  *
- * It replaces the module's `query` export with the traced wrapper, so every
- * `query({ prompt, options })` in the process emits the `invoke_agent` /
- * `chat` / `execute_tool` tree with no per-call-site wiring.
+ * It replaces the module's `query` export with the traced wrapper, so every `query()`
+ * in the process is traced with no per-call-site wiring.
  *
- * ## ESM is the only build, and that decides how you register it
- *
- * `@anthropic-ai/claude-agent-sdk` ships a single ESM entry (`sdk.mjs`, no CJS),
- * so require-in-the-middle has nothing to intercept and a native module namespace
- * cannot be written to. Measured on Node 22 against 0.3.239:
- *
- *     import * as sdk from '@anthropic-ai/claude-agent-sdk';
- *     Object.getOwnPropertyDescriptor(sdk, 'query')  // { writable: true, configurable: false }
- *     Reflect.set(sdk, 'query', fn)                  // false — the write is rejected
- *
- * Note the descriptor claims `writable: true` and the assignment still fails, and
- * fails *silently* (no throw). {@link canAssign} probes for this instead of
- * trusting the descriptor, so a doomed patch warns rather than emitting nothing.
- *
- * **Registration goes through the OpenTelemetry ESM loader hook**, either in the
- * app's own entry file or in a `--import` preload. Both are documented in
- * `docs/integrations.md`; the short version is:
- *
- *     import { register } from 'node:module';
- *     register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
- *     registerInstrumentations({ instrumentations: [new ClaudeAgentSdkInstrumentation()] });
- *     const sdk = await import('@anthropic-ai/claude-agent-sdk');   // dynamic
- *
- * import-in-the-middle rewrites the module so its exports are backed by mutable
- * bindings, the patch lands at load time, and the code that calls `query` is
- * untouched. The import has to be dynamic (or the whole setup moved to a preload)
- * because a static import is hoisted above `register()` and resolves first.
- *
- * The rule is only about *when*, never about import style: once the hook is in
- * place before the module loads, every form sees the patched function — namespace
- * or named, static or dynamic. What fails is a module that loaded before the hook
- * existed, and no later patch can reach it. {@link wrapQuery} sidesteps the
- * question entirely: no hook, no ordering, always exact.
+ * The SDK ships only an ESM build, and a native ESM namespace rejects writes, so the
+ * patch needs the OpenTelemetry ESM loader hook registered before the SDK is first
+ * imported (see `docs/integrations.md`). Without the hook, use `wrapQuery` from
+ * `@genai-otel/core/claude-agent-sdk` at the call site instead.
  */
 
 import {
@@ -56,55 +24,33 @@ import {
 import { Client } from '../../client.js';
 import { VERSION } from '../../version.js';
 import { type ClaudeAgentSdkOptions, wrapQuery } from './index.js';
+import { isTracedQuery } from './traced-queries.js';
 import type { AgentQueryFn } from './types.js';
 
 const MODULE_NAME = '@anthropic-ai/claude-agent-sdk';
-/** The SDK is pre-1.0; the message shapes this adapter reads are stable across 0.3.x. */
 const SUPPORTED_VERSIONS = ['>=0.3.0 <1'];
-
-/** Marker so a module patched twice (hook + manual) is only wrapped once. */
-const PATCHED = Symbol.for('@genai-otel/claude-agent-sdk.patched');
 
 /** The subset of the SDK's module namespace this instrumentation touches. */
 interface ClaudeAgentSdkModuleExports {
   query?: AgentQueryFn;
-  [PATCHED]?: boolean;
 }
 
 export interface ClaudeAgentSdkInstrumentationConfig
   extends InstrumentationConfig,
     ClaudeAgentSdkOptions {
-  /**
-   * Reuse an existing `Client`. When omitted, one is created lazily from the
-   * instrumentation's tracer/meter (i.e. the globally-registered providers).
-   */
+  /** Reuse an existing `Client`. When omitted, one is created from the global providers. */
   client?: Client;
 }
 
 /**
- * Returns true when `query` can actually be replaced on this namespace object.
- *
- * Property descriptors are not trustworthy here: a native ESM namespace can
- * report `writable: true` while `[[Set]]` still rejects the write, and a no-op
- * setter can accept a write without changing the exported binding. So probe with
- * a distinct value and check that it stuck, then restore.
+ * Whether `query` can really be replaced. A native ESM namespace can report
+ * `writable: true` and still reject the write, so probe instead of trusting the
+ * property descriptor.
  */
-function canAssign(moduleExports: ClaudeAgentSdkModuleExports): boolean {
-  const original = moduleExports.query;
-  if (typeof original !== 'function') return false;
-  const probe = new Proxy(original, {}) as AgentQueryFn;
-  try {
-    if (!Reflect.set(moduleExports, 'query', probe)) return false;
-    if (Reflect.get(moduleExports, 'query') !== probe) return false;
-    return Reflect.set(moduleExports, 'query', original);
-  } catch {
-    try {
-      Reflect.set(moduleExports, 'query', original);
-    } catch {
-      // Nothing to restore on a sealed namespace.
-    }
-    return false;
-  }
+function canAssign(moduleExports: ClaudeAgentSdkModuleExports, original: AgentQueryFn): boolean {
+  const probe = new Proxy(original, {});
+  if (!Reflect.set(moduleExports, 'query', probe) || moduleExports.query !== probe) return false;
+  return Reflect.set(moduleExports, 'query', original);
 }
 
 export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAgentSdkInstrumentationConfig> {
@@ -146,55 +92,45 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
     moduleExports: ClaudeAgentSdkModuleExports,
     moduleVersion?: string,
   ): ClaudeAgentSdkModuleExports {
-    if (!moduleExports) return moduleExports;
-    if (moduleExports[PATCHED]) {
-      this._diag.debug(`${MODULE_NAME} already patched; skipping`);
-      return moduleExports;
-    }
     const original = moduleExports.query;
     if (typeof original !== 'function') {
       this._diag.debug(`${MODULE_NAME} has no query export; skipping patch`);
       return moduleExports;
     }
-    if (!canAssign(moduleExports)) {
+    // Marked on the function, not the module: the loader hook's module object
+    // silently drops properties it does not export.
+    if (isTracedQuery(original)) {
+      this._diag.debug(`${MODULE_NAME} already patched; skipping`);
+      return moduleExports;
+    }
+    if (!canAssign(moduleExports, original)) {
       this._diag.warn(
-        `cannot replace the query export on ${MODULE_NAME} — the module namespace rejects assignment. Register the OpenTelemetry ESM loader hook, or wrap the call site with wrapQuery(client, query, options).`,
+        `cannot replace the query export on ${MODULE_NAME}: the module namespace rejects assignment. Register the OpenTelemetry ESM loader hook before the SDK is imported. If the app loads the SDK with require(), or the hook cannot be used, wrap the call site with wrapQuery(client, query, options) from @genai-otel/core/claude-agent-sdk.`,
       );
       return moduleExports;
     }
 
     this._diag.debug(`patching ${MODULE_NAME} query${moduleVersion ? ` (v${moduleVersion})` : ''}`);
-    const traced = wrapQuery(this.resolveClient(), original, this.adapterOptions());
-    Reflect.set(moduleExports, 'query', traced);
-    Object.defineProperty(moduleExports, PATCHED, {
-      value: true,
-      enumerable: false,
-      configurable: true,
-      writable: true,
-    });
-    // Keep the original reachable so unpatch works even for hook-supplied modules.
+    Reflect.set(
+      moduleExports,
+      'query',
+      wrapQuery(this.resolveClient(), original, this.adapterOptions()),
+    );
     this.originals.set(moduleExports, original);
     return moduleExports;
   }
 
   private unpatch(moduleExports?: ClaudeAgentSdkModuleExports): void {
-    if (!moduleExports?.[PATCHED]) return;
-    const original = this.originals.get(moduleExports);
-    if (original) {
-      try {
-        Reflect.set(moduleExports, 'query', original);
-      } catch {
-        this._diag.debug(`could not restore the original query export on ${MODULE_NAME}`);
-      }
-    }
+    const original = moduleExports && this.originals.get(moduleExports);
+    if (!moduleExports || !original) return;
+    Reflect.set(moduleExports, 'query', original);
     this.originals.delete(moduleExports);
-    Reflect.deleteProperty(moduleExports, PATCHED);
     this._diag.debug(`unpatched ${MODULE_NAME} query`);
   }
 
   /**
    * Removes the patch. Unlike {@link shutdown} this does not flush a
-   * self-created `Client` — rely on your `TracerProvider` shutdown, or call
+   * self-created `Client`: rely on your `TracerProvider` shutdown, or call
    * `shutdown()` instead.
    */
   override disable(): void {
