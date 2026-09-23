@@ -74,7 +74,7 @@ export class AgentInvocationRecorder extends RecorderBase {
   }
 
   protected async finalize(): Promise<void> {
-    const completedAtMs = this.host.now();
+    const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
     const stripped = mode === 'metadata_only';
@@ -154,7 +154,7 @@ export class AgentCreationRecorder extends RecorderBase {
   }
 
   protected async finalize(): Promise<void> {
-    const completedAtMs = this.host.now();
+    const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode } = this.resolveContentCapture();
     const stripped = mode === 'metadata_only';

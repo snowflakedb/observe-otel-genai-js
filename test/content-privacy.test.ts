@@ -203,3 +203,41 @@ interface SemconvLike {
   role: string;
   parts: Array<Record<string, unknown>>;
 }
+
+describe('no_tool_content sanitizes tool payloads on the chat span', () => {
+  let h: Harness;
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('clears tool arguments and results in chat input and output', async () => {
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
+    const rec = h.client.startGeneration({ model: { provider: 'anthropic', name: 'm' } });
+    rec.setResult({
+      input: [
+        userTextMessage('user question'),
+        {
+          role: 'tool',
+          parts: [
+            toolResultPart({ toolCallId: 'call-1', name: 'search', content: 'secret result' }),
+          ],
+        },
+      ],
+      output: [
+        {
+          role: 'assistant',
+          parts: [toolCallPart({ name: 'search', id: 'call-2', inputJson: '{"q":"secret"}' })],
+        },
+      ],
+    });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = String(span?.attributes[ATTR_INPUT_MESSAGES]);
+    const output = String(span?.attributes[ATTR_OUTPUT_MESSAGES]);
+    expect(input).toContain('user question');
+    expect(input).not.toContain('secret');
+    expect(output).toContain('call-2');
+    expect(output).not.toContain('secret');
+  });
+});

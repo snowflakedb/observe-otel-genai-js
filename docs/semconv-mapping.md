@@ -61,7 +61,13 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.usage.output_tokens` | int | suppressed when zero |
 | `gen_ai.usage.cache_read.input_tokens` | int | |
 | `gen_ai.usage.cache_creation.input_tokens` | int | AI SDK `cacheWrite` and Anthropic `cache_creation` both map here |
+| `gen_ai.usage.cache_write.input_tokens` | int | same value as `cache_creation`, under its current name |
 | `gen_ai.usage.reasoning.output_tokens` | int | |
+| `gen_ai.response.time_to_first_chunk` | double (s) | streaming only; same value as the `gen_ai.client.time_to_first_token` metric |
+| `gen_ai.request.reasoning.level` | string | Claude Agent SDK: the `effort` option |
+| `gen_ai.conversation.compacted` | boolean | Claude Agent SDK: set after the CLI compacts the conversation |
+| `genai.usage.cost_usd` | double | Claude Agent SDK: the run's estimated cost, on `invoke_agent` |
+| `genai.usage.is_partial` | boolean | Claude Agent SDK: the call's usage is a mid-reply snapshot, not its final count |
 
 ### Embedding-only
 
@@ -133,7 +139,7 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 |---|---|---|
 | `gen_ai.client.operation.duration` | s | powers-of-2 (10ms → ~82s) |
 | `gen_ai.client.token.usage` | token | powers-of-4 (1 → 67M) |
-| `gen_ai.client.time_to_first_token` | s | powers-of-2 (streaming only, gated on `setFirstTokenAt`) |
+| `gen_ai.client.time_to_first_token` | s | powers-of-2 (streaming only, from `setFirstTokenAt` or `setTimeToFirstToken`) |
 | `gen_ai.client.tool_calls_per_operation` | count | default OTel buckets |
 | `gen_ai.client.tool_execution.duration` | s | powers-of-2 (10ms → ~82s) — isolates `gen_ai.tool.name` cardinality |
 

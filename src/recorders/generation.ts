@@ -22,6 +22,7 @@ import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
 import {
   ATTR_CONVERSATION_TITLE,
+  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
   ERR_TYPE_MAPPING,
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -97,7 +98,7 @@ export class GenerationRecorder extends RecorderBase {
   }
 
   protected async finalize(): Promise<void> {
-    const completedAtMs = this.host.now();
+    const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
     const isMetadataOnly = mode === 'metadata_only';
@@ -141,6 +142,8 @@ export class GenerationRecorder extends RecorderBase {
       // "intentionally stripped".
       this.span.setAttribute(ATTR_CONVERSATION_TITLE, '');
     }
+    const ttft = this.timeToFirstToken(generation);
+    if (ttft !== undefined) this.span.setAttribute(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK, ttft);
 
     // 5. Privacy-gated exception recording.
     this.recordExceptionIfAny(this.callError, stripped);
@@ -280,12 +283,16 @@ export class GenerationRecorder extends RecorderBase {
 
     this.host.metrics.recordToolCalls(countToolCalls(generation.output ?? []), labels);
 
-    if (generation.mode === 'STREAM') {
-      const ttft =
-        this.timeToFirstTokenSeconds ??
-        (this.firstTokenAtMs != null ? (this.firstTokenAtMs - this.startedAtMs) / 1000 : undefined);
-      if (ttft != null && ttft >= 0) this.host.metrics.recordTimeToFirstToken(ttft, labels);
-    }
+    const ttft = this.timeToFirstToken(generation);
+    if (ttft !== undefined) this.host.metrics.recordTimeToFirstToken(ttft, labels);
+  }
+
+  private timeToFirstToken(generation: Generation): number | undefined {
+    if (generation.mode !== 'STREAM') return undefined;
+    const ttft =
+      this.timeToFirstTokenSeconds ??
+      (this.firstTokenAtMs != null ? (this.firstTokenAtMs - this.startedAtMs) / 1000 : undefined);
+    return ttft != null && ttft >= 0 ? ttft : undefined;
   }
 }
 

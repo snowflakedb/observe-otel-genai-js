@@ -8,12 +8,13 @@
  * authoritative value for every field.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
 import type { Generation, GenerationStart } from '../models/generation.js';
 import type { RetrievalStart } from '../models/retrieval.js';
 import type { ToolExecutionStart } from '../models/tool.js';
+import type { TokenUsage } from '../models/usage.js';
 import {
   ATTR_AGENT_DESCRIPTION,
   ATTR_AGENT_ID,
@@ -59,6 +60,7 @@ import {
   ATTR_TOOL_TYPE,
   ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
@@ -171,16 +173,26 @@ export function applyGenerationAttributes(span: Span, view: GenerationAttributeV
     span.setAttribute(ATTR_FINISH_REASONS, [view.stopReason]);
   }
 
-  const usage = view.usage;
-  if (usage) {
-    if (usage.inputTokens) setNum(span, ATTR_USAGE_INPUT_TOKENS, usage.inputTokens);
-    if (usage.outputTokens) setNum(span, ATTR_USAGE_OUTPUT_TOKENS, usage.outputTokens);
-    if (usage.cacheReadInputTokens)
-      setNum(span, ATTR_USAGE_CACHE_READ_INPUT_TOKENS, usage.cacheReadInputTokens);
-    if (usage.cacheCreationInputTokens)
-      setNum(span, ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS, usage.cacheCreationInputTokens);
-    if (usage.reasoningTokens) setNum(span, ATTR_USAGE_REASONING_TOKENS, usage.reasoningTokens);
+  if (view.usage) span.setAttributes(usageAttributes(view.usage));
+}
+
+/**
+ * Token usage as span attributes, skipping zeros. Cache-write tokens go under both
+ * the older `cache_creation` name and the current `cache_write` one.
+ */
+export function usageAttributes(usage: TokenUsage): Attributes {
+  const attrs: Attributes = {};
+  if (usage.inputTokens) attrs[ATTR_USAGE_INPUT_TOKENS] = usage.inputTokens;
+  if (usage.outputTokens) attrs[ATTR_USAGE_OUTPUT_TOKENS] = usage.outputTokens;
+  if (usage.cacheReadInputTokens) {
+    attrs[ATTR_USAGE_CACHE_READ_INPUT_TOKENS] = usage.cacheReadInputTokens;
   }
+  if (usage.cacheCreationInputTokens) {
+    attrs[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS] = usage.cacheCreationInputTokens;
+    attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cacheCreationInputTokens;
+  }
+  if (usage.reasoningTokens) attrs[ATTR_USAGE_REASONING_TOKENS] = usage.reasoningTokens;
+  return attrs;
 }
 
 // -----------------------------------------------------------------------------

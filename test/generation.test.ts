@@ -107,6 +107,40 @@ describe('GenerationRecorder', () => {
     expect(ttft, 'ttft histogram is recorded for streaming').toBeDefined();
   });
 
+  it('ends the span at a time set with setEndedAt()', async () => {
+    const rec = h.client.startGeneration({
+      model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      startedAt: Date.now() - 1000,
+    });
+    const endedAt = Date.now() - 500;
+    rec.setEndedAt(endedAt);
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span!.endTime[0] * 1000 + span!.endTime[1] / 1e6).toBeCloseTo(endedAt, -1);
+  });
+
+  it('ignores an end time before the start', async () => {
+    const rec = h.client.startGeneration({ model: { provider: 'anthropic', name: 'm' } });
+    rec.setEndedAt(Date.now() - 60_000);
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span!.endTime[0] * 1000).toBeGreaterThan(Date.now() - 10_000);
+  });
+
+  it('sets extra attributes and writes cache-write tokens under both names', async () => {
+    const rec = h.client.startGeneration({ model: { provider: 'anthropic', name: 'm' } });
+    rec.setAttributes({ 'genai.usage.is_partial': true });
+    rec.setResult({ usage: { inputTokens: 5, cacheCreationInputTokens: 3 } });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span!.attributes['genai.usage.is_partial']).toBe(true);
+    expect(span!.attributes['gen_ai.usage.cache_creation.input_tokens']).toBe(3);
+    expect(span!.attributes['gen_ai.usage.cache_write.input_tokens']).toBe(3);
+  });
+
   it('records TTFT from setTimeToFirstToken() when the provider reports the duration', async () => {
     const rec = h.client.startStreamingGeneration({
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
@@ -118,6 +152,8 @@ describe('GenerationRecorder', () => {
 
     const ops = flattenScopeMetrics(await h.collectMetrics());
     expect(histogramSum(ops, METRIC_TIME_TO_FIRST_TOKEN)).toBe(1.25);
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['gen_ai.response.time_to_first_chunk']).toBe(1.25);
   });
 
   it('prefers a reported TTFT over one derived from setFirstTokenAt()', async () => {
