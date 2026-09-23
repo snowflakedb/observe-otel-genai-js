@@ -172,4 +172,4 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 
 ## Instrumentation scope
 
-Spans and metrics from a `Client` you create are emitted under the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai`, unless you pass them a `client`.
+Spans and metrics from a `Client` you create are emitted under the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai-agents`, unless you pass them a `client`.

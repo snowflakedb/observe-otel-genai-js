@@ -6,16 +6,18 @@
  * the payload that tells the AI SDK path from the OpenAI one.
  */
 
-import { SpanStatusCode, context as otelContext } from '@opentelemetry/api';
+import { SpanStatusCode, context as otelContext, trace as otelTrace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mapAgentsItems } from '../../src/integrations/openai-agents/_map.js';
 import type {
+  SdkModel,
   SdkSpan,
   SdkSpanData,
   SdkTrace,
 } from '../../src/integrations/openai-agents/_sdk-types.js';
 import { GenAIOtelTracingProcessor } from '../../src/integrations/openai-agents/index.js';
+import { instrumentModel } from '../../src/integrations/openai-agents/instrumentation.js';
 import { RUN_TOKEN_KEY } from '../../src/integrations/openai-agents/processor.js';
 import {
   ATTR_AGENT_NAME,
@@ -778,5 +780,108 @@ describe('GenAIOtelTracingProcessor', () => {
     const agentSpan = only(agentSpans());
     expect(String(agentSpan.attributes['gen_ai.input.messages'])).toContain('where is my order');
     expect(String(agentSpan.attributes['gen_ai.output.messages'])).toContain('checking');
+  });
+});
+
+describe('instrumentModel', () => {
+  let h: Harness;
+  let processor: GenAIOtelTracingProcessor;
+
+  beforeEach(() => {
+    h = createHarness();
+    processor = new GenAIOtelTracingProcessor({ client: h.client, contentCapture: 'full' });
+  });
+
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** A custom `Model` that reports which OTel span was active when it was called. */
+  function spyModel(): { model: SdkModel; activeSpanId: () => string | undefined } {
+    let seen: string | undefined;
+    return {
+      activeSpanId: () => seen,
+      model: {
+        async getResponse() {
+          seen = otelTrace.getSpan(otelContext.active())?.spanContext().spanId;
+          return { output: [], usage: {} };
+        },
+        async *getStreamedResponse() {
+          seen = otelTrace.getSpan(otelContext.active())?.spanContext().spanId;
+          yield { type: 'output_text_delta', delta: 'x' };
+        },
+      },
+    };
+  }
+
+  it('runs the model call under the enclosing agent span', async () => {
+    // The wrapper resolves the agent span from `getCurrentSpan`, which is why it
+    // is a required argument: with nothing to resolve, the call would run under
+    // whatever context happened to be active, and the spans a custom model emits
+    // would hang off the wrong parent.
+    const trace = makeTrace();
+    await processor.onTraceStart(trace);
+    const agentSpan = makeSpan(trace.traceId, { type: 'agent', name: 'assistant' });
+    await processor.onSpanStart(agentSpan);
+
+    const spy = spyModel();
+    const wrapped = instrumentModel(spy.model, processor, () => agentSpan);
+    await wrapped.getResponse({});
+
+    // Close the agent span only now, so the model call happened while it was open.
+    await processor.onSpanEnd(agentSpan);
+    await processor.onTraceEnd(trace);
+
+    const invokeAgent = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_AGENT);
+    expect(invokeAgent).toBeDefined();
+    expect(spy.activeSpanId()).toBe(invokeAgent?.spanContext().spanId);
+  });
+
+  it('nests a call whose span start has not reached the processor yet', async () => {
+    // The SDK notifies processors one after another without waiting, so with slow
+    // processors ahead of this one, the model call can start first.
+    const trace = makeTrace();
+    await processor.onTraceStart(trace);
+    const agentSpan = makeSpan(trace.traceId, { type: 'agent', name: 'assistant' });
+    await processor.onSpanStart(agentSpan);
+    const turn = makeSpan(
+      trace.traceId,
+      { type: 'turn', turn: 1, agent_name: 'assistant' },
+      { parentId: agentSpan.spanId },
+    );
+
+    const spy = spyModel();
+    await instrumentModel(spy.model, processor, () => turn).getResponse({});
+    await processor.onSpanStart(turn);
+    await processor.onSpanEnd(turn);
+    await processor.onSpanEnd(agentSpan);
+    await processor.onTraceEnd(trace);
+
+    const invokeAgent = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_AGENT);
+    expect(spy.activeSpanId()).toBe(invokeAgent?.spanContext().spanId);
+  });
+
+  it('runs every step of a streamed call under the enclosing agent span', async () => {
+    const trace = makeTrace();
+    await processor.onTraceStart(trace);
+    const agentSpan = makeSpan(trace.traceId, { type: 'agent', name: 'assistant' });
+    await processor.onSpanStart(agentSpan);
+
+    const spy = spyModel();
+    const wrapped = instrumentModel(spy.model, processor, () => agentSpan);
+    for await (const _event of wrapped.getStreamedResponse({})) {
+      // drain
+    }
+    await processor.onSpanEnd(agentSpan);
+    await processor.onTraceEnd(trace);
+
+    const invokeAgent = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_AGENT);
+    expect(spy.activeSpanId()).toBe(invokeAgent?.spanContext().spanId);
   });
 });

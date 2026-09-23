@@ -1,13 +1,12 @@
 /**
  * OpenAI Agents SDK adapter (`@genai-otel/core/openai-agents`).
  *
- * {@link GenAIOtelTracingProcessor} turns the SDK's traces into GenAI spans:
- * `invoke_agent`, `execute_tool`, `chat` on the AI SDK model path, and a run
- * container. Register it with the SDK's `addTraceProcessor`.
- *
- * On its own it cannot make spans from other instrumentations, such as OpenAI
- * `chat` spans, nest under agent spans: the SDK keeps no OTel context active
- * between its span callbacks. That needs the SDK's model classes patched.
+ * Most applications want `OpenAIAgentsInstrumentation` from
+ * `@genai-otel/core/openai-agents/instrumentation`. The processor exported here is
+ * for custom setups: on its own it emits agent, tool and AI SDK chat spans, but
+ * spans from other instrumentations (such as OpenAI chat spans) will not nest
+ * under them, and a run that rejects leaves its container span open until the
+ * trace cap or `stop()` ends it.
  */
 
 export {

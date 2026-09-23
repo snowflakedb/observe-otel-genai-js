@@ -36,6 +36,11 @@
       "import": "./dist/integrations/openai-agents/index.js",
       "require": "./dist/cjs/integrations/openai-agents/index.js"
     },
+    "./openai-agents/instrumentation": {
+      "types": "./dist/integrations/openai-agents/instrumentation.d.ts",
+      "import": "./dist/integrations/openai-agents/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai-agents/instrumentation.js"
+    },
     "./openai/instrumentation": {
       "types": "./dist/integrations/openai/instrumentation.d.ts",
       "import": "./dist/integrations/openai/instrumentation.js",

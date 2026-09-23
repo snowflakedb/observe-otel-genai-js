@@ -9,6 +9,11 @@
  *
  * Responses are scripted per test: hand `respond` a queue of payloads, or a
  * function of the request, and assert on what comes out the other end.
+ *
+ * Streaming is served as real server-sent events. A streamed call is the one case
+ * where the SDK's model method is an `async *` generator, so its body, and the
+ * HTTP request inside it, does not run until the consumer's first `next()`. Only
+ * an SSE response over HTTP reproduces that ordering.
  */
 
 import { type Server, createServer } from 'node:http';
@@ -18,11 +23,14 @@ export interface FakeOpenAIRequest {
   body: Record<string, unknown>;
 }
 
-/** Returns the JSON body for a request, or an `{ status, body }` pair to fail it. */
+/**
+ * Returns the JSON body for a request, an `{ status, body }` pair to fail it, or
+ * `{ sse: [...] }` to stream the given events as server-sent events.
+ */
 export type FakeOpenAIHandler = (
   req: FakeOpenAIRequest,
   callIndex: number,
-) => unknown | { status: number; body: unknown };
+) => unknown | { status: number; body: unknown } | { sse: unknown[] };
 
 export interface FakeOpenAIServer {
   /** Base URL to hand an `OpenAI` client, already including `/v1`. */
@@ -65,6 +73,19 @@ export async function startFakeOpenAI(handler: FakeOpenAIHandler): Promise<FakeO
         res.end(JSON.stringify(result.body));
         return;
       }
+      if (isStream(result)) {
+        res.setHeader('content-type', 'text/event-stream');
+        res.setHeader('cache-control', 'no-cache');
+        for (const event of result.sse) {
+          // The SDK dispatches on the event name, so every frame needs its
+          // `event:` line.
+          const name = (event as { type?: unknown }).type;
+          if (typeof name === 'string') res.write(`event: ${name}\n`);
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+        res.end();
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(result));
     });
@@ -82,6 +103,12 @@ export async function startFakeOpenAI(handler: FakeOpenAIHandler): Promise<FakeO
         server.close(() => resolve());
       }),
   };
+}
+
+function isStream(value: unknown): value is { sse: unknown[] } {
+  return (
+    value != null && typeof value === 'object' && Array.isArray((value as { sse?: unknown }).sse)
+  );
 }
 
 function isFailure(value: unknown): value is { status: number; body: unknown } {
@@ -196,4 +223,36 @@ export function defaultResponsesUsage(): Record<string, unknown> {
     input_tokens_details: { cached_tokens: 4, cache_write_tokens: 0 },
     output_tokens_details: { reasoning_tokens: 2 },
   };
+}
+
+/**
+ * The server-sent events for one streamed Responses turn that answers with text.
+ *
+ * Trimmed to the events the SDK acts on: the deltas it forwards, and the
+ * `response.completed` carrying the final payload it parses usage and output from.
+ */
+export function responsesStreamEvents(
+  overrides: {
+    id?: string;
+    model?: string;
+    text?: string;
+    usage?: Record<string, unknown>;
+  } = {},
+): unknown[] {
+  const text = overrides.text ?? 'streamed hello';
+  const final = responsesMessage(overrides);
+  return [
+    {
+      type: 'response.created',
+      response: { id: overrides.id ?? 'resp-test', status: 'in_progress' },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'message', role: 'assistant' },
+    },
+    { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: text },
+    { type: 'response.output_text.done', output_index: 0, content_index: 0, text },
+    { type: 'response.completed', response: final },
+  ];
 }

@@ -17,6 +17,7 @@ pnpm exec tsx examples/basic-chat/index.ts
 pnpm exec tsx examples/multi-turn/index.ts
 pnpm exec tsx examples/multi-agent-dag/index.ts
 pnpm exec tsx examples/otlp-export/index.ts
+pnpm exec tsx examples/openai-agents/index.ts
 ```
 
 ## What each example shows
@@ -27,5 +28,6 @@ pnpm exec tsx examples/otlp-export/index.ts
 | `multi-turn/` | `withConversationId` + `genai.conversation.turn_index` / `turn_role` across multiple turns. |
 | `multi-agent-dag/` | Planner → executor → responder with `parentGenerationIds` span links + `invokeAgent` callback variant. |
 | `otlp-export/` | `bootstrapOtel` reading env vars; ships to any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...). |
+| `openai-agents/` | Two OTel instrumentations cooperating on one trace: a real `Agent` / `Runner` handoff producing a run container → `invoke_agent` → `chat` + `execute_tool`, against a local stand-in for the OpenAI API. |
 
 Every example uses an in-memory exporter by default (so you can run it without a backend) and falls back to OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
