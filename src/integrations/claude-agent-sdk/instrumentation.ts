@@ -6,8 +6,8 @@
  *
  *   registerInstrumentations({ instrumentations: [new ClaudeAgentSdkInstrumentation()] });
  *
- * It replaces the module's `query` export with the traced wrapper, so every `query()`
- * in the process is traced with no per-call-site wiring.
+ * It replaces the module's `query` and `startup` exports with traced wrappers, so every
+ * `query()` in the process is traced with no per-call-site wiring.
  *
  * The SDK ships only an ESM build, and a native ESM namespace rejects writes, so the
  * patch needs the OpenTelemetry ESM loader hook registered before the SDK is first
@@ -23,9 +23,9 @@ import {
 
 import { Client } from '../../client.js';
 import { VERSION } from '../../version.js';
-import { type ClaudeAgentSdkOptions, wrapQuery } from './index.js';
+import { type ClaudeAgentSdkOptions, wrapQuery, wrapStartup } from './index.js';
 import { isTracedQuery } from './traced-queries.js';
-import type { AgentQueryFn } from './types.js';
+import type { AgentQueryFn, AgentStartupFn } from './types.js';
 
 const MODULE_NAME = '@anthropic-ai/claude-agent-sdk';
 // Pre-1.0, so a minor release can break the message shapes read here. Tested live on
@@ -35,6 +35,7 @@ const SUPPORTED_VERSIONS = ['>=0.3.142 <0.4.0'];
 /** The subset of the SDK's module namespace this instrumentation touches. */
 interface ClaudeAgentSdkModuleExports {
   query?: AgentQueryFn;
+  startup?: AgentStartupFn;
 }
 
 export interface ClaudeAgentSdkInstrumentationConfig
@@ -58,8 +59,8 @@ function canAssign(moduleExports: ClaudeAgentSdkModuleExports, original: AgentQu
 export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAgentSdkInstrumentationConfig> {
   /** The `Client` we created ourselves, so {@link shutdown} knows it owns it. */
   private ownedClient?: Client;
-  /** Original `query` per patched namespace, so {@link disable} can put it back. */
-  private readonly originals = new Map<ClaudeAgentSdkModuleExports, AgentQueryFn>();
+  /** Original exports per patched namespace, so {@link disable} can put them back. */
+  private readonly originals = new Map<ClaudeAgentSdkModuleExports, ClaudeAgentSdkModuleExports>();
 
   constructor(config: ClaudeAgentSdkInstrumentationConfig = {}) {
     super('@genai-otel/instrumentation-claude-agent-sdk', VERSION, config);
@@ -113,21 +114,25 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
     }
 
     this._diag.debug(`patching ${MODULE_NAME} query${moduleVersion ? ` (v${moduleVersion})` : ''}`);
-    Reflect.set(
-      moduleExports,
-      'query',
-      wrapQuery(this.resolveClient(), original, this.adapterOptions()),
-    );
-    this.originals.set(moduleExports, original);
+    const client = this.resolveClient();
+    const options = this.adapterOptions();
+    Reflect.set(moduleExports, 'query', wrapQuery(client, original, options));
+    // Same namespace as query, so the write that worked there works here.
+    const startup = moduleExports.startup;
+    if (typeof startup === 'function') {
+      Reflect.set(moduleExports, 'startup', wrapStartup(client, startup, options));
+    }
+    this.originals.set(moduleExports, { query: original, startup });
     return moduleExports;
   }
 
   private unpatch(moduleExports?: ClaudeAgentSdkModuleExports): void {
     const original = moduleExports && this.originals.get(moduleExports);
     if (!moduleExports || !original) return;
-    Reflect.set(moduleExports, 'query', original);
+    Reflect.set(moduleExports, 'query', original.query);
+    if (original.startup) Reflect.set(moduleExports, 'startup', original.startup);
     this.originals.delete(moduleExports);
-    this._diag.debug(`unpatched ${MODULE_NAME} query`);
+    this._diag.debug(`unpatched ${MODULE_NAME}`);
   }
 
   /**

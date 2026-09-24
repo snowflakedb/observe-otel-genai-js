@@ -48,7 +48,9 @@ import type {
   AgentQueryFn,
   AgentQueryOptions,
   AgentQueryParams,
+  AgentStartupFn,
   AgentUsage,
+  AgentWarmQuery,
 } from './types.js';
 
 const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
@@ -117,6 +119,28 @@ export function wrapQuery<F extends AgentQueryFn>(
   };
   markTraced(traced);
   return traced as F;
+}
+
+/**
+ * Wraps the SDK's `startup`, which spawns the CLI ahead of time and hands back a
+ * `WarmQuery`. Its `query(prompt)` does not go through the module's `query`, so it
+ * is traced here, with the options `startup` was given.
+ */
+export function wrapStartup<F extends AgentStartupFn>(
+  client: Client,
+  startup: F,
+  options: ClaudeAgentSdkOptions = {},
+): F {
+  if (isTracedQuery(startup)) return startup;
+  const traced = async (params?: { options?: AgentQueryOptions }) => {
+    const warm: AgentWarmQuery = await startup(params as never);
+    const warmQuery = warm.query.bind(warm);
+    const query = wrapQuery(client, (p: AgentQueryParams) => warmQuery(p.prompt as never), options);
+    warm.query = (prompt: unknown) => query({ prompt, options: params?.options });
+    return warm;
+  };
+  markTraced(traced);
+  return traced as unknown as F;
 }
 
 /**
@@ -916,4 +940,4 @@ function pickString(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
-export type { AgentMessage, AgentQueryFn, AgentQueryOptions } from './types.js';
+export type { AgentMessage, AgentQueryFn, AgentQueryOptions, AgentStartupFn } from './types.js';

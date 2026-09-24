@@ -15,6 +15,7 @@ import type { ClientConfig } from '../../src/config.js';
 import {
   type ClaudeAgentSdkOptions,
   wrapQuery,
+  wrapStartup,
 } from '../../src/integrations/claude-agent-sdk/index.js';
 import type {
   AgentMessage,
@@ -1553,6 +1554,30 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(calls).toEqual(['interrupt']);
     expect(target).not.toBe(q); // called on the SDK's own object
     expect(allSpans(h, ROOT)).toHaveLength(1);
+  });
+
+  it('traces a query sent through a pre-warmed startup() handle', async () => {
+    const h = harness();
+    const prompts: unknown[] = [];
+    const startup = async (_params?: { options?: AgentQueryOptions }) => ({
+      query(prompt: unknown) {
+        prompts.push(prompt);
+        return fakeQuery([init(), assistant('msg_1', [text('hi')]), result()])({ prompt });
+      },
+      close() {},
+    });
+
+    const warm = await wrapStartup(
+      h.client,
+      startup,
+    )({
+      options: { env: { CLAUDE_CODE_USE_BEDROCK: '1' } },
+    });
+    await drain(warm.query('warm prompt'));
+
+    expect(prompts).toEqual(['warm prompt']);
+    expect(String(attr(findSpan(h, ROOT), 'gen_ai.input.messages'))).toContain('warm prompt');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('aws.bedrock');
   });
 
   it('does not wrap a query twice', async () => {

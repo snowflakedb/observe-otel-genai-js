@@ -10,7 +10,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Claude Agent SDK adapter. `ClaudeAgentSdkInstrumentation`
   (`@genai-otel/core/claude-agent-sdk/instrumentation`) patches the SDK's `query`
   through the OpenTelemetry ESM loader hook; `wrapQuery`
-  (`@genai-otel/core/claude-agent-sdk`) wraps a call site without the hook. Each
+  (`@genai-otel/core/claude-agent-sdk`) wraps a call site without the hook, and
+  `wrapStartup` does the same for a pre-warmed `startup()` handle. Each
   `query()` gets an `invoke_agent` span with `chat` and `execute_tool` children and a
   nested `invoke_agent` per subagent, rebuilt from the CLI's message stream. Works with
   `@anthropic-ai/claude-agent-sdk` `>=0.3.142 <0.4.0`.

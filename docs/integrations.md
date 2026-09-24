@@ -347,6 +347,10 @@ const tracedQuery = wrapQuery(client, query, { agentName: 'support-bot' });
 for await (const msg of tracedQuery({ prompt, options })) { /* ... */ }
 ```
 
+A query sent through a pre-warmed `startup()` handle does not go through `query`, so
+wrap `startup` the same way with `wrapStartup(client, startup, options)`. The
+instrumentation patches both.
+
 ### Options worth turning on
 
 Two SDK options are off by default. The adapter does not turn them on for you,

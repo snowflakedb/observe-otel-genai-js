@@ -125,3 +125,11 @@ export interface AgentQueryParams {
  * without casts; the adapter reads its arguments as {@link AgentQueryParams}.
  */
 export type AgentQueryFn = (params: never) => AsyncIterable<unknown>;
+
+/** The subset of the SDK's `WarmQuery` the adapter uses. */
+export interface AgentWarmQuery {
+  query(prompt: never): AsyncIterable<unknown>;
+}
+
+/** Any function shaped like the SDK's `startup`, which pre-warms the CLI. */
+export type AgentStartupFn = (params?: never) => Promise<AgentWarmQuery>;

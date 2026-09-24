@@ -197,6 +197,20 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     expect(agentSpans(h)).toHaveLength(1);
   });
 
+  it('patches the startup export, and restores it on disable', async () => {
+    const startup = async () => ({ query: (_prompt: unknown) => rawQuery()() });
+    const mod = { ...mutableModule(), startup };
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchModule(instrumentation, mod);
+
+    const warm = await mod.startup();
+    await drain(warm.query('hello') as AsyncIterable<AgentMessage>);
+    expect(agentSpans(h)).toHaveLength(1);
+
+    instrumentation.disable();
+    expect(mod.startup).toBe(startup);
+  });
+
   it('leaves other exports alone', () => {
     const mod = mutableModule();
     const other = mod.other;
