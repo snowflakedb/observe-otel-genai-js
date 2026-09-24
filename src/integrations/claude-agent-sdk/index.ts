@@ -228,6 +228,9 @@ class AgentRun {
   private sessionId: string | undefined;
   private model: string | undefined;
   private compacted = false;
+  /** The latest result's cumulative totals, and what earlier resets zeroed. */
+  private latestTotals: RunTotals | undefined;
+  private totalsBeforeReset: RunTotals = { usage: {}, costUsd: 0 };
   private sawResult = false;
   /** The caller ended the run with `close()` or `return()`, which is not a failure. */
   private stoppedByCaller = false;
@@ -305,6 +308,11 @@ class AgentRun {
         break;
       case 'result':
         this.onResult(msg);
+        break;
+      case 'conversation_reset':
+        // A /clear zeroes the running totals; what came before still counts for this run.
+        this.totalsBeforeReset = addTotals(this.totalsBeforeReset, this.latestTotals);
+        this.latestTotals = undefined;
         break;
     }
   }
@@ -434,16 +442,28 @@ class AgentRun {
     }
     this.closeCall(main);
 
-    root.setAttributes({
-      ...usageAttributes(sumModelUsage(msg.modelUsage)),
-      ...(msg.total_cost_usd ? { [ATTR_USAGE_COST_USD]: msg.total_cost_usd } : {}),
-    });
+    this.recordTotals(root, msg);
     root.setOutput(
       !msg.is_error && typeof msg.result === 'string' && msg.result
         ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
         : [],
     );
     if (msg.stop_reason) root.setStopReason(msg.stop_reason);
+  }
+
+  /**
+   * The results' totals cover more than this call when the session was resumed or
+   * continued: its first result already includes the earlier runs, by an amount the
+   * stream never states. Those runs get no totals rather than wrong ones.
+   */
+  private recordTotals(root: AgentInvocationRecorder, msg: AgentMessage): void {
+    if (this.queryOptions.resume || this.queryOptions.continue) return;
+    this.latestTotals = { usage: sumModelUsage(msg.modelUsage), costUsd: msg.total_cost_usd ?? 0 };
+    const run = addTotals(this.totalsBeforeReset, this.latestTotals);
+    root.setAttributes({
+      ...usageAttributes(run.usage),
+      ...(run.costUsd ? { [ATTR_USAGE_COST_USD]: run.costUsd } : {}),
+    });
   }
 
   // --- threads --------------------------------------------------------------
@@ -756,6 +776,26 @@ function toTokenUsage(usage: AgentUsage): TokenUsage {
   };
 }
 
+interface RunTotals {
+  usage: TokenUsage;
+  costUsd: number;
+}
+
+function addTotals(a: RunTotals, b: RunTotals | undefined): RunTotals {
+  return b ? { usage: addUsage(a.usage, b.usage), costUsd: a.costUsd + b.costUsd } : a;
+}
+
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  const sum = (key: keyof TokenUsage) => (a[key] ?? 0) + (b[key] ?? 0);
+  return {
+    inputTokens: sum('inputTokens'),
+    outputTokens: sum('outputTokens'),
+    cacheReadInputTokens: sum('cacheReadInputTokens'),
+    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+    reasoningTokens: sum('reasoningTokens') || undefined,
+  };
+}
+
 /** `modelUsage` covers subagents too, and is cumulative over the whole call. */
 function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined): TokenUsage {
   const perModel = Object.values(modelUsage ?? {}).map((m) =>
@@ -767,14 +807,7 @@ function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined):
       output_tokens_details: { thinking_tokens: m.thinkingTokens },
     }),
   );
-  const sum = (key: keyof TokenUsage) => perModel.reduce((n, u) => n + (u[key] ?? 0), 0);
-  return {
-    inputTokens: sum('inputTokens'),
-    outputTokens: sum('outputTokens'),
-    cacheReadInputTokens: sum('cacheReadInputTokens'),
-    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
-    reasoningTokens: sum('reasoningTokens') || undefined,
-  };
+  return perModel.reduce(addUsage, {});
 }
 
 /**

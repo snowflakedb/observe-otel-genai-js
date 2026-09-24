@@ -100,6 +100,9 @@ export interface AgentQueryOptions {
   model?: string;
   effort?: string;
   thinking?: { type?: string; budgetTokens?: number };
+  /** Resuming or continuing a session: its first result already carries earlier usage. */
+  resume?: string;
+  continue?: boolean;
   /** Needed for per-call token totals and time to first token. */
   includePartialMessages?: boolean;
   systemPrompt?: unknown;

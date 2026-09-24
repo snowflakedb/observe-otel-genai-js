@@ -509,6 +509,46 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, ROOT), 'gen_ai.usage.reasoning.output_tokens')).toBe(28);
   });
 
+  it('keeps the usage from before a /clear in the run totals', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('first')]),
+      result(),
+      { type: 'conversation_reset', new_conversation_id: 'conv-2' },
+      assistant('msg_2', [text('second')]),
+      result({
+        modelUsage: { [MODEL]: { inputTokens: 1, outputTokens: 2 } },
+        total_cost_usd: 0.001,
+      }),
+    ]);
+
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(52);
+    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0133);
+  });
+
+  it('keeps the earlier totals when a later result reports zeroes', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('hi')]),
+      result(),
+      result({ modelUsage: {}, total_cost_usd: 0 }),
+    ]);
+
+    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.output_tokens')).toBe(50);
+  });
+
+  it('reports no run totals for a resumed session', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {}, { resume: 'sess-0' });
+
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBeUndefined();
+    expect(attr(root, 'genai.usage.cost_usd')).toBeUndefined();
+  });
+
   it('applies the run options to each span type that has a field for them', async () => {
     const h = harness();
     await run(

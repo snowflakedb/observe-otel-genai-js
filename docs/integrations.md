@@ -413,7 +413,10 @@ invoke_agent <agentName>          one per query() call
 
 The `invoke_agent` span carries the run totals from the latest `result.modelUsage`,
 which is the only source that includes subagents, plus the cost in
-`genai.usage.cost_usd`. Each `chat` span carries its own call's figures, so summing
+`genai.usage.cost_usd`. A `/clear` mid-run resets the SDK's totals; the usage from
+before it still counts toward the run. A run started with `resume` or `continue`
+gets no run totals: the SDK carries the earlier session's usage into its first
+result without saying how much of it there is. Each `chat` span carries its own call's figures, so summing
 token attributes across every span in a trace counts them twice; use either the
 `invoke_agent` span or the `chat` spans. The token metric is recorded from `chat`
 spans only.
