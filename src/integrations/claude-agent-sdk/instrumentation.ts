@@ -28,7 +28,9 @@ import { isTracedQuery } from './traced-queries.js';
 import type { AgentQueryFn } from './types.js';
 
 const MODULE_NAME = '@anthropic-ai/claude-agent-sdk';
-const SUPPORTED_VERSIONS = ['>=0.3.0 <1'];
+// Pre-1.0, so a minor release can break the message shapes read here. Tested live on
+// 0.3.142 (the first 0.3 release) through 0.3.278, each with its bundled CLI.
+const SUPPORTED_VERSIONS = ['>=0.3.142 <0.4.0'];
 
 /** The subset of the SDK's module namespace this instrumentation touches. */
 interface ClaudeAgentSdkModuleExports {
