@@ -295,6 +295,7 @@ class AgentRun {
   }
 
   private onMessage(msg: AgentMessage): void {
+    if (msg.subtype !== 'task_notification') this.closeFinishedTasks();
     switch (msg.type) {
       case 'assistant':
         this.onAssistant(msg);
@@ -431,6 +432,16 @@ class AgentRun {
         // Run in the foreground, the task's tool_result follows with the full output.
         if (tool.receipt === undefined) tool.finished = { error };
         else this.closeTool(id, msg.summary, error);
+        return;
+      }
+      case 'task_updated': {
+        // The SDK can leave out a task's notification; this update is then its only end.
+        const status = msg.patch?.status;
+        if (status !== 'completed' && status !== 'failed' && status !== 'killed') return;
+        const id = msg.task_id ? this.taskTools.get(msg.task_id) : undefined;
+        const tool = id ? this.tools.get(id) : undefined;
+        if (tool)
+          tool.finished = { error: status === 'failed' ? new Error('task failed') : undefined };
         return;
       }
       case 'compact_boundary':
@@ -660,6 +671,18 @@ class AgentRun {
     if (response !== undefined) tool.rec.setResult({ result: response });
     if (error) tool.rec.setExecError(error);
     void tool.rec.end();
+  }
+
+  /**
+   * Closes background tasks that reported finishing only through `task_updated`. Held
+   * for one message, since the notification that usually follows carries the output.
+   */
+  private closeFinishedTasks(): void {
+    for (const [id, tool] of this.tools) {
+      if (tool.finished && tool.receipt !== undefined) {
+        this.closeTool(id, tool.receipt, tool.finished.error);
+      }
+    }
   }
 
   /** Closes the tools a thread still has open; a background task keeps its receipt. */

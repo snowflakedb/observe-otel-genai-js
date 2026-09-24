@@ -795,6 +795,52 @@ describe('Claude Agent SDK adapter: tools', () => {
     );
   });
 
+  it('closes a background task on its terminal update when no notification follows', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
+      assistant('msg_2', [text('waiting')]),
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task_tu_1',
+        patch: { status: 'failed' },
+      },
+      assistant('msg_3', [text('it failed')]),
+      result(),
+    ]);
+
+    const bash = findSpan(h, 'execute_tool Bash');
+    expect(bash.status.code).toBe(SpanStatusCode.ERROR);
+    const order = endOrder(h);
+    expect(order.indexOf('execute_tool Bash')).toBeLessThan(order.lastIndexOf(CHAT));
+  });
+
+  it('prefers the notification that follows a terminal update', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task_tu_1',
+        patch: { status: 'completed' },
+      },
+      taskNotification('tu_1', 'finished'),
+      result(),
+    ]);
+
+    expect(String(attr(findSpan(h, 'execute_tool Bash'), 'gen_ai.tool.call.result'))).toContain(
+      'finished',
+    );
+  });
+
   it('does not treat a stopped task as a failure', async () => {
     const h = harness();
     await run(h, [

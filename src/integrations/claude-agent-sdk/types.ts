@@ -79,6 +79,8 @@ export interface AgentMessage {
   status?: 'completed' | 'failed' | 'stopped';
   /** The task's output, on `task_notification`. */
   summary?: string;
+  /** What changed, on `task_updated`. */
+  patch?: { status?: string };
 
   // result
   is_error?: boolean;
