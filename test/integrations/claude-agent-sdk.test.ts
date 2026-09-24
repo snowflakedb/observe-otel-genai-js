@@ -398,6 +398,28 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, ROOT), 'gen_ai.request.reasoning.level')).toBe('high');
   });
 
+  it('records a custom system prompt, but not a preset', async () => {
+    const h = harness();
+    const custom = { type: 'custom', prompt: 'you are a release bot' };
+    await run(
+      h,
+      [init(), assistant('msg_1', [text('hi')]), result()],
+      {},
+      { systemPrompt: custom },
+    );
+    expect(String(attr(findSpan(h, CHAT), 'gen_ai.system_instructions'))).toContain('release bot');
+
+    h.spans.reset();
+    const preset = { type: 'preset', preset: 'claude_code', append: 'be terse' };
+    await run(
+      h,
+      [init(), assistant('msg_1', [text('hi')]), result()],
+      {},
+      { systemPrompt: preset },
+    );
+    expect(attr(findSpan(h, CHAT), 'gen_ai.system_instructions')).toBeUndefined();
+  });
+
   it('leaves out the snapshot output count and infers a tool_use finish', async () => {
     const h = harness();
     await run(h, [

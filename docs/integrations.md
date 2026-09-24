@@ -408,8 +408,10 @@ invoke_agent <agentName>          one per query() call
   from the process environment otherwise. Without any of them it is `anthropic`.
 - `options.effort` becomes `gen_ai.request.reasoning.level` on the run's
   `invoke_agent` span and the main thread's `chat` spans. A string
-  `options.systemPrompt` and `options.thinking` go on the main thread's `chat` spans
-  only; subagents have their own.
+  or custom (`{ type: 'custom', prompt }`) `options.systemPrompt` and
+  `options.thinking` go on the main thread's `chat` spans only; subagents have their
+  own. A preset is not recorded: the CLI renders it, and its `append` is only part of
+  the prompt.
 - After the CLI compacts the conversation, the run and every later `chat` span carry
   `gen_ai.conversation.compacted`. Later `chat` inputs start after the compaction:
   the summary the CLI puts in place of the earlier turns never reaches the process.

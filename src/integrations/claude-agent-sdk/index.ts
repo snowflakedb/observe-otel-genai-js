@@ -751,7 +751,7 @@ class AgentRun {
   private mainRequestSettings(): Partial<GenerationStart> {
     const { systemPrompt, thinking } = this.queryOptions;
     return {
-      systemPrompt: typeof systemPrompt === 'string' && systemPrompt ? systemPrompt : undefined,
+      systemPrompt: callerSystemPrompt(systemPrompt),
       thinkingEnabled: thinking?.type === 'enabled' ? true : undefined,
       thinkingBudgetTokens: thinking?.budgetTokens,
     };
@@ -780,6 +780,16 @@ class AgentRun {
 // -----------------------------------------------------------------------------
 // Mapping
 // -----------------------------------------------------------------------------
+
+/**
+ * The system prompt the caller wrote in full: a string, or the custom form. A preset
+ * is rendered by the CLI and never seen here, and its `append` is only a fragment.
+ */
+function callerSystemPrompt(prompt: unknown): string | undefined {
+  if (typeof prompt === 'string') return prompt || undefined;
+  const custom = prompt as { type?: unknown; prompt?: unknown } | undefined;
+  return custom?.type === 'custom' ? pickString(custom.prompt) : undefined;
+}
 
 function resolveProvider(options: AgentQueryOptions): string {
   const env = options.env ?? process.env;
