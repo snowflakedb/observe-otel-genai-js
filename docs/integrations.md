@@ -383,6 +383,8 @@ invoke_agent <agentName>          one per query() call
 - The CLI sends one assistant message per content block, so a call that returns
   thinking, text and a tool call arrives as three messages sharing a `message.id`.
   They become one `chat` span.
+- Each `chat` span's input is the conversation so far, capped at the latest 40
+  messages so a long tool loop does not outgrow what an exporter accepts.
 - Subagents nest under the delegation that started them, matched by
   `parent_tool_use_id`, so parallel delegations stay apart.
 - A task (a delegation, or `Bash` with `run_in_background`) answers its tool call

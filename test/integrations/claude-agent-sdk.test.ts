@@ -309,6 +309,21 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(input).toContain('a follow-up');
   });
 
+  it('replays at most the 40 latest messages as a chat input', async () => {
+    const h = harness();
+    const loop = Array.from({ length: 30 }, (_, i) => [
+      assistant(`msg_${i}`, [toolUse(`tu_${i}`, 'Read')]),
+      toolResult(`tu_${i}`, `result ${i}`),
+    ]).flat();
+    await run(h, [init(), ...loop, assistant('msg_last', [text('done')]), result()]);
+
+    const last = allSpans(h, CHAT).at(-1)!;
+    const input = JSON.parse(String(attr(last, 'gen_ai.input.messages'))) as unknown[];
+    expect(input).toHaveLength(40);
+    expect(JSON.stringify(input)).not.toContain('do the thing');
+    expect(JSON.stringify(input.at(-1))).toContain('tu_29');
+  });
+
   it('flags snapshot usage as partial and puts the run totals on invoke_agent', async () => {
     const h = harness();
     await run(h, [

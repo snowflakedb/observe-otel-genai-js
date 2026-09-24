@@ -56,6 +56,13 @@ const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
 /** The model the CLI puts on the assistant message it makes up for a failed API call. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
+/**
+ * How many messages each chat span replays as its input. Every span re-sends the
+ * whole conversation, so without a bound a long tool loop outgrows what an exporter
+ * accepts, and the span is dropped.
+ */
+const MAX_HISTORY_MESSAGES = 40;
+
 /** The tools that launch a subagent. The CLI accepts either name. */
 const DELEGATION_TOOLS = new Set(['Agent', 'Task']);
 
@@ -355,7 +362,7 @@ class AgentRun {
     if (call.historyMessage) call.historyMessage.parts.push(...parts);
     else if (parts.length > 0) {
       call.historyMessage = { role: 'assistant', parts };
-      thread.history.push(call.historyMessage);
+      remember(thread, call.historyMessage);
     }
   }
 
@@ -386,7 +393,7 @@ class AgentRun {
       this.closeTool(id, block.content, error);
     }
     const message = blocksToMessage(blocks, toolResults.length > 0 ? 'tool' : 'user');
-    if (message) thread.history.push(message);
+    if (message) remember(thread, message);
     thread.readyAt = Date.now();
   }
 
@@ -775,6 +782,14 @@ function resolveProvider(options: AgentQueryOptions): string {
     if (value && value !== '0' && value !== 'false') return provider;
   }
   return 'anthropic';
+}
+
+/** Adds to the replayed conversation, dropping the oldest messages past the bound. */
+function remember(thread: AgentThread, message: Message): void {
+  thread.history.push(message);
+  if (thread.history.length > MAX_HISTORY_MESSAGES) {
+    thread.history.splice(0, thread.history.length - MAX_HISTORY_MESSAGES);
+  }
 }
 
 function hasToolUse(blocks: AgentContentBlock[]): boolean {
