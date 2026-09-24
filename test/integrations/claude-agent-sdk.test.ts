@@ -8,7 +8,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ClientConfig } from '../../src/config.js';
@@ -1303,6 +1303,23 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
       },
     );
     expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('anthropic');
+  });
+
+  it('opens the run under the span active when query() was called', async () => {
+    const h = harness();
+    const traced = wrapQuery(
+      h.client,
+      fakeQuery([init(), assistant('msg_1', [text('hi')]), result()]),
+    );
+    const caller = h.tracerProvider.getTracer('test').startSpan('caller');
+    const stream = context.with(trace.setSpan(context.active(), caller), () =>
+      traced({ prompt: 'do the thing' }),
+    );
+    // Read from outside the caller's span, as a consumer on another task would.
+    await drain(stream);
+    caller.end();
+
+    expect(parentOf(h, findSpan(h, ROOT))?.name).toBe('caller');
   });
 
   it('keeps two concurrent runs apart', async () => {

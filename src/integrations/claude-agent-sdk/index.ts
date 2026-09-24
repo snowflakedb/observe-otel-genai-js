@@ -19,7 +19,7 @@
  * The run ends when the stream does.
  */
 
-import { diag } from '@opentelemetry/api';
+import { type Context, context, diag } from '@opentelemetry/api';
 
 import type { Client } from '../../client.js';
 import { resolveContentCaptureMode } from '../../content/capture.js';
@@ -208,6 +208,8 @@ class AgentRun {
   private readonly provider: string;
   private readonly agentName: string;
   private readonly startedAt = Date.now();
+  /** Where `query()` was called. The root opens later, on the first message. */
+  private readonly callerContext: Context = context.active();
 
   private root: AgentInvocationRecorder | undefined;
   private main: AgentThread | undefined;
@@ -426,14 +428,16 @@ class AgentRun {
   /** Opened on the first message, so the span can carry the session id from `init`. */
   private openRoot(): AgentInvocationRecorder {
     if (this.root) return this.root;
-    this.root = this.client.invokeAgent({
-      ...this.sharedSeed(this.agentName),
-      requestProvider: this.provider,
-      requestModel: this.queryOptions.model ?? this.model,
-      input: promptMessages(this.prompt),
-      parentGenerationIds: this.config.parentGenerationIds,
-      startedAt: this.startedAt,
-    });
+    this.root = context.with(this.callerContext, () =>
+      this.client.invokeAgent({
+        ...this.sharedSeed(this.agentName),
+        requestProvider: this.provider,
+        requestModel: this.queryOptions.model ?? this.model,
+        input: promptMessages(this.prompt),
+        parentGenerationIds: this.config.parentGenerationIds,
+        startedAt: this.startedAt,
+      }),
+    );
     this.setReasoningLevel(this.root);
     return this.root;
   }
