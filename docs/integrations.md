@@ -411,7 +411,9 @@ invoke_agent <agentName>          one per query() call
   `options.systemPrompt` and `options.thinking` go on the main thread's `chat` spans
   only; subagents have their own.
 - After the CLI compacts the conversation, the run and every later `chat` span carry
-  `gen_ai.conversation.compacted`.
+  `gen_ai.conversation.compacted`. Later `chat` inputs start after the compaction:
+  the summary the CLI puts in place of the earlier turns never reaches the process.
+  A `/clear` likewise starts them over, and ends the compacted flag.
 
 ### Tokens, cost, and time to first token
 

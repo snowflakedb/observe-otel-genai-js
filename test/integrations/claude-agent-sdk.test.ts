@@ -1238,6 +1238,32 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(attr(after!, 'gen_ai.conversation.compacted')).toBe(true);
   });
 
+  it('stops replaying the turns before a compaction or a /clear', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('before compaction')]),
+      result(),
+      { type: 'system', subtype: 'compact_boundary' },
+      userText('after compaction'),
+      assistant('msg_2', [text('second')]),
+      result(),
+      { type: 'conversation_reset', new_conversation_id: 'conv-2' },
+      userText('after clear'),
+      assistant('msg_3', [text('third')]),
+      result(),
+    ]);
+
+    const [, second, third] = allSpans(h, CHAT);
+    const secondInput = String(attr(second!, 'gen_ai.input.messages'));
+    expect(secondInput).not.toContain('before compaction');
+    expect(secondInput).toContain('after compaction');
+    const thirdInput = String(attr(third!, 'gen_ai.input.messages'));
+    expect(thirdInput).not.toContain('second');
+    expect(thirdInput).toContain('after clear');
+    expect(attr(third!, 'gen_ai.conversation.compacted')).toBeUndefined();
+  });
+
   it('ends every span without an error when the caller breaks out early', async () => {
     const h = harness();
     const closed: string[] = [];

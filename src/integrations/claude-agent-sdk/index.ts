@@ -323,6 +323,9 @@ class AgentRun {
         // A /clear zeroes the running totals; what came before still counts for this run.
         this.totalsBeforeReset = addTotals(this.totalsBeforeReset, this.latestTotals);
         this.latestTotals = undefined;
+        // The next call starts from an empty conversation, not a compacted one.
+        this.mainThread().history = [];
+        this.compacted = false;
         break;
     }
   }
@@ -454,6 +457,9 @@ class AgentRun {
       case 'compact_boundary':
         this.compacted = true;
         this.openRoot().setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
+        // The next call sees a summary of what came before, which never reaches this
+        // process. Leaving it out understates the input; keeping it would overstate it.
+        this.mainThread().history = [];
         return;
     }
   }
