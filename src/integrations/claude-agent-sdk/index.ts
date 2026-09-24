@@ -106,8 +106,16 @@ export function wrapQuery<F extends AgentQueryFn>(
  */
 function observeIteration<T extends object>(stream: T, run: AgentRun): T {
   const observed = run.observe(stream as AsyncIterable<AgentMessage>);
-  // Ending the SDK's query ends our loop too, but only once it is resumed.
-  const finish = () => void observed.return().catch(logRecordingFailure);
+  // A loop that started ends the run in its own `finally`; one that never started cannot.
+  const finish = () => (run.started ? observed.return() : run.end());
+  const stop = async (stopSdk: () => unknown) => {
+    run.markStoppedByCaller();
+    try {
+      return await stopSdk();
+    } finally {
+      await finish();
+    }
+  };
   return new Proxy(stream as T & SdkQuery, {
     get(target, prop) {
       switch (prop) {
@@ -116,24 +124,21 @@ function observeIteration<T extends object>(stream: T, run: AgentRun): T {
         case 'next':
         case 'throw':
           return observed[prop].bind(observed);
+        // The SDK's own stop methods end the CLI, which also releases a read in progress.
         case 'return':
-          // The SDK's own return() stops the CLI, which also releases a read in progress.
-          return async (value?: unknown) => {
-            run.markStoppedByCaller();
-            await target.return?.(value);
-            return observed.return();
-          };
+          return (value?: unknown) => stop(() => target.return?.(value));
         case Symbol.asyncDispose:
           return async () => {
-            run.markStoppedByCaller();
-            await target[Symbol.asyncDispose]?.();
-            finish();
+            await stop(() => target[Symbol.asyncDispose]?.());
           };
         case 'close':
           return () => {
             run.markStoppedByCaller();
-            target.close?.();
-            finish();
+            try {
+              target.close?.();
+            } finally {
+              finish().catch(logRecordingFailure);
+            }
           };
         case 'interrupt':
           return () => {
@@ -223,6 +228,8 @@ class AgentRun {
   private stoppedByCaller = false;
   /** The caller interrupted the turn; the error result that follows is expected. */
   private interrupted = false;
+  /** The caller has started reading the stream. */
+  started = false;
   /**
    * Held until teardown rather than set on the span: a recorder's error cannot be
    * cleared, and a later result that succeeds should leave the run green.
@@ -247,6 +254,7 @@ class AgentRun {
   }
 
   async *observe(stream: AsyncIterable<AgentMessage>): AsyncGenerator<AgentMessage, void> {
+    this.started = true;
     let error: unknown;
     let completed = false;
     try {
@@ -263,11 +271,16 @@ class AgentRun {
       error = err;
       throw err;
     } finally {
-      if (completed && !this.sawResult && !this.stoppedByCaller) {
-        error = new Error('agent stream ended before any result message');
-      }
-      await this.end(error).catch(logRecordingFailure);
+      await this.end(error ?? (completed ? this.missingResultError() : undefined)).catch(
+        logRecordingFailure,
+      );
     }
+  }
+
+  /** A stream that ended with no result is a failure, unless the caller stopped it. */
+  private missingResultError(): Error | undefined {
+    if (this.sawResult || this.stoppedByCaller) return undefined;
+    return new Error('agent stream ended before any result message');
   }
 
   private onMessage(msg: AgentMessage): void {
@@ -616,7 +629,7 @@ class AgentRun {
    * Closes everything still open. `error` is set when the run broke (the stream threw,
    * or ended with no result); the caller stopping early is not an error.
    */
-  async end(error: unknown): Promise<void> {
+  async end(error?: unknown): Promise<void> {
     const failure = error === undefined ? undefined : asError(error);
     if (this.main) {
       this.closeToolsOf(this.main, failure);
@@ -626,9 +639,8 @@ class AgentRun {
       this.closeCall(this.main);
     }
 
-    // A run that broke before its first message still gets a span to carry the error.
-    const root = failure ? this.openRoot() : this.root;
-    if (!root) return;
+    // A run that ends before its first message still gets a span: the CLI did start.
+    const root = this.openRoot();
     const runError = failure ?? this.lastResultError;
     if (runError) root.setError(runError);
     await root.end();

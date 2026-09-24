@@ -1175,6 +1175,42 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(allSpans(h, CHAT)).toHaveLength(1);
   });
 
+  it('records a run the caller closes before reading anything', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), result()])({ prompt: '' }), { close: () => {} });
+
+    wrapQuery(h.client, query)({ prompt: 'p' }).close();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it("ends the run, and passes on the error, when the SDK's own close() throws", async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), result()])({ prompt: '' }), {
+        close: () => {
+          throw new Error('close failed');
+        },
+      });
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    expect(() => q.close()).toThrow('close failed');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records a run the caller returns from before reading anything', async () => {
+    const h = harness();
+    await wrapQuery(h.client, fakeQuery([init(), result()]))({ prompt: 'p' }).return(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+  });
+
   it('does not mark a run the caller closed as failed', async () => {
     const h = harness();
     let closed = false;
