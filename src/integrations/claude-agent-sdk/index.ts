@@ -68,13 +68,22 @@ const DELEGATION_TOOLS = new Set(['Agent', 'Task']);
 
 /**
  * Env vars the CLI reads to pick a hosting platform, and the `gen_ai.provider.name`
- * each maps to. When `options.env` is set, it is the CLI's whole environment.
+ * each maps to, in the order the CLI checks them (CLI 2.1.220): when two are set, the
+ * first wins. Mantle is a second Bedrock endpoint; the two "Claude Platform on
+ * <cloud>" flags reach Anthropic's own API. When `options.env` is set, it is the
+ * CLI's whole environment.
  */
 const PROVIDER_ENV: readonly (readonly [string, string])[] = [
   ['CLAUDE_CODE_USE_BEDROCK', 'aws.bedrock'],
-  ['CLAUDE_CODE_USE_VERTEX', 'gcp.vertex_ai'],
   ['CLAUDE_CODE_USE_FOUNDRY', 'azure.ai.inference'],
+  ['CLAUDE_CODE_USE_ANTHROPIC_AWS', 'anthropic'],
+  ['CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD', 'anthropic'],
+  ['CLAUDE_CODE_USE_MANTLE', 'aws.bedrock'],
+  ['CLAUDE_CODE_USE_VERTEX', 'gcp.vertex_ai'],
 ];
+
+/** The values the CLI reads as on. Anything else, `no` and `off` included, is off. */
+const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
 /** Metadata for the run, applied wherever each span type has a field for it. */
 export type ClaudeAgentSdkOptions = AdapterCallOptions;
@@ -794,8 +803,7 @@ function callerSystemPrompt(prompt: unknown): string | undefined {
 function resolveProvider(options: AgentQueryOptions): string {
   const env = options.env ?? process.env;
   for (const [key, provider] of PROVIDER_ENV) {
-    const value = env[key];
-    if (value && value !== '0' && value !== 'false') return provider;
+    if (TRUTHY.has(env[key]?.trim().toLowerCase() ?? '')) return provider;
   }
   return 'anthropic';
 }

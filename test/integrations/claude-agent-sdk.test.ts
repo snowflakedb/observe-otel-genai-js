@@ -1605,6 +1605,23 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('anthropic');
   });
 
+  it('reads the platform flags the way the CLI does', async () => {
+    const h = harness();
+    const provider = async (env: Record<string, string>) => {
+      h.spans.reset();
+      await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {}, { env });
+      return attr(findSpan(h, CHAT), 'gen_ai.provider.name');
+    };
+
+    expect(await provider({ CLAUDE_CODE_USE_VERTEX: 'off' })).toBe('anthropic');
+    expect(await provider({ CLAUDE_CODE_USE_VERTEX: ' Yes ' })).toBe('gcp.vertex_ai');
+    expect(await provider({ CLAUDE_CODE_USE_MANTLE: '1' })).toBe('aws.bedrock');
+    // Both set: the CLI checks Foundry first.
+    expect(await provider({ CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CODE_USE_FOUNDRY: '1' })).toBe(
+      'azure.ai.inference',
+    );
+  });
+
   it('opens the run under the span active when query() was called', async () => {
     const h = harness();
     const traced = wrapQuery(

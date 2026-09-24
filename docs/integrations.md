@@ -403,9 +403,12 @@ invoke_agent <agentName>          one per query() call
 ### Other attributes
 
 - `gen_ai.provider.name` comes from the platform the CLI is told to use:
-  `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY`,
-  read from `options.env` when you set it (it replaces the CLI's environment), and
-  from the process environment otherwise. Without any of them it is `anthropic`.
+  `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_MANTLE` (`aws.bedrock`),
+  `CLAUDE_CODE_USE_VERTEX` (`gcp.vertex_ai`) or `CLAUDE_CODE_USE_FOUNDRY`
+  (`azure.ai.inference`). They are read from `options.env` when you set it (it
+  replaces the CLI's environment), and from the process environment otherwise, and
+  count as on only for `1`, `true`, `yes` or `on`, as in the CLI. Without any of
+  them it is `anthropic`.
 - `options.effort` becomes `gen_ai.request.reasoning.level` on the run's
   `invoke_agent` span and the main thread's `chat` spans. A string
   or custom (`{ type: 'custom', prompt }`) `options.systemPrompt` and
