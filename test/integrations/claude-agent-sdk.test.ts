@@ -855,7 +855,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
     expect(childrenOf(h, sub, CHAT)).toHaveLength(1);
   });
 
-  it('closes an inline delegation on its notification and ignores the tool_result after', async () => {
+  it('closes an inline delegation on the tool_result that follows its notification', async () => {
     const h = harness();
     await run(h, [
       init(),
@@ -863,16 +863,57 @@ describe('Claude Agent SDK adapter: subagents', () => {
       taskStarted('task_1'),
       userText('check it', 'task_1'),
       assistant('msg_s1', [text('working')], { parent: 'task_1' }),
-      taskNotification('task_1', 'inline report'),
-      toolResult('task_1', 'inline report'),
+      taskNotification('task_1', 'short summary'),
+      toolResult('task_1', 'the full report'),
       result(),
     ]);
 
+    const delegation = findSpan(h, 'execute_tool Agent');
     expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
+    expect(String(attr(delegation, 'gen_ai.tool.call.result'))).toContain('the full report');
     const subChat = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT)[0]!;
     // The echoed prompt is not added a second time.
     const input = String(attr(subChat, 'gen_ai.input.messages'));
     expect(input.split('check it')).toHaveLength(2);
+  });
+
+  it("takes a subagent's last call usage from its delegation's tool result", async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      assistant('msg_s1', [text('report')], {
+        parent: 'task_1',
+        usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 100 },
+      }),
+      taskNotification('task_1', 'report'),
+      {
+        ...toolResult('task_1', 'report'),
+        tool_use_result: {
+          status: 'completed',
+          usage: { input_tokens: 12, output_tokens: 521, cache_read_input_tokens: 100 },
+        },
+      },
+      result(),
+    ]);
+
+    const subChat = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT)[0]!;
+    expect(attr(subChat, 'gen_ai.usage.output_tokens')).toBe(521);
+    expect(attr(subChat, 'genai.usage.is_partial')).toBeUndefined();
+  });
+
+  it('keeps a failed foreground task failed when its tool_result never comes', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      taskStarted('task_1'),
+      taskNotification('task_1', 'gave up', 'failed'),
+      result(),
+    ]);
+
+    expect(findSpan(h, 'execute_tool Agent').status.code).toBe(SpanStatusCode.ERROR);
   });
 
   it('marks a failed delegation, and its subagent, as errors', async () => {
@@ -883,6 +924,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
       taskStarted('task_1'),
       assistant('msg_s1', [text('trying')], { parent: 'task_1' }),
       taskNotification('task_1', 'gave up', 'failed'),
+      toolResult('task_1', 'gave up'),
       result(),
     ]);
 
@@ -959,6 +1001,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
       taskStarted('task_1'),
       assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
       taskNotification('task_1', 'stopped', 'stopped'),
+      toolResult('task_1', 'stopped'),
       result(),
     ]);
 
@@ -997,6 +1040,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
       assistant('msg_1', [delegate('task_1', 'worker')]),
       assistant('msg_s1', [text('work')], { parent: 'task_1' }),
       taskNotification('task_1', 'done'),
+      toolResult('task_1', 'done'),
       assistant('msg_s2', [text('late')], { parent: 'task_1' }),
       assistant('msg_x', [text('orphan')], { parent: 'task_unknown' }),
       result(),

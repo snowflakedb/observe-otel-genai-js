@@ -388,7 +388,9 @@ invoke_agent <agentName>          one per query() call
 - A task (a delegation, or `Bash` with `run_in_background`) answers its tool call
   with a launch receipt within milliseconds while the work goes on. Its span stays
   open until the CLI reports the task finished, so it covers the real work. A task
-  still running when the run ends is closed with its receipt, not as an error.
+  run in the foreground reports finishing just before its real `tool_result`, which
+  then closes the span with the full output. A task still running when the run ends
+  is closed with its receipt, not as an error.
 - The SDK's `result` messages are checkpoints: a background task can keep the run
   going past the first one. The run ends when the stream does, and its status follows
   the last result.
@@ -428,8 +430,10 @@ kept, its output count is left out rather than reported low, and the span is mar
 call's final usage, stop reason and reasoning tokens, and the `message_start` event
 supplies time to first token and the real start of the call.
 
-Subagent `chat` spans are always marked `is_partial`: the SDK does not forward stream
-events for subagents. Their tokens are still in the run totals.
+The SDK does not forward stream events for subagents, so their `chat` spans are
+marked `is_partial`. The exception is a foreground delegation's last call: its
+`tool_result` carries that call's final usage. Subagent tokens are in the run
+totals either way.
 
 Cached tokens are counted in `gen_ai.usage.input_tokens`, as the GenAI conventions
 ask. The `/anthropic` adapter does not do this yet, so the two report different input

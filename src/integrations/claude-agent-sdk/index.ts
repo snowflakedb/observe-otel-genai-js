@@ -205,6 +205,8 @@ interface OpenTool {
   /** The CLI runs this call as a task, so its `tool_result` may be only a launch receipt. */
   isTask: boolean;
   receipt?: unknown;
+  /** The task reported finishing before its `tool_result`, which then closes the span. */
+  finished?: { error?: Error };
   subagent?: AgentThread;
 }
 
@@ -371,8 +373,16 @@ class AgentRun {
     for (const block of toolResults) {
       const id = block.tool_use_id as string;
       const tool = this.tools.get(id);
-      if (tool?.isTask) tool.receipt = block.content;
-      else this.closeTool(id, block.content, block.is_error ? new Error('tool error') : undefined);
+      if (tool?.isTask && !tool.finished) {
+        tool.receipt = block.content ?? '';
+        continue;
+      }
+      // A subagent gets no stream events; this is the only final usage its last call gets.
+      const call = tool?.subagent?.call;
+      const usage = usageOf(msg.tool_use_result);
+      if (call && usage) call.finalUsage = usage;
+      const error = block.is_error ? new Error('tool error') : tool?.finished?.error;
+      this.closeTool(id, block.content, error);
     }
     const message = blocksToMessage(blocks, toolResults.length > 0 ? 'tool' : 'user');
     if (message) thread.history.push(message);
@@ -415,10 +425,12 @@ class AgentRun {
         // The real end of a task; `summary` is its output.
         const id = msg.tool_use_id ?? (msg.task_id ? this.taskTools.get(msg.task_id) : undefined);
         if (msg.task_id) this.taskTools.delete(msg.task_id);
-        if (id) {
-          const error = msg.status === 'failed' ? new Error('task failed') : undefined;
-          this.closeTool(id, msg.summary, error);
-        }
+        const tool = id ? this.tools.get(id) : undefined;
+        if (!id || !tool) return;
+        const error = msg.status === 'failed' ? new Error('task failed') : undefined;
+        // Run in the foreground, the task's tool_result follows with the full output.
+        if (tool.receipt === undefined) tool.finished = { error };
+        else this.closeTool(id, msg.summary, error);
         return;
       }
       case 'compact_boundary':
@@ -603,7 +615,9 @@ class AgentRun {
       responseModel: call.model,
       stopReason: call.stopReason ?? (hasToolUse(call.blocks) ? 'tool_use' : undefined),
     });
-    const endedAt = call.finalUsage ? Date.now() : call.lastBlockAt;
+    // Only a message_delta arrives as the call ends; other final usage comes later.
+    const endedAt =
+      call.finalUsage && this.expectsStreamEvents(thread) ? Date.now() : call.lastBlockAt;
     if (!call.finalUsage) call.rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
     call.rec.setEndedAt(endedAt);
     void call.rec.end();
@@ -651,7 +665,7 @@ class AgentRun {
   /** Closes the tools a thread still has open; a background task keeps its receipt. */
   private closeToolsOf(thread: AgentThread, error: Error | undefined): void {
     for (const [id, tool] of this.tools) {
-      if (tool.owner === thread) this.closeTool(id, tool.receipt, error);
+      if (tool.owner === thread) this.closeTool(id, tool.receipt, error ?? tool.finished?.error);
     }
   }
 
@@ -742,6 +756,12 @@ function resolveProvider(options: AgentQueryOptions): string {
 
 function hasToolUse(blocks: AgentContentBlock[]): boolean {
   return blocks.some((b) => b.type === 'tool_use');
+}
+
+function usageOf(toolUseResult: unknown): AgentUsage | undefined {
+  if (typeof toolUseResult !== 'object' || toolUseResult === null) return undefined;
+  const { usage } = toolUseResult as { usage?: unknown };
+  return typeof usage === 'object' && usage !== null ? (usage as AgentUsage) : undefined;
 }
 
 function blocksOf(content: unknown): AgentContentBlock[] {

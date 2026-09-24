@@ -54,6 +54,8 @@ export interface AgentMessage {
   parent_tool_use_id?: string | null;
   /** Set when an interrupt cut the message short. */
   aborted?: true;
+  /** A tool's structured output. A delegation's carries its last call's final `usage`. */
+  tool_use_result?: unknown;
 
   // system/init
   session_id?: string;
