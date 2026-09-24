@@ -279,7 +279,8 @@ class AgentRun {
 
   /** A stream that ended with no result is a failure, unless the caller stopped it. */
   private missingResultError(): Error | undefined {
-    if (this.sawResult || this.stoppedByCaller) return undefined;
+    // An interrupt can end the stream before the turn's result is sent.
+    if (this.sawResult || this.stoppedByCaller || this.interrupted) return undefined;
     return new Error('agent stream ended before any result message');
   }
 

@@ -1154,6 +1154,21 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
   });
 
+  it('does not mark an interrupted run failed when the stream ends with no result', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), assistant('msg_1', [text('partial')])])({ prompt: '' }), {
+        interrupt: async () => {},
+      });
+
+    const q = wrapQuery(h.client, query)({ prompt: 'p' });
+    await q.next();
+    await q.interrupt();
+    await drain(q);
+
+    expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
   it('ends the run when the caller closes it between manual reads', async () => {
     const h = harness();
     const query = (_params: AgentQueryParams) =>
