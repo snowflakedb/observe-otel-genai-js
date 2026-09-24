@@ -1,5 +1,5 @@
 /**
- * Anthropic content-block → `Message[]` mapping.
+ * Anthropic content-block → `Part[]` mapping.
  *
  * Shared by the Anthropic SDK adapter and the Claude Agent SDK adapter: both
  * carry the same `text` / `thinking` / `tool_use` / `tool_result` block shapes,
