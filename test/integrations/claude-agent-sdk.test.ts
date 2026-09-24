@@ -782,6 +782,23 @@ describe('Claude Agent SDK adapter: subagents', () => {
     expect(order.indexOf('invoke_agent worker')).toBeLessThan(order.indexOf('execute_tool Agent'));
   });
 
+  it('keeps a delegation open when its receipt arrives before task_started', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [delegate('task_1', 'worker')]),
+      toolResult('task_1', 'Async agent launched successfully.'),
+      taskStarted('task_1'),
+      assistant('msg_s1', [text('report')], { parent: 'task_1' }),
+      taskNotification('task_1', 'the real report'),
+      result(),
+    ]);
+
+    const sub = findSpan(h, 'invoke_agent worker');
+    expect(parentOf(h, sub)).toBe(findSpan(h, 'execute_tool Agent'));
+    expect(childrenOf(h, sub, CHAT)).toHaveLength(1);
+  });
+
   it('closes an inline delegation on its notification and ignores the tool_result after', async () => {
     const h = harness();
     await run(h, [
@@ -923,7 +940,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
       init(),
       assistant('msg_1', [delegate('task_1', 'worker')]),
       assistant('msg_s1', [text('work')], { parent: 'task_1' }),
-      toolResult('task_1', 'done'),
+      taskNotification('task_1', 'done'),
       assistant('msg_s2', [text('late')], { parent: 'task_1' }),
       assistant('msg_x', [text('orphan')], { parent: 'task_unknown' }),
       result(),

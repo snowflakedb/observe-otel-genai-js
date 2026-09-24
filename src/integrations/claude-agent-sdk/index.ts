@@ -56,6 +56,9 @@ const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
 /** The model the CLI puts on the assistant message it makes up for a failed API call. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
+/** The tools that launch a subagent. The CLI accepts either name. */
+const DELEGATION_TOOLS = new Set(['Agent', 'Task']);
+
 /**
  * Env vars the CLI reads to pick a hosting platform, and the `gen_ai.provider.name`
  * each maps to. When `options.env` is set, it is the CLI's whole environment.
@@ -609,7 +612,9 @@ class AgentRun {
     );
     rec.setResult({ arguments: block.input });
     const input = (block.input ?? {}) as Record<string, unknown>;
-    this.tools.set(id, { rec, name, input, owner: thread, startedAt, isTask: false });
+    // Known from the call itself, so it holds even if task_started comes after the receipt.
+    const isTask = DELEGATION_TOOLS.has(name) || input.run_in_background === true;
+    this.tools.set(id, { rec, name, input, owner: thread, startedAt, isTask });
   }
 
   private closeTool(id: string, response: unknown, error: Error | undefined): void {
