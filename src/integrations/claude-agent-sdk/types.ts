@@ -69,6 +69,8 @@ export interface AgentMessage {
   };
 
   // system/task_started, system/task_notification
+  task_id?: string;
+  /** Optional on task messages; `task_id` is the one id they always carry. */
   tool_use_id?: string;
   status?: 'completed' | 'failed' | 'stopped';
   /** The task's output, on `task_notification`. */

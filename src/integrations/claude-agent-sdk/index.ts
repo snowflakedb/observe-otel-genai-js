@@ -219,6 +219,8 @@ class AgentRun {
   private root: AgentInvocationRecorder | undefined;
   private main: AgentThread | undefined;
   private readonly tools = new Map<string, OpenTool>();
+  /** task_id -> tool_use_id, for task messages that carry only the task id. */
+  private readonly taskTools = new Map<string, string>();
 
   private sessionId: string | undefined;
   private model: string | undefined;
@@ -395,15 +397,19 @@ class AgentRun {
       case 'task_started': {
         const tool = msg.tool_use_id ? this.tools.get(msg.tool_use_id) : undefined;
         if (tool) tool.isTask = true;
+        if (msg.task_id && msg.tool_use_id) this.taskTools.set(msg.task_id, msg.tool_use_id);
         return;
       }
-      case 'task_notification':
+      case 'task_notification': {
         // The real end of a task; `summary` is its output.
-        if (msg.tool_use_id) {
+        const id = msg.tool_use_id ?? (msg.task_id ? this.taskTools.get(msg.task_id) : undefined);
+        if (msg.task_id) this.taskTools.delete(msg.task_id);
+        if (id) {
           const error = msg.status === 'failed' ? new Error('task failed') : undefined;
-          this.closeTool(msg.tool_use_id, msg.summary, error);
+          this.closeTool(id, msg.summary, error);
         }
         return;
+      }
       case 'compact_boundary':
         this.compacted = true;
         this.openRoot().setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });

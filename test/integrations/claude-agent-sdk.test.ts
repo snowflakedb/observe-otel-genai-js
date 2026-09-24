@@ -107,7 +107,13 @@ function userText(t: string, parent?: string): AgentMessage {
 }
 
 function taskStarted(toolUseId: string, taskType = 'local_agent'): AgentMessage {
-  return { type: 'system', subtype: 'task_started', tool_use_id: toolUseId, task_type: taskType };
+  return {
+    type: 'system',
+    subtype: 'task_started',
+    task_id: `task_${toolUseId}`,
+    tool_use_id: toolUseId,
+    task_type: taskType,
+  };
 }
 
 function taskNotification(
@@ -714,6 +720,23 @@ describe('Claude Agent SDK adapter: tools', () => {
     const tool = findSpan(h, 'execute_tool Bash');
     expect(tool.status.code).not.toBe(SpanStatusCode.ERROR);
     expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('running in background');
+  });
+
+  it('matches a notification that names only its task id', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
+      assistant('msg_2', [text('waiting')]),
+      result(),
+      { ...taskNotification('tu_1', 'finished'), tool_use_id: undefined, task_id: 'task_tu_1' },
+    ]);
+
+    expect(String(attr(findSpan(h, 'execute_tool Bash'), 'gen_ai.tool.call.result'))).toContain(
+      'finished',
+    );
   });
 
   it('does not treat a stopped task as a failure', async () => {
