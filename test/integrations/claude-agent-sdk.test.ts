@@ -493,6 +493,22 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(2);
   });
 
+  it('reports the run thinking tokens from modelUsage', async () => {
+    const h = harness();
+    await run(h, [
+      init(),
+      assistant('msg_1', [text('hi')]),
+      result({
+        modelUsage: {
+          [MODEL]: { inputTokens: 10, outputTokens: 40, thinkingTokens: 25 },
+          'claude-haiku-4-5': { inputTokens: 5, outputTokens: 8, thinkingTokens: 3 },
+        },
+      }),
+    ]);
+
+    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.reasoning.output_tokens')).toBe(28);
+  });
+
   it('applies the run options to each span type that has a field for them', async () => {
     const h = harness();
     await run(

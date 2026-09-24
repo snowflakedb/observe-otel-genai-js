@@ -764,6 +764,7 @@ function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined):
       output_tokens: m.outputTokens,
       cache_read_input_tokens: m.cacheReadInputTokens,
       cache_creation_input_tokens: m.cacheCreationInputTokens,
+      output_tokens_details: { thinking_tokens: m.thinkingTokens },
     }),
   );
   const sum = (key: keyof TokenUsage) => perModel.reduce((n, u) => n + (u[key] ?? 0), 0);
@@ -772,6 +773,7 @@ function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined):
     outputTokens: sum('outputTokens'),
     cacheReadInputTokens: sum('cacheReadInputTokens'),
     cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+    reasoningTokens: sum('reasoningTokens') || undefined,
   };
 }
 

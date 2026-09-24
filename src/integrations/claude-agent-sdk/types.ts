@@ -39,6 +39,8 @@ export interface AgentModelUsage {
   outputTokens?: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** Already counted in `outputTokens`. Absent on older CLIs. */
+  thinkingTokens?: number;
   [key: string]: unknown;
 }
 
