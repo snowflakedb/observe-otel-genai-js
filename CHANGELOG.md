@@ -6,14 +6,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-09-17
-
 ### Added
 - Every adapter: `chat` spans also carry `gen_ai.usage.cache_write.input_tokens` (the
   current name for `cache_creation`), and streaming `chat` spans carry
   `gen_ai.response.time_to_first_chunk`.
 - Core: recorders accept a caller-supplied end time (`rec.setEndedAt(t)`) and extra
   span attributes (`rec.setAttributes(...)`).
+
+### Fixed
+- `no_tool_content` now strips tool arguments and results from `chat` spans in every
+  adapter, as it already did on `invoke_agent` spans. Before, they still appeared in
+  `chat` input and output messages under the default mode.
+
+## [0.5.0] - 2026-09-17
+
+### Added
 - LangChain adapter: emit `gen_ai.response.model` on `chat` spans — the model
   that served the call, which can be more specific than the requested one (ask
   for `gpt-4o`, get `gpt-4o-2024-11-20`). `gen_ai.request.model` still reports
@@ -37,9 +44,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   then `thread_id`.
 
 ### Fixed
-- `no_tool_content` now strips tool arguments and results from `chat` spans in every
-  adapter, as it already did on `invoke_agent` spans. Before, they still appeared in
-  `chat` input and output messages under the default mode.
 - Vercel adapter: normalize AI SDK provider/API identifiers such as
   `snowflake.chat`, `openai.responses`, and `anthropic.messages` to canonical
   `gen_ai.provider.name` values. Known Bedrock, Vertex AI, Gemini, and Azure
