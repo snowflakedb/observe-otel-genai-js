@@ -41,6 +41,16 @@
       "import": "./dist/integrations/anthropic/index.js",
       "require": "./dist/cjs/integrations/anthropic/index.js"
     },
+    "./claude-agent-sdk": {
+      "types": "./dist/integrations/claude-agent-sdk/index.d.ts",
+      "import": "./dist/integrations/claude-agent-sdk/index.js",
+      "require": "./dist/cjs/integrations/claude-agent-sdk/index.js"
+    },
+    "./claude-agent-sdk/instrumentation": {
+      "types": "./dist/integrations/claude-agent-sdk/instrumentation.d.ts",
+      "import": "./dist/integrations/claude-agent-sdk/instrumentation.js",
+      "require": "./dist/cjs/integrations/claude-agent-sdk/instrumentation.js"
+    },
     "./langchain": {
       "types": "./dist/integrations/langchain/index.d.ts",
       "import": "./dist/integrations/langchain/index.js",
