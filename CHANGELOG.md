@@ -6,6 +6,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
 ### Added
 - Every adapter: `chat` spans also carry `gen_ai.usage.cache_write.input_tokens` (the
   current name for `cache_creation`), and streaming `chat` spans carry
