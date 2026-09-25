@@ -51,9 +51,12 @@ export function emitGenerationContent(
 ): void {
   if (!capture.enabled) return;
 
-  const input = toSemconvInputMessages(generation.input);
+  const stripTools = mode === 'no_tool_content';
+  const input = toSemconvInputMessages(
+    stripTools ? stripToolContent(generation.input) : generation.input,
+  );
   const output = toSemconvOutputMessages(
-    generation.output,
+    stripTools ? stripToolContent(generation.output) : generation.output,
     resolveFinishReason(generation.stopReason, Boolean(generation.callError)),
   );
   const system = toSystemInstructions(generation.systemPrompt);

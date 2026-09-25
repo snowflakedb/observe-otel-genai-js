@@ -5,7 +5,9 @@
  *   1. `Client.startGeneration(seed)` / `startStreamingGeneration(seed)` returns
  *      a recorder; the span is created and seed-attributes applied.
  *   2. User code calls the provider, then calls `setResult({ usage, output, ... })`.
- *      Streaming users also call `setFirstTokenAt(t)` for TTFT.
+ *      Streaming users also report TTFT — `setFirstTokenAt(t)` when they can see
+ *      the first chunk arrive, or `setTimeToFirstToken(s)` when the provider
+ *      hands them the duration instead.
  *   3. User calls `end()` (or `await using` cleanup does it). Finalize emits
  *      content as structured span attributes, refreshes attributes, records
  *      exceptions/status, records 1-6 histograms, and ends the span.
@@ -20,6 +22,7 @@ import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
 import {
   ATTR_CONVERSATION_TITLE,
+  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
   ERR_TYPE_MAPPING,
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -40,6 +43,7 @@ export class GenerationRecorder extends RecorderBase {
   private result: Partial<Generation> | undefined;
   private mappingError: unknown | undefined;
   private firstTokenAtMs: number | undefined;
+  private timeToFirstTokenSeconds: number | undefined;
   private lastGeneration: Generation | undefined;
 
   constructor(
@@ -68,6 +72,18 @@ export class GenerationRecorder extends RecorderBase {
   }
 
   /**
+   * Optional: records time to first token directly, in seconds.
+   *
+   * For providers that report the duration themselves rather than letting you
+   * observe the first chunk arrive — the Claude Agent SDK's `ttft_ms`, for one.
+   * Takes precedence over {@link setFirstTokenAt}, which can only derive TTFT by
+   * subtracting the span's start and so needs a real instant to work from.
+   */
+  setTimeToFirstToken(seconds: number): void {
+    if (Number.isFinite(seconds) && seconds >= 0) this.timeToFirstTokenSeconds = seconds;
+  }
+
+  /**
    * Stores a mapping error — used by provider adapters when normalization
    * from the provider's response shape into the SDK `Generation` shape fails.
    */
@@ -82,7 +98,7 @@ export class GenerationRecorder extends RecorderBase {
   }
 
   protected async finalize(): Promise<void> {
-    const completedAtMs = this.host.now();
+    const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
     const isMetadataOnly = mode === 'metadata_only';
@@ -126,6 +142,8 @@ export class GenerationRecorder extends RecorderBase {
       // "intentionally stripped".
       this.span.setAttribute(ATTR_CONVERSATION_TITLE, '');
     }
+    const ttft = this.timeToFirstToken(generation);
+    if (ttft !== undefined) this.span.setAttribute(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK, ttft);
 
     // 5. Privacy-gated exception recording.
     this.recordExceptionIfAny(this.callError, stripped);
@@ -265,10 +283,16 @@ export class GenerationRecorder extends RecorderBase {
 
     this.host.metrics.recordToolCalls(countToolCalls(generation.output ?? []), labels);
 
-    if (generation.mode === 'STREAM' && this.firstTokenAtMs != null) {
-      const ttft = (this.firstTokenAtMs - this.startedAtMs) / 1000;
-      if (ttft >= 0) this.host.metrics.recordTimeToFirstToken(ttft, labels);
-    }
+    const ttft = this.timeToFirstToken(generation);
+    if (ttft !== undefined) this.host.metrics.recordTimeToFirstToken(ttft, labels);
+  }
+
+  private timeToFirstToken(generation: Generation): number | undefined {
+    if (generation.mode !== 'STREAM') return undefined;
+    const ttft =
+      this.timeToFirstTokenSeconds ??
+      (this.firstTokenAtMs != null ? (this.firstTokenAtMs - this.startedAtMs) / 1000 : undefined);
+    return ttft != null && ttft >= 0 ? ttft : undefined;
   }
 }
 

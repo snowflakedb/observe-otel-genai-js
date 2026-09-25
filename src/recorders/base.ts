@@ -12,7 +12,7 @@
  * callers use `await using rec = ...` to guarantee cleanup on scope exit.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import type { ResolvedClientConfig } from '../config.js';
 import {
@@ -63,6 +63,8 @@ export abstract class RecorderBase {
   protected ended = false;
   /** Set after end() finishes successfully so we can compute duration etc. */
   protected completedAtMs?: number;
+  /** Caller-supplied end timestamp; see {@link setEndedAt}. */
+  private endedAtMsOverride?: number;
 
   constructor(
     host: RecorderHostContext,
@@ -93,10 +95,39 @@ export abstract class RecorderBase {
     }
   }
 
+  /**
+   * Overrides the timestamp `finalize()` treats as the end of the operation.
+   *
+   * A recorder stamps itself with `host.now()` when `end()` runs, which measures
+   * the right thing when `end()` runs at the moment the work finishes. Use this
+   * when the framework reports the completion later: the OpenAI Agents SDK
+   * delivers `onSpanEnd` as a detached, un-awaited callback, so `host.now()`
+   * would add our callback lag to the real duration and inflate both the span
+   * and `gen_ai.client.operation.duration`.
+   *
+   * Ignores non-finite values and timestamps before the recorded start, so a bad
+   * clock cannot produce a negative duration.
+   */
+  setEndedAt(t: Date | number): void {
+    const ms = toMs(t);
+    if (ms == null || !Number.isFinite(ms) || ms < this.startedAtMs) return;
+    this.endedAtMsOverride = ms;
+  }
+
+  /** The end timestamp `finalize()` should use: the override, else now. */
+  protected resolveCompletedAtMs(): number {
+    return this.endedAtMsOverride ?? this.host.now();
+  }
+
   /** Stores a provider/runtime call error to surface on the span at end(). */
   setCallError(err: unknown): void {
     if (err == null) return;
     this.callError = err;
+  }
+
+  /** Sets extra span attributes, for values the recorder has no field for. */
+  setAttributes(attrs: Attributes): void {
+    this.span.setAttributes(attrs);
   }
 
   /** Returns the local validation/enqueue error after end(), if any. */

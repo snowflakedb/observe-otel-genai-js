@@ -14,6 +14,13 @@
 // Identity / routing
 export const ATTR_OPERATION_NAME = 'gen_ai.operation.name';
 export const ATTR_CONVERSATION_ID = 'gen_ai.conversation.id';
+/**
+ * True when the effective context for this operation is a compacted view of a
+ * longer conversation. Only ever set to `true` — leave unset otherwise.
+ */
+export const ATTR_CONVERSATION_COMPACTED = 'gen_ai.conversation.compacted';
+/** Reasoning/thinking effort requested, verbatim as sent to the provider. */
+export const ATTR_REQUEST_REASONING_LEVEL = 'gen_ai.request.reasoning.level';
 export const ATTR_CONVERSATION_TITLE = 'genai.conversation.title';
 export const ATTR_CONVERSATION_TURN_INDEX = 'genai.conversation.turn_index';
 export const ATTR_CONVERSATION_TURN_ROLE = 'genai.conversation.turn_role';
@@ -26,11 +33,26 @@ export const ATTR_SDK_NAME = 'genai.sdk.name';
 export const ATTR_GENERATION_ID = 'genai.generation.id';
 export const ATTR_PARENT_GENERATION_IDS = 'genai.parent_generation_ids';
 
+/**
+ * Provider-reported cost of an operation, in USD. GenAI semconv defines no cost
+ * attribute, so this is a library extension. Only a few providers report real
+ * cost (the Claude Agent SDK's `modelUsage[*].costUSD`, Bedrock); emit it when
+ * the number comes from the provider, never when it is estimated locally.
+ */
+export const ATTR_USAGE_COST_USD = 'genai.usage.cost_usd';
+/**
+ * Marks token counts that are the provider's mid-stream figures rather than its
+ * final ones, so a consumer knows not to trust them as authoritative totals.
+ */
+export const ATTR_USAGE_IS_PARTIAL = 'genai.usage.is_partial';
+
 // Model
 export const ATTR_PROVIDER_NAME = 'gen_ai.provider.name';
 export const ATTR_REQUEST_MODEL = 'gen_ai.request.model';
 export const ATTR_RESPONSE_MODEL = 'gen_ai.response.model';
 export const ATTR_RESPONSE_ID = 'gen_ai.response.id';
+/** Seconds from request issuance to the first streamed chunk. */
+export const ATTR_RESPONSE_TIME_TO_FIRST_CHUNK = 'gen_ai.response.time_to_first_chunk';
 
 // Request controls
 export const ATTR_REQUEST_MAX_TOKENS = 'gen_ai.request.max_tokens';
@@ -61,6 +83,8 @@ export const ATTR_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 export const ATTR_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
 export const ATTR_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens';
 export const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS = 'gen_ai.usage.cache_creation.input_tokens';
+/** Current semconv name for cache-write tokens; `cache_creation` above is the older one. */
+export const ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_write.input_tokens';
 export const ATTR_USAGE_REASONING_TOKENS = 'gen_ai.usage.reasoning.output_tokens';
 
 // Embedding

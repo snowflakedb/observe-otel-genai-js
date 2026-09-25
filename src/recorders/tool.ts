@@ -54,7 +54,7 @@ export class ToolExecutionRecorder extends RecorderBase {
   }
 
   protected async finalize(): Promise<void> {
-    const completedAtMs = this.host.now();
+    const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
 
     const { mode, config: captureConfig } = this.resolveContentCapture();
