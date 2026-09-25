@@ -15,15 +15,14 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 import type { Client } from '../../client.js';
 import type { GenerationStart } from '../../models/generation.js';
-import {
-  type Message,
-  type Part,
-  textPart,
-  thinkingPart,
-  toolCallPart,
-  toolResultPart,
-} from '../../models/message.js';
+import type { Message, Part } from '../../models/message.js';
+import { textPart, thinkingPart, toolCallPart } from '../../models/message.js';
 import { OP_CHAT } from '../../semconv.js';
+import {
+  type AnthropicBlock as AntBlock,
+  type AnthropicMessageParam as AntMessageParam,
+  blockToParts,
+} from '../_common/anthropic-blocks.js';
 import {
   type AdapterCallOptions,
   createMetadataAccessor,
@@ -264,21 +263,6 @@ function extractSystemText(blocks: unknown[] | undefined): string | undefined {
 // Image/document blocks are not modeled and are skipped.
 // -----------------------------------------------------------------------------
 
-interface AntBlock {
-  type?: string;
-  text?: string;
-  thinking?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  tool_use_id?: string;
-  content?: unknown;
-  is_error?: boolean;
-}
-interface AntMessageParam {
-  role?: string;
-  content?: string | AntBlock[];
-}
 interface AntStreamDelta {
   type?: string;
   text?: string;
@@ -294,40 +278,7 @@ interface AntBlockAcc {
   toolJson: string;
 }
 
-function jsonOrUndef(value: unknown): string | undefined {
-  if (value == null) return undefined;
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function blockToParts(b: AntBlock): Part[] {
-  if (!b || typeof b !== 'object') return [];
-  switch (b.type) {
-    case 'text':
-      return typeof b.text === 'string' && b.text ? [textPart(b.text)] : [];
-    case 'thinking':
-      return typeof b.thinking === 'string' && b.thinking ? [thinkingPart(b.thinking)] : [];
-    case 'tool_use':
-      return [toolCallPart({ name: b.name ?? '', id: b.id, inputJson: jsonOrUndef(b.input) })];
-    case 'tool_result':
-      return [
-        toolResultPart({
-          toolCallId: b.tool_use_id,
-          content: typeof b.content === 'string' ? b.content : undefined,
-          contentJson:
-            b.content != null && typeof b.content !== 'string' ? jsonOrUndef(b.content) : undefined,
-          isError: b.is_error,
-        }),
-      ];
-    default:
-      return [];
-  }
-}
-
+/** Maps an Anthropic `messages` array (request side) to `Message[]`. */
 function mapAnthropicInput(messages: unknown): Message[] {
   if (!Array.isArray(messages)) return [];
   const out: Message[] = [];
@@ -345,6 +296,7 @@ function mapAnthropicInput(messages: unknown): Message[] {
   return out;
 }
 
+/** Maps an Anthropic response `content` array to a single assistant `Message`. */
 function mapAnthropicOutput(content: unknown): Message[] {
   if (!Array.isArray(content)) return [];
   const parts: Part[] = [];
