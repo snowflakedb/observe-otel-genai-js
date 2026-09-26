@@ -626,7 +626,8 @@ class AgentRun {
   ): ModelCall {
     this.closeCall(thread);
     const now = Date.now();
-    const resolvedModel = model ?? thread.lastModel ?? this.model ?? 'unknown';
+    // Left empty when unknown, so the span is named plain `chat`.
+    const resolvedModel = model ?? thread.lastModel ?? this.model ?? '';
     const seed: GenerationStart = {
       ...this.sharedSeed(thread.agentName),
       ...(thread.isMain ? this.mainRequestSettings() : {}),

@@ -462,6 +462,23 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(msOf(second!.startTime)).toBeLessThan(msOf(second!.endTime) - 20);
   });
 
+  it('names a call plain chat when no model is known', async () => {
+    const h = harness();
+    const traced = wrapQuery(
+      h.client,
+      fakeQuery([
+        { type: 'system', subtype: 'init', session_id: 'sess-1' },
+        { type: 'assistant', message: { id: 'msg_1', content: [text('hi')] } },
+        result(),
+      ]),
+    );
+    await drain(traced({ prompt: 'p' }));
+
+    const chat = findSpan(h, 'chat');
+    expect(attr(chat, 'gen_ai.request.model')).toBeUndefined();
+    expect(attr(chat, 'gen_ai.response.model')).toBeUndefined();
+  });
+
   it('records a failed API call on a span named for the session model', async () => {
     // The CLI makes up an assistant message for the failure, with model <synthetic>.
     const h = harness();
