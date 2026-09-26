@@ -15,6 +15,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `query()` gets an `invoke_agent` span with `chat` and `execute_tool` children and a
   nested `invoke_agent` per subagent, rebuilt from the CLI's message stream. Works with
   `@anthropic-ai/claude-agent-sdk` `>=0.3.142 <0.4.0`.
+  With streamed input, each turn gets its own `invoke_agent` span, ended and exported
+  once the turn has its result and no tool is still running, with that turn's share of
+  the usage and cost.
 - Every adapter: `chat` spans also carry `gen_ai.usage.cache_write.input_tokens` (the
   current name for `cache_creation`), and streaming `chat` spans carry
   `gen_ai.response.time_to_first_chunk`.

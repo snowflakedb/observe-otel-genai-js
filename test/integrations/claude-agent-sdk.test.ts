@@ -604,6 +604,24 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(root, 'genai.usage.cost_usd')).toBeUndefined();
   });
 
+  it('reports no run totals for a resumed session with several results', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        assistant('msg_1', [text('hi')]),
+        result(),
+        assistant('msg_2', [text('more')]),
+        result(),
+      ],
+      {},
+      { resume: 'sess-0' },
+    );
+
+    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.input_tokens')).toBeUndefined();
+  });
+
   it('applies the run options to each span type that has a field for them', async () => {
     const h = harness();
     await run(
@@ -1698,6 +1716,279 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
   });
 });
 
+describe('Claude Agent SDK adapter: streamed input', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
+
+  function runStreamed(h: Harness, messages: AgentMessage[], options: AgentQueryOptions = {}) {
+    const traced = wrapQuery(h.client, fakeQuery(messages));
+    return traced({ prompt: userMessages(), options: { model: MODEL, ...options } });
+  }
+
+  async function* userMessages() {}
+
+  const totals = (input: number, cost: number) => ({
+    modelUsage: { [MODEL]: { inputTokens: input, outputTokens: 1 } },
+    total_cost_usd: cost,
+  });
+
+  it('gives each turn its own root, ended at its result', async () => {
+    const h = harness();
+    const rootsAtResults: number[] = [];
+    const q = runStreamed(h, [
+      init(),
+      assistant('msg_1', [text('one')]),
+      result({ result: 'one' }),
+      init(),
+      assistant('msg_2', [text('two')]),
+      result({ result: 'two' }),
+    ]);
+    for await (const msg of q) {
+      if ((msg as AgentMessage).type === 'result') rootsAtResults.push(allSpans(h, ROOT).length);
+    }
+
+    expect(rootsAtResults).toEqual([1, 2]);
+    const [first, second] = allSpans(h, ROOT);
+    expect(String(attr(first!, 'gen_ai.output.messages'))).toContain('one');
+    expect(String(attr(second!, 'gen_ai.output.messages'))).toContain('two');
+    expect(childrenOf(h, first!, CHAT)).toHaveLength(1);
+    expect(childrenOf(h, second!, CHAT)).toHaveLength(1);
+    expect(first!.spanContext().traceId).not.toBe(second!.spanContext().traceId);
+    expect(attr(second!, 'gen_ai.conversation.id')).toBe('sess-1');
+  });
+
+  it('does not replay an earlier turn as a later chat input', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        assistant('msg_1', [text('first answer')]),
+        result(),
+        init(),
+        assistant('msg_2', [text('second answer')]),
+        result(),
+      ]),
+    );
+
+    const second = allSpans(h, CHAT)[1]!;
+    expect(String(attr(second, 'gen_ai.input.messages') ?? '')).not.toContain('first answer');
+  });
+
+  it("reports each turn's share of the running totals", async () => {
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        assistant('msg_1', [text('one')]),
+        result(totals(100, 0.01)),
+        init(),
+        assistant('msg_2', [text('two')]),
+        result(totals(250, 0.04)),
+      ]),
+    );
+
+    const [first, second] = allSpans(h, ROOT);
+    expect(attr(first!, 'gen_ai.usage.input_tokens')).toBe(100);
+    expect(attr(second!, 'gen_ai.usage.input_tokens')).toBe(150);
+    expect(attr(second!, 'genai.usage.cost_usd')).toBeCloseTo(0.03);
+  });
+
+  it('counts a turn after a /clear from zero, and gives the /clear turn no totals', async () => {
+    // The order the CLI sends when the second streamed message is `/clear`.
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        assistant('msg_1', [text('one')]),
+        result(totals(100, 0.01)),
+        { type: 'conversation_reset', new_conversation_id: 'sess-2' },
+        init('sess-2'),
+        result({ result: '', modelUsage: {}, total_cost_usd: 0 }),
+        init('sess-2'),
+        assistant('msg_2', [text('three')]),
+        result(totals(40, 0.002)),
+      ]),
+    );
+
+    const [, clear, third] = allSpans(h, ROOT);
+    expect(allSpans(h, ROOT)).toHaveLength(3);
+    expect(attr(clear!, 'gen_ai.usage.input_tokens')).toBeUndefined();
+    expect(attr(third!, 'gen_ai.usage.input_tokens')).toBe(40);
+    expect(attr(third!, 'gen_ai.conversation.id')).toBe('sess-2');
+  });
+
+  it('reports totals from the second turn of a resumed session', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(
+        h,
+        [
+          init(),
+          assistant('msg_1', [text('one')]),
+          result(totals(900, 0.09)),
+          init(),
+          assistant('msg_2', [text('two')]),
+          result(totals(1000, 0.1)),
+        ],
+        { resume: 'sess-0' },
+      ),
+    );
+
+    const [first, second] = allSpans(h, ROOT);
+    expect(attr(first!, 'gen_ai.usage.input_tokens')).toBeUndefined();
+    expect(attr(second!, 'gen_ai.usage.input_tokens')).toBe(100);
+  });
+
+  it('keeps a turn open for a background task that finishes before the next turn', async () => {
+    const h = harness();
+    const rootsAtEachMessage: number[] = [];
+    const q = runStreamed(h, [
+      init(),
+      assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+      taskStarted('tu_1', 'local_bash'),
+      toolResult('tu_1', 'Command running in background with ID: b1'),
+      result(),
+      taskNotification('tu_1', 'finished'),
+      init(),
+      assistant('msg_2', [text('two')]),
+      result(),
+    ]);
+    for await (const _ of q) rootsAtEachMessage.push(allSpans(h, ROOT).length);
+
+    // Still open at its result (message 5), ended by the notification (message 6).
+    expect(rootsAtEachMessage.slice(4, 6)).toEqual([0, 1]);
+    const [first] = allSpans(h, ROOT);
+    const tool = findSpan(h, 'execute_tool Bash');
+    expect(parentOf(h, tool)).toBe(first);
+    expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('finished');
+  });
+
+  it('ends a turn at the next init when its background task is still running', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        assistant('msg_1', [toolUse('tu_1', 'Bash', { run_in_background: true })]),
+        taskStarted('tu_1', 'local_bash'),
+        toolResult('tu_1', 'Command running in background with ID: b1'),
+        result(),
+        init(),
+        taskNotification('tu_1', 'finished'),
+        assistant('msg_2', [text('two')]),
+        result(),
+      ]),
+    );
+
+    const [first, second] = allSpans(h, ROOT);
+    const tool = findSpan(h, 'execute_tool Bash');
+    expect(parentOf(h, tool)).toBe(first);
+    expect(tool.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(String(attr(tool, 'gen_ai.tool.call.result'))).toContain('running in background');
+    expect(first!.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(childrenOf(h, second!, CHAT)).toHaveLength(1);
+  });
+
+  it('reports no totals until a resumed session has had a result', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(
+        h,
+        [
+          init(),
+          assistant('msg_1', [text('cut off')]),
+          init(),
+          assistant('msg_2', [text('two')]),
+          result(totals(900, 0.09)),
+          init(),
+          assistant('msg_3', [text('three')]),
+          result(totals(1000, 0.1)),
+        ],
+        { resume: 'sess-0' },
+      ),
+    );
+
+    const roots = allSpans(h, ROOT);
+    expect(roots.map((r) => attr(r, 'gen_ai.usage.input_tokens'))).toEqual([
+      undefined,
+      undefined,
+      100,
+    ]);
+  });
+
+  it('does not fail a turn that the next init ends before its result', async () => {
+    // What an interrupt usually leads to: the CLI moves on to the next message.
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        assistant('msg_1', [text('working')]),
+        init(),
+        assistant('msg_2', [text('two')]),
+        result(),
+      ]),
+    );
+
+    const roots = allSpans(h, ROOT);
+    expect(roots).toHaveLength(2);
+    for (const root of roots) expect(root.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('adds no root when the caller closes the session between turns', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), result(), init()])({ prompt: '' }), { close: () => {} });
+
+    const q = wrapQuery(h.client, query)({ prompt: userMessages() });
+    for await (const msg of q) if ((msg as AgentMessage).type === 'result') q.close();
+
+    expect(allSpans(h, ROOT)).toHaveLength(1);
+  });
+
+  it('judges each turn by its own result', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        result({ subtype: 'error_max_turns', is_error: true, errors: ['max turns'] }),
+        init(),
+        assistant('msg_2', [text('two')]),
+        result(),
+      ]),
+    );
+
+    const [first, second] = allSpans(h, ROOT);
+    expect(first!.status.code).toBe(SpanStatusCode.ERROR);
+    expect(second!.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('keeps the compacted flag on later turns', async () => {
+    const h = harness();
+    await drain(
+      runStreamed(h, [
+        init(),
+        { type: 'system', subtype: 'compact_boundary' },
+        result(),
+        init(),
+        assistant('msg_2', [text('two')]),
+        result(),
+      ]),
+    );
+
+    expect(attr(allSpans(h, ROOT)[1]!, 'gen_ai.conversation.compacted')).toBe(true);
+  });
+
+  it('fails only the turn the stream breaks off, and adds no root after the last', async () => {
+    const h = harness();
+    await drain(runStreamed(h, [init(), result(), init(), assistant('msg_2', [text('par')])]));
+    await drain(runStreamed(h, [init(), result()]));
+
+    const [first, broken, last] = allSpans(h, ROOT);
+    expect(allSpans(h, ROOT)).toHaveLength(3);
+    expect(first!.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(broken!.status.code).toBe(SpanStatusCode.ERROR);
+    expect(last!.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+});
+
 describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
   const harness = useHarness({ contentCaptureMode: 'full' });
 
@@ -1738,6 +2029,22 @@ describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
     expect(read.status.code).not.toBe(SpanStatusCode.ERROR);
     const outputs = allSpans(h, CHAT).map((c) => attr(c, 'gen_ai.usage.output_tokens'));
     expect(outputs).toEqual([282, 119, 154, 63]);
+  });
+
+  it('streamed input with a background command that outlives its turn', async () => {
+    // Turn 2's init arrives before the command finishes; the CLI then starts turn 3
+    // by itself to report it.
+    const h = harness();
+    async function* prompt() {}
+    const traced = wrapQuery(h.client, fakeQuery(recording('streamed-background-bash')));
+    await drain(traced({ prompt: prompt(), options: { model: MODEL } }));
+
+    const roots = allSpans(h, ROOT);
+    expect(roots.map((r) => attr(r, 'gen_ai.usage.output_tokens'))).toEqual([259, 36, 142]);
+    const bash = findSpan(h, 'execute_tool Bash');
+    expect(parentOf(h, bash)).toBe(roots[0]);
+    expect(String(attr(bash, 'gen_ai.tool.call.result'))).toContain('running in background');
+    for (const root of roots) expect(root.status.code).toBe(SpanStatusCode.OK);
   });
 
   it('inline delegation', async () => {

@@ -369,13 +369,16 @@ timing, but none of the subagent's messages reach the stream, so there is no nes
 
 ### Span tree
 
-Each `query()` call gets one `invoke_agent` span, and everything else hangs off it.
-That span sits under whatever OpenTelemetry context you call from. Several user turns
-means several `query()` calls, linked by `gen_ai.conversation.id` (the CLI session id,
-unless you set `conversationId`).
+Each `query()` call with a string prompt gets one `invoke_agent` span, and everything
+else hangs off it. With streamed input (an async iterable of user messages), the
+session stays open across turns, so each turn gets its own `invoke_agent` span
+instead. Either way the span sits under whatever OpenTelemetry context you call
+`query()` from; with no span active there, each turn is a trace of its own. Turns are
+linked by `gen_ai.conversation.id` (the CLI session id, unless you set
+`conversationId`).
 
 ```
-invoke_agent <agentName>          one per query() call
+invoke_agent <agentName>          one per query() call, or per streamed turn
   chat <model>                    one per API call
   execute_tool Read
   execute_tool Agent              the delegation tool (called Task on older CLIs)
@@ -398,8 +401,11 @@ invoke_agent <agentName>          one per query() call
   then closes the span with the full output. A task still running when the run ends
   is closed with its receipt, not as an error.
 - The SDK's `result` messages are checkpoints: a background task can keep the run
-  going past the first one. The run ends when the stream does, and its status follows
-  the last result.
+  going past the first one. With a string prompt the run ends when the stream does,
+  and its status follows the last result. A streamed turn ends at its result once
+  none of its tools is still open, so it is exported without waiting for the session
+  to end. A background task still running when the next turn starts is closed with its
+  receipt, and what the CLI reports about it later is dropped.
 - Breaking out of your loop early, or calling `close()`, ends every span without
   marking an error.
 - A failed API call gets a `chat` span of its own, marked with the error.
@@ -426,12 +432,14 @@ invoke_agent <agentName>          one per query() call
 
 ### Tokens, cost, and time to first token
 
-The `invoke_agent` span carries the run totals from the latest `result.modelUsage`,
-which is the only source that includes subagents, plus the cost in
-`genai.usage.cost_usd`. A `/clear` mid-run resets the SDK's totals; the usage from
-before it still counts toward the run. A run started with `resume` or `continue`
-gets no run totals: the SDK carries the earlier session's usage into its first
-result without saying how much of it there is. Each `chat` span carries its own call's figures, so summing
+The `invoke_agent` span carries the run totals from `result.modelUsage`, which is
+the only source that includes subagents, plus the cost in `genai.usage.cost_usd`.
+The SDK reports running totals for the whole session, so a streamed turn gets what
+they grew by during that turn. A `/clear` resets the SDK's totals; the usage from
+before it still counts toward the run or turn it happened in. A run started with
+`resume` or `continue` gets no totals on its first turn: the SDK carries the earlier
+session's usage into its first result without saying how much of it there is. Later
+streamed turns only count what they added. Each `chat` span carries its own call's figures, so summing
 token attributes across every span in a trace counts them twice; use either the
 `invoke_agent` span or the `chat` spans. The token metric is recorded from `chat`
 spans only.

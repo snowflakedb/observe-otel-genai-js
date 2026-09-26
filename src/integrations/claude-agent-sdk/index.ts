@@ -5,7 +5,7 @@
  * streams JSON messages back. There is no model call to wrap, so this adapter
  * rebuilds the span tree from the message stream alone.
  *
- * Emits, per `query()` call:
+ * Emits, per `query()` call with a string prompt, or per turn with streamed input:
  *
  *     invoke_agent <agentName>
  *       chat <model>                one per API call, keyed by message.id
@@ -15,8 +15,10 @@
  *           chat <model>
  *
  * A `result` message is a checkpoint, not the end of the run: a background task can
- * keep the run going past it, and each result's totals cover the whole call so far.
- * The run ends when the stream does.
+ * keep the run going past it, and each result's totals are running totals. With a
+ * string prompt the run ends when the stream does. With streamed input the session
+ * stays open between turns, so each turn ends at its result once no tool is still
+ * open, or at the next turn's `init`.
  */
 
 import { type Context, context, diag } from '@opentelemetry/api';
@@ -86,6 +88,8 @@ const PROVIDER_ENV: readonly (readonly [string, string])[] = [
 
 /** The values the CLI reads as on. Anything else, `no` and `off` included, is off. */
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+
+const NO_TOTALS: RunTotals = { usage: {}, costUsd: 0 };
 
 /** Metadata for the run, applied wherever each span type has a field for it. */
 export type ClaudeAgentSdkOptions = AdapterCallOptions;
@@ -250,6 +254,22 @@ interface OpenTool {
   subagent?: AgentThread;
 }
 
+/** One `invoke_agent` root: the whole `query()` call, or one turn of streamed input. */
+interface Turn {
+  /** The main thread; its agent is the root span. */
+  main: AgentThread;
+  sawResult: boolean;
+  /**
+   * Held until the turn ends rather than set on the span: a recorder's error cannot be
+   * cleared, and a later result that succeeds should leave the turn green.
+   */
+  resultError?: Error;
+  /** This turn's share of the CLI's running totals. */
+  totals: RunTotals;
+  /** False when the turn opened before a resumed session's totals had a known start. */
+  totalsKnown: boolean;
+}
+
 class AgentRun {
   private readonly client: Client;
   private readonly config: ClaudeAgentSdkOptions;
@@ -258,39 +278,46 @@ class AgentRun {
   private readonly provider: string;
   private readonly agentName: string;
   private readonly startedAt = Date.now();
-  /** Where `query()` was called. The root opens later, on the first message. */
+  /**
+   * Where `query()` was called. Every root opens under it, later, on its first
+   * message. With no span active there, each turn is a trace of its own.
+   */
   private readonly callerContext: Context = context.active();
+  /** The prompt is an iterable of user messages, so one session holds many turns. */
+  private readonly streamedInput: boolean;
 
-  private root: AgentInvocationRecorder | undefined;
-  private main: AgentThread | undefined;
+  private turn: Turn | undefined;
+  private endedTurns = 0;
   private readonly tools = new Map<string, OpenTool>();
   /** task_id -> tool_use_id, for task messages that carry only the task id. */
   private readonly taskTools = new Map<string, string>();
 
   private sessionId: string | undefined;
   private model: string | undefined;
+  /** Outlasts the turn: later turns still work from the compacted conversation. */
   private compacted = false;
-  /** The latest result's cumulative totals, and what earlier resets zeroed. */
-  private latestTotals: RunTotals | undefined;
-  private totalsBeforeReset: RunTotals = { usage: {}, costUsd: 0 };
-  private sawResult = false;
+  /** The CLI's running totals as of the latest result. A /clear zeroes them. */
+  private cliTotals: RunTotals = NO_TOTALS;
+  /**
+   * Whether `cliTotals` is a known starting point for measuring this run's usage. A
+   * resumed or continued session's first result already includes the earlier runs, by
+   * an amount the stream never states.
+   */
+  private cliTotalsKnown: boolean;
   /** The caller ended the run with `close()` or `return()`, which is not a failure. */
   private stoppedByCaller = false;
   /** The caller interrupted the turn; the error result that follows is expected. */
   private interrupted = false;
   /** The caller has started reading the stream. */
   started = false;
-  /**
-   * Held until teardown rather than set on the span: a recorder's error cannot be
-   * cleared, and a later result that succeeds should leave the run green.
-   */
-  private lastResultError: Error | undefined;
 
   constructor(client: Client, config: ClaudeAgentSdkOptions, params: AgentQueryParams) {
     this.client = client;
     this.config = config;
     this.queryOptions = params.options ?? {};
     this.prompt = params.prompt;
+    this.streamedInput = typeof params.prompt !== 'string';
+    this.cliTotalsKnown = !this.queryOptions.resume && !this.queryOptions.continue;
     this.provider = resolveProvider(this.queryOptions);
     this.agentName = config.agentName ?? DEFAULT_AGENT_NAME;
   }
@@ -311,6 +338,7 @@ class AgentRun {
       for await (const msg of stream) {
         try {
           this.onMessage(msg);
+          this.endFinishedTurn();
         } catch (err) {
           logRecordingFailure(err);
         }
@@ -330,8 +358,15 @@ class AgentRun {
   /** A stream that ended with no result is a failure, unless the caller stopped it. */
   private missingResultError(): Error | undefined {
     // An interrupt can end the stream before the turn's result is sent.
-    if (this.sawResult || this.stoppedByCaller || this.interrupted) return undefined;
+    if (this.turn?.sawResult || this.stoppedByCaller || this.interrupted) return undefined;
     return new Error('agent stream ended before any result message');
+  }
+
+  /** With streamed input, a turn ends once it has its result and no tool is open. */
+  private endFinishedTurn(): void {
+    if (this.streamedInput && this.turn?.sawResult && this.tools.size === 0) {
+      void this.endTurn();
+    }
   }
 
   private onMessage(msg: AgentMessage): void {
@@ -353,11 +388,11 @@ class AgentRun {
         this.onResult(msg);
         break;
       case 'conversation_reset':
-        // A /clear zeroes the running totals; what came before still counts for this run.
-        this.totalsBeforeReset = addTotals(this.totalsBeforeReset, this.latestTotals);
-        this.latestTotals = undefined;
+        // A /clear zeroes the running totals; what came before still counts for this turn.
+        this.cliTotals = NO_TOTALS;
+        this.cliTotalsKnown = true;
         // The next call starts from an empty conversation, not a compacted one.
-        this.mainThread().history = [];
+        if (this.turn) this.turn.main.history = [];
         this.compacted = false;
         break;
     }
@@ -452,6 +487,9 @@ class AgentRun {
   private onSystem(msg: AgentMessage): void {
     switch (msg.subtype) {
       case 'init':
+        // Each streamed turn opens with an init. One still waiting on a background task
+        // ends here, or that task would keep every later turn inside it.
+        if (this.streamedInput && this.turn) void this.endTurn();
         this.sessionId = msg.session_id;
         this.model = msg.model;
         // A new turn: an interrupt sent while idle has no result to excuse.
@@ -489,7 +527,7 @@ class AgentRun {
       }
       case 'compact_boundary':
         this.compacted = true;
-        this.openRoot().setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
+        this.mainThread().agent.setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
         // The next call sees a summary of what came before, which never reaches this
         // process. Leaving it out understates the input; keeping it would overstate it.
         this.mainThread().history = [];
@@ -498,20 +536,21 @@ class AgentRun {
   }
 
   private onResult(msg: AgentMessage): void {
-    const root = this.openRoot();
-    this.sawResult = true;
-    this.lastResultError = this.interrupted ? undefined : resultError(msg);
+    const turn = this.currentTurn();
+    const { main } = turn;
+    turn.sawResult = true;
+    turn.resultError = this.interrupted ? undefined : resultError(msg);
     this.interrupted = false;
 
     // An API failure keeps subtype `success`; it belongs on the call that failed.
     // The other error subtypes are early stops, where the last call went fine.
-    const main = this.mainThread();
-    if (this.lastResultError && msg.subtype === 'success') {
-      main.call?.rec.setCallError(this.lastResultError);
+    if (turn.resultError && msg.subtype === 'success') {
+      main.call?.rec.setCallError(turn.resultError);
     }
     this.closeCall(main);
 
-    this.recordTotals(root, msg);
+    this.recordTotals(turn, msg);
+    const root = main.agent;
     root.setOutput(
       !msg.is_error && typeof msg.result === 'string' && msg.result
         ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
@@ -521,48 +560,57 @@ class AgentRun {
   }
 
   /**
-   * The results' totals cover more than this call when the session was resumed or
-   * continued: its first result already includes the earlier runs, by an amount the
-   * stream never states. Those runs get no totals rather than wrong ones.
+   * Adds what the CLI's running totals grew by since the last result. A result with no
+   * `modelUsage`, like the one a /clear turn sends, reports nothing rather than zeroes.
+   * A turn that opened before the start was known gets no totals rather than wrong ones.
    */
-  private recordTotals(root: AgentInvocationRecorder, msg: AgentMessage): void {
-    if (this.queryOptions.resume || this.queryOptions.continue) return;
-    this.latestTotals = { usage: sumModelUsage(msg.modelUsage), costUsd: msg.total_cost_usd ?? 0 };
-    const run = addTotals(this.totalsBeforeReset, this.latestTotals);
-    root.setAttributes({
-      ...usageAttributes(run.usage),
-      ...(run.costUsd ? { [ATTR_USAGE_COST_USD]: run.costUsd } : {}),
+  private recordTotals(turn: Turn, msg: AgentMessage): void {
+    if (!msg.modelUsage || Object.keys(msg.modelUsage).length === 0) return;
+    const latest = { usage: sumModelUsage(msg.modelUsage), costUsd: msg.total_cost_usd ?? 0 };
+    turn.totals = addTotals(turn.totals, totalsSince(latest, this.cliTotals));
+    this.cliTotals = latest;
+    this.cliTotalsKnown = true;
+    if (!turn.totalsKnown) return;
+    turn.main.agent.setAttributes({
+      ...usageAttributes(turn.totals.usage),
+      ...(turn.totals.costUsd ? { [ATTR_USAGE_COST_USD]: turn.totals.costUsd } : {}),
     });
   }
 
   // --- threads --------------------------------------------------------------
 
-  /** Opened on the first message, so the span can carry the session id from `init`. */
-  private openRoot(): AgentInvocationRecorder {
-    if (this.root) return this.root;
-    this.root = context.with(this.callerContext, () =>
+  /**
+   * Opened on the turn's first message, so the root can carry the session id from
+   * `init`. The first turn is dated from `query()`, when the CLI started.
+   */
+  private currentTurn(): Turn {
+    if (this.turn) return this.turn;
+    const startedAt = this.endedTurns === 0 ? this.startedAt : Date.now();
+    const root = context.with(this.callerContext, () =>
       this.client.invokeAgent({
         ...this.sharedSeed(this.agentName),
         requestProvider: this.provider,
         requestModel: this.queryOptions.model ?? this.model,
         input: promptMessages(this.prompt),
         parentGenerationIds: this.config.parentGenerationIds,
-        startedAt: this.startedAt,
+        startedAt,
       }),
     );
-    this.setReasoningLevel(this.root);
-    return this.root;
-  }
-
-  private mainThread(): AgentThread {
-    this.main ??= {
-      agent: this.openRoot(),
+    this.setReasoningLevel(root);
+    if (this.compacted) root.setAttributes({ [ATTR_CONVERSATION_COMPACTED]: true });
+    const main: AgentThread = {
+      agent: root,
       agentName: this.agentName,
       isMain: true,
       history: promptMessages(this.prompt),
-      readyAt: this.startedAt,
+      readyAt: startedAt,
     };
-    return this.main;
+    this.turn = { main, sawResult: false, totals: NO_TOTALS, totalsKnown: this.cliTotalsKnown };
+    return this.turn;
+  }
+
+  private mainThread(): AgentThread {
+    return this.currentTurn().main;
   }
 
   /**
@@ -746,20 +794,35 @@ class AgentRun {
    * or ended with no result); the caller stopping early is not an error.
    */
   async end(error?: unknown): Promise<void> {
-    const failure = error === undefined ? undefined : asError(error);
-    if (this.main) {
-      this.closeToolsOf(this.main, failure);
-      // Without stream events an open call has already delivered its reply, so only a
-      // call cut off mid-stream shares the failure.
-      if (failure && this.expectsStreamEvents(this.main)) this.main.call?.rec.setCallError(failure);
-      this.closeCall(this.main);
-    }
-
+    if (this.allTurnsEnded) return;
     // A run that ends before its first message still gets a span: the CLI did start.
-    const root = this.openRoot();
-    const runError = failure ?? this.lastResultError;
-    if (runError) root.setError(runError);
-    await root.end();
+    await this.endTurn(error === undefined ? undefined : asError(error));
+  }
+
+  /** Every turn that opened has ended, and none is open now. */
+  private get allTurnsEnded(): boolean {
+    return !this.turn && this.endedTurns > 0;
+  }
+
+  /**
+   * Ends the turn and whatever it still has open. A background task still running is
+   * closed with its receipt, not as an error; what the CLI says about it later is
+   * dropped, since its tool is no longer open.
+   */
+  private endTurn(failure?: Error): Promise<void> {
+    const { main, resultError } = this.currentTurn();
+    this.turn = undefined;
+    this.endedTurns += 1;
+    this.closeToolsOf(main, failure);
+    this.taskTools.clear();
+    // Without stream events an open call has already delivered its reply, so only a
+    // call cut off mid-stream shares the failure.
+    if (failure && this.expectsStreamEvents(main)) main.call?.rec.setCallError(failure);
+    this.closeCall(main);
+
+    const error = failure ?? resultError;
+    if (error) main.agent.setError(error);
+    return main.agent.end();
   }
 
   // --- helpers --------------------------------------------------------------
@@ -888,18 +951,30 @@ interface RunTotals {
   costUsd: number;
 }
 
-function addTotals(a: RunTotals, b: RunTotals | undefined): RunTotals {
-  return b ? { usage: addUsage(a.usage, b.usage), costUsd: a.costUsd + b.costUsd } : a;
+type Combine = (a: number, b: number) => number;
+const plus: Combine = (a, b) => a + b;
+/** Clamped at zero, so totals that drop without a /clear never read as negative usage. */
+const minus: Combine = (a, b) => Math.max(a - b, 0);
+
+function addTotals(a: RunTotals, b: RunTotals): RunTotals {
+  return { usage: combineUsage(a.usage, b.usage, plus), costUsd: plus(a.costUsd, b.costUsd) };
 }
 
-function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
-  const sum = (key: keyof TokenUsage) => (a[key] ?? 0) + (b[key] ?? 0);
+function totalsSince(now: RunTotals, before: RunTotals): RunTotals {
   return {
-    inputTokens: sum('inputTokens'),
-    outputTokens: sum('outputTokens'),
-    cacheReadInputTokens: sum('cacheReadInputTokens'),
-    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
-    reasoningTokens: sum('reasoningTokens') || undefined,
+    usage: combineUsage(now.usage, before.usage, minus),
+    costUsd: minus(now.costUsd, before.costUsd),
+  };
+}
+
+function combineUsage(a: TokenUsage, b: TokenUsage, op: Combine): TokenUsage {
+  const each = (key: keyof TokenUsage) => op(a[key] ?? 0, b[key] ?? 0);
+  return {
+    inputTokens: each('inputTokens'),
+    outputTokens: each('outputTokens'),
+    cacheReadInputTokens: each('cacheReadInputTokens'),
+    cacheCreationInputTokens: each('cacheCreationInputTokens'),
+    reasoningTokens: each('reasoningTokens') || undefined,
   };
 }
 
@@ -914,7 +989,7 @@ function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined):
       output_tokens_details: { thinking_tokens: m.thinkingTokens },
     }),
   );
-  return perModel.reduce(addUsage, {});
+  return perModel.reduce((a, b) => combineUsage(a, b, plus), {});
 }
 
 /**
