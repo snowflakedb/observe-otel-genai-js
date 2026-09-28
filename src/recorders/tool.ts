@@ -43,6 +43,11 @@ export class ToolExecutionRecorder extends RecorderBase {
     this.seed.toolName = toolName;
   }
 
+  /** Overrides `gen_ai.tool.type` when it is only known after the span started. */
+  setToolType(toolType: string): void {
+    this.seed.toolType = toolType;
+  }
+
   setToolCallId(toolCallId: string | undefined): void {
     if (toolCallId == null || toolCallId === '') return;
     this.seed.toolCallId = toolCallId;

@@ -133,7 +133,7 @@ describe('RetrievalRecorder', () => {
     await rec.end(); // must not throw
 
     const [span] = h.spans.getFinishedSpans();
-    expect(span?.status.code).toBe(SpanStatusCode.OK);
+    expect(span?.status.code).toBe(SpanStatusCode.UNSET);
 
     // Documents still emitted as valid JSON, with the bad values normalized.
     const docs = JSON.parse(span!.attributes[ATTR_RETRIEVAL_DOCUMENTS] as string);
@@ -198,7 +198,7 @@ describe('RetrievalRecorder', () => {
       await rec.end(); // must not throw
 
       const [span] = h.spans.getFinishedSpans();
-      expect(span?.status.code).toBe(SpanStatusCode.OK);
+      expect(span?.status.code).toBe(SpanStatusCode.UNSET);
       expect(span?.attributes[ATTR_RETRIEVAL_DOCUMENTS]).toBeUndefined();
 
       const collected = await h.collectMetrics();
@@ -311,6 +311,6 @@ describe('RetrievalRecorder — tiny content cap', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_RETRIEVAL_DOCUMENTS]).toBeUndefined();
     expect(span?.attributes[`${ATTR_RETRIEVAL_DOCUMENTS}.truncated`]).toBeUndefined();
-    expect(span?.status.code).toBe(SpanStatusCode.OK);
+    expect(span?.status.code).toBe(SpanStatusCode.UNSET);
   });
 });
