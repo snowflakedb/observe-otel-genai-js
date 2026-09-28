@@ -7,6 +7,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`OpenAIInstrumentation`** (`@genai-otel/core/openai/instrumentation`), an
+  OpenTelemetry-native alternative to `wrapOpenAI`. It patches
+  `chat.completions.create`, `responses.create`, and `embeddings.create` on the
+  prototypes the `OpenAI` client's own statics expose, so there are no dist file
+  paths to drift and behavior matches across CommonJS and ESM. CommonJS
+  auto-patches through the require hook; ESM is served by `manuallyInstrument`,
+  which needs no launch flags. Installing both this and `wrapOpenAI` still yields
+  one span per request: the patch marks each method it wraps and the proxy passes
+  marked methods through. When another library reached the prototypes first, this
+  one steps aside and says so at `warn` level, naming the ways to disable the
+  other one.
 - **OpenAI Responses API support.** `responses.create` now records a `chat` span
   through both entry points, the `wrapOpenAI` proxy and `patchResponsesCreate`.
   The shape shares almost nothing with Chat Completions, so it gets its own
@@ -18,6 +29,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `output_tokens_details.reasoning_tokens` map onto the cache-read and reasoning
   counters. Streaming takes TTFT from the first `*.delta` event and the final
   output and usage from `response.completed`.
+- The `openai` peer range now includes v7.
 
 ### Fixed
 - Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release

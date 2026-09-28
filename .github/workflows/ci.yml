@@ -49,6 +49,8 @@ jobs:
           test -f dist/integrations/vercel-ai-sdk/index.d.ts
           test -f dist/integrations/openai/index.js
           test -f dist/integrations/openai/index.d.ts
+          test -f dist/integrations/openai/instrumentation.js
+          test -f dist/integrations/openai/instrumentation.d.ts
           test -f dist/integrations/anthropic/index.js
           test -f dist/integrations/anthropic/index.d.ts
           test -f dist/integrations/langchain/index.js

@@ -17,6 +17,7 @@ import type OpenAI from 'openai';
 import type { Client } from '../../client.js';
 import { ValidationError } from '../../errors.js';
 import { isApiPromiseLike } from '../_common/api-promise.js';
+import { isInstrumented } from '../_common/instrumented.js';
 import { type AdapterCallOptions, createMetadataAccessor } from '../_common/metadata.js';
 import { instrumentChatCompletionApiPromise, runChatCompletion } from './_chat.js';
 import { instrumentEmbeddingApiPromise, runEmbedding } from './_embeddings.js';
@@ -132,9 +133,10 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
         return (params: ChatCompletionsCreateParams, ...rest: unknown[]) => {
+          const create = openai.chat.completions.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.chat.completions, params, ...rest);
           const options = readMetadata(params);
           stripMetadata(params);
-          const create = openai.chat.completions.create as (...a: unknown[]) => unknown;
           const raw = create.call(openai.chat.completions, params, ...rest);
           if (isApiPromiseLike(raw)) {
             return instrumentChatCompletionApiPromise(client, raw, params, options);
@@ -153,9 +155,10 @@ function wrapResponses(client: Client, openai: OpenAI, responses: unknown) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
         return (params: ResponseCreateParams, ...rest: unknown[]) => {
+          const create = openai.responses.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.responses, params, ...rest);
           const options = readMetadata(params);
           stripMetadata(params);
-          const create = openai.responses.create as (...a: unknown[]) => unknown;
           const raw = create.call(openai.responses, params, ...rest);
           if (isApiPromiseLike(raw)) {
             return instrumentResponseApiPromise(client, raw, params, options);
@@ -174,9 +177,10 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
         return (params: EmbeddingCreateParams, ...rest: unknown[]) => {
+          const create = openai.embeddings.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.embeddings, params, ...rest);
           const options = readMetadata(params);
           stripMetadata(params);
-          const create = openai.embeddings.create as (...a: unknown[]) => unknown;
           const raw = create.call(openai.embeddings, params, ...rest);
           if (isApiPromiseLike(raw)) {
             return instrumentEmbeddingApiPromise(client, raw, params, options);

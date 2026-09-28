@@ -1,0 +1,396 @@
+/**
+ * Tests for `OpenAIInstrumentation`.
+ *
+ * These drive a **real** `openai` client against a local HTTP server, which the
+ * adapter tests cannot do. Two things depend on it:
+ *
+ *  - The instrumentation patches `Completions.prototype.create`, so the test has
+ *    to go through a real resource instance to prove the patch is on the right
+ *    prototype at all.
+ *  - `create()` returns the SDK's `APIPromise`. Preserving it keeps
+ *    `.withResponse()` and the SDK's own `.stream()` helper working, and only a
+ *    real client returns one.
+ *
+ * vitest never fires the require/import hook, so the module patch is applied by
+ * hand through `getModuleDefinitions()` and the function that ships to production
+ * is what runs. `openai-agents-cjs-autopatch.test.ts` covers the hook itself.
+ */
+
+import { DiagLogLevel, diag } from '@opentelemetry/api';
+import * as OpenAIModule from 'openai';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
+import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
+import {
+  ATTR_AGENT_NAME,
+  ATTR_OPERATION_NAME,
+  ATTR_REQUEST_MODEL,
+  ATTR_RESPONSE_ID,
+  ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_DEFINITIONS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_INPUT_TOKENS,
+  ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
+  OP_CHAT,
+  OP_EMBEDDINGS,
+} from '../../src/semconv.js';
+import { type Harness, createHarness } from '../_harness.js';
+import {
+  type FakeOpenAIServer,
+  chatCompletion,
+  responsesMessage,
+  startFakeOpenAI,
+} from './_openai-server.js';
+
+const OpenAI = ((OpenAIModule as any).OpenAI ?? (OpenAIModule as any).default) as any;
+
+/**
+ * Applies the instrumentation's real module patch to the live `openai` module,
+ * through `getModuleDefinitions()` so the shipped patch is what gets tested.
+ */
+function patchOpenAI(instr: OpenAIInstrumentation): () => void {
+  const def = instr.getModuleDefinitions()[0];
+  if (!def?.patch) throw new Error('openai module patch not found in instrumentation');
+  def.patch(OpenAIModule);
+  return () => def.unpatch?.(OpenAIModule);
+}
+
+function chatSpans(h: Harness) {
+  return h.spans.getFinishedSpans().filter((s) => s.attributes[ATTR_OPERATION_NAME] === OP_CHAT);
+}
+
+/** The chat span, asserting there is only one. */
+function onlyChatSpan(h: Harness) {
+  const spans = chatSpans(h);
+  expect(spans).toHaveLength(1);
+  const span = spans[0];
+  if (!span) throw new Error('no chat span emitted');
+  return span;
+}
+
+describe('OpenAIInstrumentation', () => {
+  let h: Harness;
+  let server: FakeOpenAIServer;
+  let unpatch: (() => void) | undefined;
+
+  beforeEach(() => {
+    h = createHarness();
+  });
+
+  afterEach(async () => {
+    unpatch?.();
+    unpatch = undefined;
+    await server?.close();
+    await h.shutdown();
+  });
+
+  async function setup(
+    handler: Parameters<typeof startFakeOpenAI>[0],
+    config: ConstructorParameters<typeof OpenAIInstrumentation>[0] = {},
+  ) {
+    server = await startFakeOpenAI(handler);
+    // `enabled: false` skips require-hook registration; we patch by hand below.
+    const instr = new OpenAIInstrumentation({ enabled: false, client: h.client, ...config });
+    unpatch = patchOpenAI(instr);
+    return new OpenAI({ apiKey: 'test', baseURL: server.baseURL });
+  }
+
+  it('emits a chat span for an unwrapped client', async () => {
+    const client = await setup(() => chatCompletion({ id: 'chatcmpl-1' }));
+
+    const result = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(result.choices[0].message.content).toBe('hello from chat');
+    const span = onlyChatSpan(h);
+    expect(span.name).toBe('chat gpt-4o-mini');
+    expect(span.attributes[ATTR_RESPONSE_ID]).toBe('chatcmpl-1');
+    expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(7);
+    expect(span.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
+    expect(span.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(2);
+    expect(span.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
+  });
+
+  it('emits a chat span for the Responses API, mapping instructions to system_instructions', async () => {
+    const client = await setup(() => responsesMessage({ id: 'resp-1', text: 'terse answer' }));
+
+    const result = await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      instructions: 'Be terse.',
+    });
+
+    expect(result.status).toBe('completed');
+    const span = onlyChatSpan(h);
+    expect(span.attributes[ATTR_RESPONSE_ID]).toBe('resp-1');
+    // Responses carries the system prompt out-of-band, so it maps to
+    // `gen_ai.system_instructions`; Chat Completions puts it in an input message.
+    expect(String(span.attributes[ATTR_SYSTEM_INSTRUCTIONS])).toContain('Be terse.');
+    expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+    expect(span.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(4);
+    expect(span.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(2);
+  });
+
+  it('maps Responses tool definitions from the top level, not from a nested function object', async () => {
+    // Responses puts `name` / `description` / `parameters` on the tool itself;
+    // Chat Completions nests them under `function`. Reading the wrong level
+    // yields a nameless definition that gets dropped, so this asserts the name
+    // survives, and under `full` capture the schema too.
+    const client = await setup(() => responsesMessage(), { contentCapture: 'full' });
+
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      tools: [
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Look up weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      ],
+    });
+
+    const definitions = String(onlyChatSpan(h).attributes[ATTR_TOOL_DEFINITIONS]);
+    expect(definitions).toContain('get_weather');
+    expect(definitions).toContain('Look up weather');
+    expect(definitions).toContain('city');
+  });
+
+  it('omits tool descriptions and schemas under the default capture mode', async () => {
+    // The library defaults to `no_tool_content`, so a tool definition is reduced
+    // to its identity. Pinning it means a change to that default has to come
+    // through this test rather than through what a plain install starts sending.
+    const client = await setup(() => responsesMessage());
+
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      tools: [
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Look up weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      ],
+    });
+
+    const definitions = String(onlyChatSpan(h).attributes[ATTR_TOOL_DEFINITIONS]);
+    expect(definitions).toContain('get_weather');
+    expect(definitions).not.toContain('Look up weather');
+    expect(definitions).not.toContain('city');
+  });
+
+  it('emits an embeddings span', async () => {
+    const client = await setup(() => ({
+      object: 'list',
+      model: 'text-embedding-3-small',
+      data: [{ object: 'embedding', index: 0, embedding: [0.1, 0.2, 0.3] }],
+      usage: { prompt_tokens: 4, total_tokens: 4 },
+    }));
+
+    await client.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: 'hi',
+      encoding_format: 'float',
+    });
+
+    const spans = h.spans
+      .getFinishedSpans()
+      .filter((s) => s.attributes[ATTR_OPERATION_NAME] === OP_EMBEDDINGS);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.attributes[ATTR_REQUEST_MODEL]).toBe('text-embedding-3-small');
+  });
+
+  it('preserves the APIPromise so withResponse() still works', async () => {
+    const client = await setup(() => chatCompletion({ id: 'chatcmpl-wr' }));
+
+    const { data, response } = await client.chat.completions
+      .create({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] })
+      .withResponse();
+
+    expect(response.status).toBe(200);
+    expect(data.id).toBe('chatcmpl-wr');
+    expect(chatSpans(h)).toHaveLength(1);
+  });
+
+  it('records a request failure on the span and still rejects', async () => {
+    const client = await setup(() => ({
+      status: 500,
+      body: { error: { message: 'upstream boom' } },
+    }));
+
+    await expect(
+      client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    ).rejects.toThrow();
+
+    // 2 === SpanStatusCode.ERROR
+    expect(onlyChatSpan(h).status.code).toBe(2);
+  });
+
+  it('applies config metadata as a default and lets withMetadata override it', async () => {
+    const client = await setup(() => chatCompletion(), { agentName: 'config-default' });
+
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    await client.chat.completions.create(
+      withMetadata(
+        { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+        { agentName: 'per-call' },
+      ),
+    );
+
+    const names = chatSpans(h).map((s) => s.attributes[ATTR_AGENT_NAME]);
+    expect(names).toEqual(['config-default', 'per-call']);
+  });
+
+  it('does not leak the metadata symbol into the request body', async () => {
+    const client = await setup(() => chatCompletion());
+
+    await client.chat.completions.create(
+      withMetadata(
+        { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+        { agentName: 'a' },
+      ),
+    );
+
+    expect(Object.keys(server.requests[0]?.body ?? {}).sort()).toEqual(['messages', 'model']);
+  });
+
+  it('emits exactly one span when wrapOpenAI and the instrumentation are both installed', async () => {
+    // The proxy resolves `create` through the prototype, so once the
+    // instrumentation has patched it, the proxy would instrument an
+    // already-instrumented call and double-report every request.
+    const client = await setup(() => chatCompletion());
+    const wrapped = wrapOpenAI(h.client, client);
+
+    await wrapped.chat.completions.create(
+      withMetadata(
+        { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+        { agentName: 'planner' },
+      ),
+    );
+
+    // The proxy must leave the metadata on params for the patched method to read.
+    expect(onlyChatSpan(h).attributes[ATTR_AGENT_NAME]).toBe('planner');
+  });
+
+  it('still emits through wrapOpenAI after the instrumentation is unpatched', async () => {
+    // The mirror of the case above. With no patch in place the proxy has to do
+    // the work itself, or disabling the instrumentation would turn off telemetry
+    // for wrapped clients too.
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+    const wrapped = wrapOpenAI(h.client, client);
+
+    await wrapped.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(chatSpans(h)).toHaveLength(1);
+  });
+
+  it('leaves calls untraced but working after unpatch', async () => {
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+
+    const result = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(result.choices[0].message.content).toBe('hello from chat');
+    expect(chatSpans(h)).toHaveLength(0);
+  });
+
+  it('defers loudly when another library already instrumented the prototype', async () => {
+    // `@opentelemetry/instrumentation-openai` patches these same prototypes, and
+    // `@opentelemetry/auto-instrumentations-node` enables it by default. Deferring
+    // is right, since two spans per call would double every token and duration
+    // metric, but it drops everything only this library records, so it warns.
+    // Simulated with a plain shimmer-style wrapper carrying none of our markers.
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+
+    const proto = Object.getPrototypeOf(client.chat.completions) as {
+      create: (...args: unknown[]) => unknown;
+    };
+    const original = proto.create;
+    const foreign = function foreignWrapper(this: unknown, ...args: unknown[]) {
+      return original.apply(this, args);
+    };
+    // `isWrapped` requires all three markers, which is what shimmer sets. A
+    // wrapper missing any of them reads as unwrapped.
+    Object.defineProperty(foreign, '__original', { value: original });
+    Object.defineProperty(foreign, '__unwrap', {
+      value: () => {
+        proto.create = original;
+      },
+    });
+    Object.defineProperty(foreign, '__wrapped', { value: true });
+
+    const warnings: string[] = [];
+    const previousLogger = {
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => {},
+      debug: () => {},
+      info: () => {},
+      verbose: () => {},
+    };
+    try {
+      proto.create = foreign;
+      diag.setLogger(previousLogger, DiagLogLevel.ALL);
+      const instr = new OpenAIInstrumentation({ enabled: false, client: h.client });
+      instr.getModuleDefinitions()[0]?.patch?.(OpenAIModule);
+
+      expect(
+        warnings.some((w) => w.includes('already instrumented by another library')),
+        'expected a warning naming the conflict',
+      ).toBe(true);
+      // And it names a way out. The env var takes a package-name suffix, so the
+      // full package name there disables nothing. This asserts the working form,
+      // verified against @opentelemetry/auto-instrumentations-node.
+      expect(
+        warnings.some((w) => w.includes('OTEL_NODE_DISABLED_INSTRUMENTATIONS=openai')),
+        'expected the suffix form of the env var',
+      ).toBe(true);
+      expect(
+        warnings.some((w) => w.includes('OTEL_NODE_DISABLED_INSTRUMENTATIONS=@opentelemetry/')),
+        'the full package name is not a working value for that env var',
+      ).toBe(false);
+      // The foreign wrapper stays in place; we do not fight over the prototype.
+      expect(proto.create).toBe(foreign);
+    } finally {
+      diag.disable();
+      proto.create = original;
+    }
+  });
+
+  it('is idempotent: patching twice does not double-instrument', async () => {
+    const client = await setup(() => chatCompletion());
+    const instr = new OpenAIInstrumentation({ enabled: false, client: h.client });
+    const second = patchOpenAI(instr);
+
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    second();
+    expect(chatSpans(h)).toHaveLength(1);
+  });
+});

@@ -31,6 +31,11 @@
       "import": "./dist/integrations/vercel-ai-sdk/index.js",
       "require": "./dist/cjs/integrations/vercel-ai-sdk/index.js"
     },
+    "./openai/instrumentation": {
+      "types": "./dist/integrations/openai/instrumentation.d.ts",
+      "import": "./dist/integrations/openai/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai/instrumentation.js"
+    },
     "./openai": {
       "types": "./dist/integrations/openai/index.d.ts",
       "import": "./dist/integrations/openai/index.js",
@@ -97,7 +102,7 @@
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0",
     "ai": "^7.0.0",
-    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0"
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": {
