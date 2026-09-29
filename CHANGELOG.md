@@ -6,6 +6,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-29
+
 ### Added
 - Claude Agent SDK adapter. `ClaudeAgentSdkInstrumentation`
   (`@genai-otel/core/claude-agent-sdk/instrumentation`) patches the SDK's `query`
@@ -22,6 +24,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   span attributes (`rec.setAttributes(...)`).
 
 ### Fixed
+- Vercel AI SDK adapter: implement `Telemetry.executeTool` so work inside
+  `tool.execute` (auto-instrumented HTTP/undici, nested generations, …) parents
+  under the matching `execute_tool` span. Previously `withActiveContext` was only
+  used when *creating* the tool span, so downstream client spans attached to an
+  ambient ancestor instead.
 - `no_tool_content` now strips tool arguments and results from `chat` spans in every
   adapter, as it already did on `invoke_agent` spans. Before, they still appeared in
   `chat` input and output messages under the default mode.

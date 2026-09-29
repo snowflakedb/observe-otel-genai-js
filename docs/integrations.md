@@ -89,7 +89,7 @@ registerTelemetry(
 await generateObject({ model: openai('gpt-4o'), schema, system, messages, telemetry: { functionId: 'query-card' } });
 ```
 
-`options.emitOperationSpan` (`boolean | (event) => boolean`, default `true`) controls whether the `invoke_agent` operation span wraps the steps. Correlation across concurrent calls uses the AI SDK `callId` on every lifecycle event; span parenting composes `RecorderBase.withActiveContext`. Model-call failures are attributed to the owning operation via `executeLanguageModelCall` (the only error signal carrying a `callId`).
+`options.emitOperationSpan` (`boolean | (event) => boolean`, default `true`) controls whether the `invoke_agent` operation span wraps the steps. Correlation across concurrent calls uses the AI SDK `callId` on every lifecycle event; span parenting composes `RecorderBase.withActiveContext`. Model-call failures are attributed to the owning operation via `executeLanguageModelCall` (the only error signal carrying a `callId`). Tool bodies run under the matching `execute_tool` span via `executeTool`, so auto-instrumented HTTP (and nested `generateText`) inside a tool parent under that span rather than an ambient ancestor.
 
 ## OpenAI SDK
 
