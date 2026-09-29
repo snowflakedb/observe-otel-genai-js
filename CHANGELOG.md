@@ -6,6 +6,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-29
+
 ### Added
 - Claude Agent SDK adapter. `ClaudeAgentSdkInstrumentation`
   (`@genai-otel/core/claude-agent-sdk/instrumentation`) patches the SDK's `query`
