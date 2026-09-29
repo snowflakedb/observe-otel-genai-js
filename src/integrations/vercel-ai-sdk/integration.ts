@@ -6,10 +6,14 @@
  * in the process emits genai-otel spans — no per-call-site wiring.
  *
  * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) →
- * `execute_tool` (per tool). Parenting is achieved without AsyncLocalStorage:
- * the operation span is opened in `onStart`, and every child span's *creation*
- * is wrapped in the parent recorder's `withActiveContext`, which installs the
- * parent as the active OTel span for the synchronous `startSpan` call.
+ * `execute_tool` (per tool). Parenting is achieved without a library-owned
+ * AsyncLocalStorage: the operation span is opened in `onStart`, and every child
+ * span's *creation* is wrapped in the parent recorder's `withActiveContext`,
+ * which installs the parent as the active OTel span for the synchronous
+ * `startSpan` call. Separately, `executeTool` re-activates the `execute_tool`
+ * span for the duration of `tool.execute` so auto-instrumented work inside the
+ * tool (HTTP/undici, nested `generateText`, …) parents under that span rather
+ * than an ambient ancestor.
  *
  * Correlation: every lifecycle event carries a `callId`; per-operation state is
  * keyed on it, so concurrent operations stay isolated.
@@ -307,6 +311,27 @@ class GenaiTelemetry {
   }
 
   /**
+   * Runs `tool.execute` with the matching `execute_tool` span installed as the
+   * active OTel span. The AI SDK calls this between `onToolExecutionStart` and
+   * `onToolExecutionEnd`, so the recorder is already in `op.tools`. Without this,
+   * auto-instrumented work inside the tool (HTTP clients, nested generations)
+   * would parent under whatever ambient context was active when the operation
+   * started — typically a request/agent ancestor, not the tool span.
+   *
+   * Falls through to bare `execute()` when the recorder is missing (unknown
+   * callId/toolCallId, or a tool path that skipped `onToolExecutionStart`).
+   */
+  async executeTool<T>(
+    callId: string,
+    toolCallId: string,
+    execute: () => PromiseLike<T>,
+  ): Promise<T> {
+    const rec = this.ops.get(callId)?.tools.get(toolCallId);
+    if (!rec) return await execute();
+    return await rec.withActiveContext(() => execute());
+  }
+
+  /**
    * Best-effort fallback for the untyped `onError` (no callId): if exactly one
    * operation is open, attribute the error to it. With zero or multiple open
    * operations the error cannot be safely attributed and is skipped (the
@@ -473,5 +498,6 @@ export function genaiTelemetryIntegration(
     onError: (e) => impl.onError(e),
     executeLanguageModelCall: ({ callId, execute }) =>
       impl.executeLanguageModelCall(callId, execute),
+    executeTool: ({ callId, toolCallId, execute }) => impl.executeTool(callId, toolCallId, execute),
   };
 }

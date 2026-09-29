@@ -1,3 +1,4 @@
+import { trace } from '@opentelemetry/api';
 import { generateObject, generateText, registerTelemetry, streamText, tool } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -207,6 +208,80 @@ describe('genaiTelemetryIntegration', () => {
       (c) => c.spanContext().spanId === toolSpan!.parentSpanContext?.spanId,
     );
     expect(toolParent).toBeDefined();
+  });
+
+  it('parents spans created inside tool.execute under the execute_tool span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => {
+              // Stand-in for auto-instrumented HTTP/undici work kicked off after
+              // an await — must nest under execute_tool, not an ambient ancestor.
+              await Promise.resolve();
+              const child = trace.getTracer('genai-otel-test').startSpan('tool.downstream');
+              child.end();
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const toolSpan = oneByName(h, 'execute_tool');
+    const downstream = oneByName(h, 'tool.downstream');
+    expect(toolSpan).toBeDefined();
+    expect(downstream).toBeDefined();
+    expect(downstream!.parentSpanContext?.spanId).toBe(toolSpan!.spanContext().spanId);
+  });
+
+  it('parents nested generateText inside tool.execute under the execute_tool span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => {
+              await generateText({
+                model: textStreamModel('nested', 'mock', 'nested-gen'),
+                prompt: 'from tool',
+              });
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(toolSpan).toBeDefined();
+    const nestedAgent = h.spans
+      .getFinishedSpans()
+      .find(
+        (s) =>
+          s.name.startsWith('invoke_agent') &&
+          s.parentSpanContext?.spanId === toolSpan!.spanContext().spanId,
+      );
+    expect(nestedAgent).toBeDefined();
+    const nestedChat = h.spans
+      .getFinishedSpans()
+      .find(
+        (s) =>
+          s.name.startsWith('chat') &&
+          s.parentSpanContext?.spanId === nestedAgent!.spanContext().spanId,
+      );
+    expect(nestedChat).toBeDefined();
   });
 
   it('keeps two concurrent operations isolated via callId', async () => {
