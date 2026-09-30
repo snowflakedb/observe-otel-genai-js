@@ -26,14 +26,26 @@ import {
 } from '../../models/message.js';
 import { OP_CHAT } from '../../semconv.js';
 import {
+  type ApiPromiseLike,
+  finalizeSpanOnRequestError,
+  isApiPromiseLike,
+} from '../_common/api-promise.js';
+import {
   type AdapterCallOptions,
   createMetadataAccessor,
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
-import { wrapProviderStream } from '../_common/stream.js';
+import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 
 /** Per-call metadata that can be attached via `withMetadata(params, opts)`. */
 export type OpenAIAdapterOptions = AdapterCallOptions;
+
+/** Recorder returned by {@link Client.startGeneration}. */
+type ChatRecorder = ReturnType<Client['startGeneration']>;
+/** Recorder returned by {@link Client.startEmbedding}. */
+type EmbeddingRecorder = ReturnType<Client['startEmbedding']>;
+/** Chat completion streamed chunk. */
+type ChatChunk = OpenAI.Chat.Completions.ChatCompletionChunk;
 
 const accessor = createMetadataAccessor<OpenAIAdapterOptions>('@genai-otel/openai-metadata');
 export const withMetadata = accessor.withMetadata;
@@ -102,8 +114,79 @@ export async function runChatCompletion(
   options: OpenAIAdapterOptions,
 ): Promise<unknown> {
   const isStream = (params as { stream?: boolean }).stream === true;
+  const seed = buildChatSeed(params, options);
 
-  const seed: GenerationStart = {
+  if (isStream) {
+    const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapOpenAIInput(params.messages) });
+    let stream: AsyncIterable<ChatChunk>;
+    try {
+      stream = (await invoke(params)) as AsyncIterable<ChatChunk>;
+    } catch (err) {
+      rec.setCallError(err);
+      await rec.end();
+      throw err;
+    }
+    return wrapProviderStream<typeof stream, ChatChunk>(stream, chatStreamHandlers(rec));
+  }
+
+  await using rec = client.startGeneration(seed);
+  try {
+    const result = (await invoke(params)) as ChatCompletionsResult;
+    recordChatResult(rec, params, result);
+    return result;
+  } catch (err) {
+    rec.setCallError(err);
+    throw err;
+  }
+}
+
+/**
+ * Instrument a `chat.completions.create` call while preserving the SDK's
+ * `APIPromise`, so `.withResponse()` / `.asResponse()` — and helpers that rely
+ * on them — keep working. Recording happens in the `_thenUnwrap` transform (runs
+ * when the caller consumes the result); request failures are finalized via
+ * {@link finalizeSpanOnRequestError}, since the transform only runs on success.
+ *
+ * @internal
+ */
+export function instrumentChatCompletionApiPromise(
+  client: Client,
+  apiPromise: ApiPromiseLike<unknown>,
+  params: ChatCompletionsCreateParams,
+  options: OpenAIAdapterOptions,
+): unknown {
+  const isStream = (params as { stream?: boolean }).stream === true;
+  const seed = buildChatSeed(params, options);
+
+  if (isStream) {
+    const rec = client.startStreamingGeneration(seed);
+    rec.setResult({ input: mapOpenAIInput(params.messages) });
+    const handlers = chatStreamHandlers(rec);
+    finalizeSpanOnRequestError(apiPromise, rec);
+    return apiPromise._thenUnwrap((stream) =>
+      wrapProviderStream<AsyncIterable<ChatChunk>, ChatChunk>(
+        stream as AsyncIterable<ChatChunk>,
+        handlers,
+      ),
+    );
+  }
+
+  const rec = client.startGeneration(seed);
+  finalizeSpanOnRequestError(apiPromise, rec);
+  return apiPromise._thenUnwrap((result) => {
+    recordChatResult(rec, params, result as ChatCompletionsResult);
+    void rec.end();
+    return result;
+  });
+}
+
+/** Builds the recorder seed (span attributes) from the chat request params. */
+function buildChatSeed(
+  params: ChatCompletionsCreateParams,
+  options: OpenAIAdapterOptions,
+): GenerationStart {
+  return {
     model: { provider: 'openai', name: params.model },
     operationName: OP_CHAT,
     maxTokens:
@@ -123,90 +206,83 @@ export async function runChatCompletion(
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   };
+}
 
-  if (isStream) {
-    const rec = client.startStreamingGeneration(seed);
-    rec.setResult({ input: mapOpenAIInput(params.messages) });
-    let firstTokenSeen = false;
-    let finalUsage: ChatUsageShape | undefined;
-    let finalModel: string | undefined;
-    let finalFinishReason: string | undefined;
-    let finalId: string | undefined;
-    let outputText = '';
-    const toolAcc = new Map<number, { id?: string; name?: string; args: string }>();
+/** Records the result of a non-streaming chat completion onto the recorder. */
+function recordChatResult(
+  rec: ChatRecorder,
+  params: ChatCompletionsCreateParams,
+  result: ChatCompletionsResult,
+): void {
+  rec.setResult({
+    responseId: result.id,
+    responseModel: result.model,
+    stopReason: result.choices?.[0]?.finish_reason,
+    usage: mapUsage(result.usage),
+    input: mapOpenAIInput(params.messages),
+    output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
+  });
+}
 
-    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    try {
-      stream = (await invoke(params)) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    } catch (err) {
-      rec.setCallError(err);
-      await rec.end();
-      throw err;
-    }
+/**
+ * Builds the streaming {@link StreamWrapOptions} for a chat completion: observes
+ * chunks for TTFT, accumulated text/tool-calls, and final usage, then finalizes
+ * the recorder on completion / error / abandonment.
+ */
+function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
+  let firstTokenSeen = false;
+  let finalUsage: ChatUsageShape | undefined;
+  let finalModel: string | undefined;
+  let finalFinishReason: string | undefined;
+  let finalId: string | undefined;
+  let outputText = '';
+  const toolAcc = new Map<number, { id?: string; name?: string; args: string }>();
 
-    return wrapProviderStream<typeof stream, OpenAI.Chat.Completions.ChatCompletionChunk>(stream, {
-      onChunk: (chunk) => {
-        if (!firstTokenSeen) {
-          firstTokenSeen = true;
-          rec.setFirstTokenAt(Date.now());
-        }
-        if (chunk.usage) finalUsage = chunk.usage;
-        if (chunk.model) finalModel = chunk.model;
-        if (chunk.id) finalId = chunk.id;
-        const finish = chunk.choices?.[0]?.finish_reason;
-        if (finish) finalFinishReason = finish;
-        const delta = chunk.choices?.[0]?.delta as OAStreamDelta | undefined;
-        if (delta) {
-          if (typeof delta.content === 'string') outputText += delta.content;
-          if (Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              const entry = toolAcc.get(idx) ?? { args: '' };
-              if (tc.id) entry.id = tc.id;
-              if (tc.function?.name) entry.name = tc.function.name;
-              if (typeof tc.function?.arguments === 'string') entry.args += tc.function.arguments;
-              toolAcc.set(idx, entry);
-            }
+  return {
+    onChunk: (chunk) => {
+      if (!firstTokenSeen) {
+        firstTokenSeen = true;
+        rec.setFirstTokenAt(Date.now());
+      }
+      if (chunk.usage) finalUsage = chunk.usage;
+      if (chunk.model) finalModel = chunk.model;
+      if (chunk.id) finalId = chunk.id;
+      const finish = chunk.choices?.[0]?.finish_reason;
+      if (finish) finalFinishReason = finish;
+      const delta = chunk.choices?.[0]?.delta as OAStreamDelta | undefined;
+      if (delta) {
+        if (typeof delta.content === 'string') outputText += delta.content;
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            const entry = toolAcc.get(idx) ?? { args: '' };
+            if (tc.id) entry.id = tc.id;
+            if (tc.function?.name) entry.name = tc.function.name;
+            if (typeof tc.function?.arguments === 'string') entry.args += tc.function.arguments;
+            toolAcc.set(idx, entry);
           }
         }
-      },
-      onComplete: async () => {
-        rec.setResult({
-          responseId: finalId,
-          responseModel: finalModel,
-          stopReason: finalFinishReason,
-          usage: mapUsage(finalUsage),
-          output: buildStreamOutputMessages(outputText, toolAcc),
-        });
-        await rec.end();
-      },
-      onError: async (err) => {
-        rec.setCallError(err);
-        await rec.end();
-      },
-      onAbandoned: async () => {
-        rec.setCallError(new Error('openai stream was never consumed'));
-        await rec.end();
-      },
-    });
-  }
-
-  await using rec = client.startGeneration(seed);
-  try {
-    const result = (await invoke(params)) as ChatCompletionsResult;
-    rec.setResult({
-      responseId: result.id,
-      responseModel: result.model,
-      stopReason: result.choices?.[0]?.finish_reason,
-      usage: mapUsage(result.usage),
-      input: mapOpenAIInput(params.messages),
-      output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
-    });
-    return result;
-  } catch (err) {
-    rec.setCallError(err);
-    throw err;
-  }
+      }
+    },
+    onComplete: async () => {
+      rec.setResult({
+        responseId: finalId,
+        responseModel: finalModel,
+        stopReason: finalFinishReason,
+        usage: mapUsage(finalUsage),
+        output: buildStreamOutputMessages(outputText, toolAcc),
+      });
+      await rec.end();
+    },
+    onError: async (err) => {
+      rec.setCallError(err);
+      await rec.end();
+    },
+    onAbandoned: async () => {
+      rec.setCallError(new Error('openai stream was never consumed'));
+      await rec.end();
+    },
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -247,7 +323,42 @@ export async function runEmbedding(
   params: EmbeddingCreateParams,
   options: OpenAIAdapterOptions,
 ): Promise<EmbeddingResult> {
-  await using rec = client.startEmbedding({
+  await using rec = client.startEmbedding(buildEmbeddingSeed(params, options));
+  try {
+    const result = await invoke(params);
+    recordEmbeddingResult(rec, params, result);
+    return result;
+  } catch (err) {
+    rec.setCallError(err);
+    throw err;
+  }
+}
+
+/**
+ * Instrument an `embeddings.create` call while preserving the SDK's
+ * `APIPromise` (so `.withResponse()` / `.asResponse()` keep working). Mirrors
+ * {@link instrumentChatCompletionApiPromise}; embeddings are never streamed.
+ *
+ * @internal
+ */
+export function instrumentEmbeddingApiPromise(
+  client: Client,
+  apiPromise: ApiPromiseLike<unknown>,
+  params: EmbeddingCreateParams,
+  options: OpenAIAdapterOptions,
+): unknown {
+  const rec = client.startEmbedding(buildEmbeddingSeed(params, options));
+  finalizeSpanOnRequestError(apiPromise, rec);
+  return apiPromise._thenUnwrap((result) => {
+    recordEmbeddingResult(rec, params, result as EmbeddingResult);
+    void rec.end();
+    return result;
+  });
+}
+
+/** Builds the embedding recorder seed from the request params. */
+function buildEmbeddingSeed(params: EmbeddingCreateParams, options: OpenAIAdapterOptions) {
+  return {
     model: { provider: 'openai', name: params.model },
     agentName: options.agentName,
     agentVersion: options.agentVersion,
@@ -255,27 +366,27 @@ export async function runEmbedding(
     encodingFormat: params.encoding_format,
     tags: options.tags,
     metadata: options.metadata,
-  });
+  };
+}
 
-  try {
-    const result = await invoke(params);
-    const inputs = Array.isArray(params.input)
-      ? params.input.filter((v): v is string => typeof v === 'string')
-      : typeof params.input === 'string'
-        ? [params.input]
-        : undefined;
-    rec.setResult({
-      inputCount: Array.isArray(params.input) ? params.input.length : 1,
-      inputTokens: result.usage?.prompt_tokens,
-      dimensions: result.data?.[0]?.embedding?.length,
-      responseModel: result.model,
-      inputTexts: inputs,
-    });
-    return result;
-  } catch (err) {
-    rec.setCallError(err);
-    throw err;
-  }
+/** Records the result of an embedding call onto the recorder. */
+function recordEmbeddingResult(
+  rec: EmbeddingRecorder,
+  params: EmbeddingCreateParams,
+  result: EmbeddingResult,
+): void {
+  const inputs = Array.isArray(params.input)
+    ? params.input.filter((v): v is string => typeof v === 'string')
+    : typeof params.input === 'string'
+      ? [params.input]
+      : undefined;
+  rec.setResult({
+    inputCount: Array.isArray(params.input) ? params.input.length : 1,
+    inputTokens: result.usage?.prompt_tokens,
+    dimensions: result.data?.[0]?.embedding?.length,
+    responseModel: result.model,
+    inputTexts: inputs,
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -314,15 +425,15 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
-        return (params: ChatCompletionsCreateParams) => {
+        return (params: ChatCompletionsCreateParams, ...rest: unknown[]) => {
           const options = readMetadata(params);
           stripMetadata(params);
-          return runChatCompletion(
-            client,
-            (p) => openai.chat.completions.create(p) as Promise<unknown>,
-            params,
-            options,
-          );
+          const create = openai.chat.completions.create as (...a: unknown[]) => unknown;
+          const raw = create.call(openai.chat.completions, params, ...rest);
+          if (isApiPromiseLike(raw)) {
+            return instrumentChatCompletionApiPromise(client, raw, params, options);
+          }
+          return raw;
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -335,10 +446,15 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
-        return (params: EmbeddingCreateParams) => {
+        return (params: EmbeddingCreateParams, ...rest: unknown[]) => {
           const options = readMetadata(params);
           stripMetadata(params);
-          return runEmbedding(client, (p) => openai.embeddings.create(p), params, options);
+          const create = openai.embeddings.create as (...a: unknown[]) => unknown;
+          const raw = create.call(openai.embeddings, params, ...rest);
+          if (isApiPromiseLike(raw)) {
+            return instrumentEmbeddingApiPromise(client, raw, params, options);
+          }
+          return raw;
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -371,9 +487,12 @@ export function patchChatCompletionsCreate(
       // Instrumentation-level defaults, overridable per call via withMetadata().
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
-      const invoke: ChatCompletionsInvoke = (p) =>
-        Promise.resolve(original.apply(this, [p, ...rest]));
-      return runChatCompletion(client, invoke, params, options);
+      const raw = original.apply(this, [params, ...rest]);
+      if (isApiPromiseLike(raw)) {
+        return instrumentChatCompletionApiPromise(client, raw, params, options);
+      }
+      // Only a real SDK client returns an `APIPromise`; anything else passes through.
+      return raw;
     };
 }
 
@@ -393,9 +512,12 @@ export function patchEmbeddingsCreate(
       const rest = args.slice(1);
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
-      const invoke: EmbeddingsInvoke = (p) =>
-        Promise.resolve(original.apply(this, [p, ...rest])) as Promise<EmbeddingResult>;
-      return runEmbedding(client, invoke, params, options);
+      const raw = original.apply(this, [params, ...rest]);
+      if (isApiPromiseLike(raw)) {
+        return instrumentEmbeddingApiPromise(client, raw, params, options);
+      }
+      // Only a real SDK client returns an `APIPromise`; anything else passes through.
+      return raw;
     };
 }
 
