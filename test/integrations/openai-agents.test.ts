@@ -843,6 +843,40 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(agentSpans()).toHaveLength(1);
   });
 
+  it('leaves wrappers it deferred to in place when disabled', () => {
+    // Another library already wrapped these, so patching skips them, and disabling
+    // must not remove them either. Shimmer-style markers, as `isWrapped` expects.
+    const targets = [
+      [Agents.Runner.prototype, 'run'],
+      [Agents.OpenAIResponsesModel.prototype, 'getResponse'],
+    ] as unknown as [Record<string, unknown>, string][];
+    const originals = targets.map(([target, name]) => target[name]);
+    const foreign = targets.map(([target, name]) => {
+      const original = target[name] as (...args: unknown[]) => unknown;
+      const wrapper = function (this: unknown, ...args: unknown[]) {
+        return original.apply(this, args);
+      };
+      const unwrap = () => {
+        target[name] = original;
+      };
+      Object.assign(wrapper, { __original: original, __unwrap: unwrap, __wrapped: true });
+      target[name] = wrapper;
+      return wrapper;
+    });
+
+    try {
+      const agents = new OpenAIAgentsInstrumentation({ enabled: false, client: h.client });
+      agents.manuallyInstrument(Agents);
+      agents.disable();
+
+      expect(targets.map(([target, name]) => target[name])).toEqual(foreign);
+    } finally {
+      targets.forEach(([target, name], i) => {
+        target[name] = originals[i];
+      });
+    }
+  });
+
   it('keeps the run working when tracing is disabled', async () => {
     // The run has to succeed with the SDK's tracing switch off. `beforeEach` turned
     // tracing on for every test, so this one turns it back off to exercise the

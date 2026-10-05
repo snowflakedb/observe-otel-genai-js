@@ -90,6 +90,8 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
   private getCurrentSdkSpan?: CurrentSpan;
   private getCurrentSdkTrace?: () => SdkTrace | null;
   private readonly manualModules = new Set<object>();
+  /** The wrappers this instance installed; unpatching removes only these. */
+  private readonly ownWrappers = new WeakSet<object>();
 
   constructor(config: OpenAIAgentsInstrumentationConfig = {}) {
     super('@genai-otel/instrumentation-openai-agents', VERSION, config);
@@ -207,8 +209,12 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     void this.processorInstance?.stop();
   }
 
-  /** Ends every open span, flushes, and shuts down a client this instrumentation created. */
+  /**
+   * Unpatches, ends every open span, flushes, and shuts down a client this
+   * instrumentation created.
+   */
   async shutdown(timeout?: number): Promise<void> {
+    this.disable();
     await this.processorInstance?.stop(timeout);
     await this.ownedClient?.shutdown();
   }
@@ -227,10 +233,8 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
   }
 
   private unpatchCore(exports?: AgentsCoreExports): void {
-    if (exports?.Runner && isWrapped(exports.Runner.prototype.run)) {
-      this._unwrap(exports.Runner.prototype, 'run');
-    }
-    if (exports && isWrapped(exports.withTrace)) this._unwrap(exports, 'withTrace');
+    if (exports?.Runner) this.unwrapOwn(exports.Runner.prototype, 'run');
+    if (exports) this.unwrapOwn(exports, 'withTrace');
   }
 
   private registerProcessor(exports: AgentsCoreExports): void {
@@ -246,7 +250,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     const prototype = exports.Runner?.prototype;
     if (!prototype || isWrapped(prototype.run)) return;
     const instrumentation = this;
-    this._wrap(prototype, 'run', (original: Fn) => {
+    this.wrapOwn(prototype, 'run', (original: Fn) => {
       return function run(this: unknown, ...args: unknown[]) {
         const processor = instrumentation.processor;
         const [, , options] = args as [unknown, unknown, { stream?: boolean } | undefined];
@@ -265,7 +269,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     const descriptor = Object.getOwnPropertyDescriptor(exports, 'withTrace');
     if (!descriptor?.configurable || isWrapped(exports.withTrace)) return;
     const instrumentation = this;
-    this._wrap(exports, 'withTrace', (original: Fn) => {
+    this.wrapOwn(exports, 'withTrace', (original: Fn) => {
       return function withTrace(this: unknown, ...args: unknown[]) {
         const [name, callback, ...rest] = args as [unknown, Fn, ...unknown[]];
         const guarded = async (trace: { traceId: string }) => {
@@ -284,7 +288,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
   private patchTools(exports: ToolModuleExports): ToolModuleExports {
     if (!exports.invokeFunctionTool || isWrapped(exports.invokeFunctionTool)) return exports;
     const instrumentation = this;
-    this._wrap(exports, 'invokeFunctionTool', (original: Fn) => {
+    this.wrapOwn(exports, 'invokeFunctionTool', (original: Fn) => {
       return function invokeFunctionTool(this: unknown, ...args: unknown[]) {
         const processor = instrumentation.processorInstance;
         if (!processor) return original.apply(this, args);
@@ -296,8 +300,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
   }
 
   private unpatchTools(exports?: ToolModuleExports): void {
-    if (exports && isWrapped(exports.invokeFunctionTool))
-      this._unwrap(exports, 'invokeFunctionTool');
+    if (exports) this.unwrapOwn(exports, 'invokeFunctionTool');
   }
 
   // ---------------------------------------------------------------------------
@@ -310,7 +313,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
       if (!prototype) continue;
       for (const method of MODEL_METHODS) {
         if (isWrapped(prototype[method])) continue;
-        this._wrap(prototype, method, (original: Fn) =>
+        this.wrapOwn(prototype, method, (original: Fn) =>
           wrapModelMethod(
             method,
             original,
@@ -327,10 +330,26 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     for (const name of MODEL_CLASSES) {
       const prototype = exports?.[name]?.prototype;
       if (!prototype) continue;
-      for (const method of MODEL_METHODS) {
-        if (isWrapped(prototype[method])) this._unwrap(prototype, method);
-      }
+      for (const method of MODEL_METHODS) this.unwrapOwn(prototype, method);
     }
+  }
+
+  /** `_wrap`, remembering the wrapper so {@link unwrapOwn} removes only ours. */
+  private wrapOwn<T extends object, K extends keyof T>(
+    target: T,
+    name: K,
+    wrapper: (original: T[K]) => T[K],
+  ): void {
+    this._wrap(target, name, wrapper);
+    this.ownWrappers.add(target[name] as object);
+  }
+
+  /**
+   * Unwraps `target[name]` only while it is still a wrapper this instance put
+   * there, never one it deferred to (another library's, or another instance's).
+   */
+  private unwrapOwn<T extends object>(target: T, name: keyof T): void {
+    if (this.ownWrappers.has(target[name] as object)) this._unwrap(target, name);
   }
 }
 
