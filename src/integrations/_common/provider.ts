@@ -6,6 +6,7 @@
  * `openai`). And `vertex` must precede `xai`, because `vertexai` contains `xai`.
  */
 const PROVIDER_MATCHES: readonly (readonly [readonly string[], string])[] = [
+  [['snowflake'], 'snowflake'],
   [['azureai'], 'azure.ai.inference'],
   [['azure'], 'azure.ai.openai'],
   [['bedrock'], 'aws.bedrock'],
