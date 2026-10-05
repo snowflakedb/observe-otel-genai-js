@@ -111,7 +111,7 @@ function buildResponsesSeed(
   };
 }
 
-/** Records a non-streaming Responses result onto the recorder. */
+/** Records a final Responses result onto the recorder, streamed or not. */
 function recordResponseResult(
   rec: GenerationRecorder,
   params: ResponseCreateParams,
@@ -125,18 +125,41 @@ function recordResponseResult(
     input: mapResponsesInput(params),
     output: mapResponsesOutput(result.output),
   });
+  if (result.status === 'failed' || result.error) {
+    rec.setCallError(responsesError(result.error?.code, result.error?.message));
+  }
+}
+
+/**
+ * Builds the error for a failure the Responses API reports inside a 200 (a stream
+ * `error` event, or a response with `status: "failed"`). With no HTTP status to
+ * classify by, `status` is derived from the error code: 429 for rate limits and
+ * exhausted quota, 500 for server errors or a missing code, and 400 for the rest,
+ * which are all problems with the input (bad image, invalid prompt, content policy).
+ */
+function responsesError(code: string | null | undefined, message: string | undefined): Error {
+  const err = new Error([code, message].filter(Boolean).join(': ') || 'response failed');
+  return Object.assign(err, { code, status: responsesErrorStatus(code) });
+}
+
+function responsesErrorStatus(code: string | null | undefined): number {
+  if (code === 'rate_limit_exceeded' || code === 'insufficient_quota') return 429;
+  if (!code || code === 'server_error') return 500;
+  return 400;
 }
 
 /**
  * Streaming handlers. The Responses stream is a union of named events, and these
- * handlers watch for two of them:
+ * handlers watch for three of them:
  *  - the first `*.delta` (text, reasoning, or tool-call arguments), which marks
  *    TTFT,
+ *  - `error`, a failure reported mid-stream. The SDK only throws for a top-level
+ *    `error` field, which this event lacks, so it arrives as an ordinary chunk,
  *  - `response.completed` / `.incomplete` / `.failed`, which carry the full
  *    `Response` object and so hand over output items and usage with no
  *    accumulation.
  *
- * That second point keeps this shorter than the Chat Completions streaming
+ * That last point keeps this shorter than the Chat Completions streaming
  * handler: OpenAI assembles the response for us, so there is nothing to stitch
  * together from deltas.
  */
@@ -146,10 +169,28 @@ function responsesStreamHandlers(
 ): StreamWrapOptions<ResponseStreamEvent> {
   let firstTokenSeen = false;
   let finalResponse: ResponseResult | undefined;
+  let streamError: Error | undefined;
+
+  const finish = async ({ abandoned = false, error }: { abandoned?: boolean; error?: unknown }) => {
+    if (finalResponse) recordResponseResult(rec, params, finalResponse);
+    // The most specific cause wins: the final response's own error, then the
+    // `error` event, then a transport error.
+    const cause = streamError ?? error;
+    if (cause && !finalResponse?.error) rec.setCallError(cause);
+    // Leaving the loop after the final response or an error is not abandonment.
+    if (abandoned && !finalResponse && !streamError) {
+      rec.setCallError(new Error('openai responses stream was never consumed'));
+    }
+    await rec.end();
+  };
 
   return {
     onChunk: (event) => {
       const type = (event as { type?: string }).type ?? '';
+      if (type === 'error') {
+        const { code, message } = event as { code?: string | null; message?: string };
+        streamError = responsesError(code, message);
+      }
       if (!firstTokenSeen && type.endsWith('.delta')) {
         firstTokenSeen = true;
         rec.setFirstTokenAt(Date.now());
@@ -164,20 +205,9 @@ function responsesStreamHandlers(
         finalResponse = withResponse.response;
       }
     },
-    onComplete: async () => {
-      if (finalResponse) {
-        recordResponseResult(rec, params, finalResponse);
-      }
-      await rec.end();
-    },
-    onError: async (err) => {
-      rec.setCallError(err);
-      await rec.end();
-    },
-    onAbandoned: async () => {
-      rec.setCallError(new Error('openai responses stream was never consumed'));
-      await rec.end();
-    },
+    onComplete: () => finish({}),
+    onError: (err) => finish({ error: err }),
+    onAbandoned: () => finish({ abandoned: true }),
   };
 }
 

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import {
+  ATTR_ERROR_CATEGORY,
   ATTR_OPERATION_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
@@ -43,12 +44,32 @@ function brokenJsonResponse(): Response {
   });
 }
 
-function sseResponse(chunks: unknown[]): Response {
-  const lines = [...chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`), 'data: [DONE]\n\n'];
+/** A Responses stream `error` event, which carries no top-level `error` field. */
+function errorEvent(code: string, message: string) {
+  return { type: 'error', code, message, param: null, sequence_number: 1 };
+}
+
+/** A Responses result that failed with `code`, keeping the default usage. */
+function failedResponse(code: string, id?: string) {
+  return {
+    ...responsesMessage({ id }),
+    status: 'failed',
+    error: { code, message: 'something went wrong' },
+  };
+}
+
+/** An SSE response. With `dropConnection`, the body errors after the chunks instead of ending. */
+function sseResponse(chunks: unknown[], { dropConnection = false } = {}): Response {
+  const lines = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`);
+  if (!dropConnection) lines.push('data: [DONE]\n\n');
+  // Hand out one line per read, so a dropped connection errors only after the
+  // chunks were delivered (erroring discards anything still queued).
   const body = new ReadableStream({
-    start(c) {
-      for (const l of lines) c.enqueue(new TextEncoder().encode(l));
-      c.close();
+    pull(c) {
+      const line = lines.shift();
+      if (line !== undefined) c.enqueue(new TextEncoder().encode(line));
+      else if (dropConnection) c.error(new Error('socket hang up'));
+      else c.close();
     },
   });
   return new Response(body, {
@@ -363,5 +384,226 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
+  });
+
+  // The failures below arrive inside a 200, so only the response content says the call failed.
+  it('records a streamed Responses error event as a failed call', async () => {
+    nextResponse = () =>
+      sseResponse([
+        { type: 'response.output_text.delta', delta: 'he', sequence_number: 1 },
+        errorEvent('server_error', 'boom'),
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const _ of stream) {
+      // drain
+    }
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBe('provider_call_error');
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('server_error');
+  });
+
+  it('keeps the error event when the caller throws out of the loop on it', async () => {
+    nextResponse = () => sseResponse([errorEvent('rate_limit_exceeded', 'slow down')]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    await expect(async () => {
+      for await (const ev of stream) {
+        if (ev.type === 'error') throw new Error(ev.message);
+      }
+    }).rejects.toThrow('slow down');
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('rate_limit');
+    expect(span?.status.message).toContain('slow down');
+  });
+
+  it('keeps the error event over a later failed response with no error detail', async () => {
+    const failed = { ...responsesMessage(), status: 'failed', error: null };
+    nextResponse = () =>
+      sseResponse([
+        errorEvent('rate_limit_exceeded', 'slow down'),
+        { type: 'response.failed', response: failed, sequence_number: 2 },
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const _ of stream) {
+      // drain
+    }
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('rate_limit');
+  });
+
+  it("prefers the failed response's own error over an earlier error event", async () => {
+    nextResponse = () =>
+      sseResponse([
+        errorEvent('rate_limit_exceeded', 'slow down'),
+        { type: 'response.failed', response: failedResponse('invalid_prompt'), sequence_number: 2 },
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const _ of stream) {
+      // drain
+    }
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('client_error');
+  });
+
+  it('keeps the error event when the connection drops after it', async () => {
+    nextResponse = () =>
+      sseResponse([errorEvent('rate_limit_exceeded', 'slow down')], { dropConnection: true });
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    await expect(async () => {
+      for await (const _ of stream) {
+        // drain
+      }
+    }).rejects.toThrow('socket hang up');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('rate_limit');
+  });
+
+  it('keeps the usage of a completed response when the connection drops after it', async () => {
+    nextResponse = () =>
+      sseResponse(
+        [{ type: 'response.completed', response: responsesMessage(), sequence_number: 1 }],
+        { dropConnection: true },
+      );
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    await expect(async () => {
+      for await (const _ of stream) {
+        // drain
+      }
+    }).rejects.toThrow('socket hang up');
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+  });
+
+  it('records a streamed response.failed as a failed call and keeps its usage', async () => {
+    nextResponse = () =>
+      sseResponse([
+        {
+          type: 'response.failed',
+          response: failedResponse('rate_limit_exceeded', 'resp_failed'),
+          sequence_number: 1,
+        },
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const _ of stream) {
+      // drain
+    }
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBe('provider_call_error');
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('rate_limit');
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_failed');
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+  });
+
+  it('keeps the usage of a response.failed the caller breaks out on', async () => {
+    nextResponse = () =>
+      sseResponse([
+        { type: 'response.failed', response: failedResponse('server_error'), sequence_number: 1 },
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const ev of stream) {
+      if (ev.type === 'response.failed') break;
+    }
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('server_error');
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+  });
+
+  it('records a break after response.completed as a successful call', async () => {
+    nextResponse = () =>
+      sseResponse([
+        { type: 'response.completed', response: responsesMessage(), sequence_number: 1 },
+      ]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const ev of stream) {
+      if (ev.type === 'response.completed') break;
+    }
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+  });
+
+  it('still records a break before any final response as abandoned', async () => {
+    nextResponse = () =>
+      sseResponse([{ type: 'response.output_text.delta', delta: 'he', sequence_number: 1 }]);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+    for await (const _ of stream) break;
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.status.message).toContain('never consumed');
+  });
+
+  it('records a non-streamed response with status "failed" as a failed call and keeps its usage', async () => {
+    nextResponse = () => jsonResponse(failedResponse('invalid_image', 'resp_bad_image'));
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const out = await openai.responses.create({ model: 'gpt-x', input: 'hi' });
+    await tick();
+
+    expect(out.status).toBe('failed');
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe('client_error');
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_bad_image');
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+
+    const [resource] = await h.collectMetrics();
+    const duration = resource?.scopeMetrics
+      .flatMap((scope) => scope.metrics)
+      .find((m) => m.descriptor.name === 'gen_ai.client.operation.duration');
+    expect(duration?.dataPoints[0]?.attributes['error.type']).toBe('provider_call_error');
+  });
+
+  it.each([
+    ['rate_limit_exceeded', 'rate_limit'],
+    ['insufficient_quota', 'rate_limit'],
+    ['server_error', 'server_error'],
+    ['vector_store_timeout', 'timeout'],
+    ['image_too_large', 'client_error'],
+  ])('classifies a failed response with code %s as %s', async (code, category) => {
+    nextResponse = () => jsonResponse(failedResponse(code));
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await openai.responses.create({ model: 'gpt-x', input: 'hi' });
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_ERROR_CATEGORY]).toBe(category);
   });
 });
