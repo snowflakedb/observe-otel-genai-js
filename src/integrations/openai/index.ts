@@ -12,11 +12,12 @@
  * etc.) you can pass through a `WeakMap`-keyed call site override.
  */
 
+import { diag } from '@opentelemetry/api';
 import type OpenAI from 'openai';
 
 import type { Client } from '../../client.js';
 import { ValidationError } from '../../errors.js';
-import { isApiPromiseLike } from '../_common/api-promise.js';
+import { type ApiPromiseLike, isApiPromiseLike } from '../_common/api-promise.js';
 import { isInstrumented } from '../_common/instrumented.js';
 import { type AdapterCallOptions, createMetadataAccessor } from '../_common/metadata.js';
 import { instrumentChatCompletionApiPromise, runChatCompletion } from './_chat.js';
@@ -138,10 +139,9 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
           const options = readMetadata(params);
           stripMetadata(params);
           const raw = create.call(openai.chat.completions, params, ...rest);
-          if (isApiPromiseLike(raw)) {
-            return instrumentChatCompletionApiPromise(client, raw, params, options);
-          }
-          return raw;
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentChatCompletionApiPromise(client, p, params, options),
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -160,10 +160,9 @@ function wrapResponses(client: Client, openai: OpenAI, responses: unknown) {
           const options = readMetadata(params);
           stripMetadata(params);
           const raw = create.call(openai.responses, params, ...rest);
-          if (isApiPromiseLike(raw)) {
-            return instrumentResponseApiPromise(client, raw, params, options);
-          }
-          return raw;
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentResponseApiPromise(client, p, params, options),
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -182,10 +181,9 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
           const options = readMetadata(params);
           stripMetadata(params);
           const raw = create.call(openai.embeddings, params, ...rest);
-          if (isApiPromiseLike(raw)) {
-            return instrumentEmbeddingApiPromise(client, raw, params, options);
-          }
-          return raw;
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentEmbeddingApiPromise(client, p, params, options),
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -219,11 +217,9 @@ export function patchChatCompletionsCreate(
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
-      if (isApiPromiseLike(raw)) {
-        return instrumentChatCompletionApiPromise(client, raw, params, options);
-      }
-      // Only a real SDK client returns an `APIPromise`; anything else passes through.
-      return raw;
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentChatCompletionApiPromise(client, p, params, options),
+      );
     };
 }
 
@@ -248,11 +244,9 @@ export function patchResponsesCreate(
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
-      if (isApiPromiseLike(raw)) {
-        return instrumentResponseApiPromise(client, raw, params, options);
-      }
-      // Only a real SDK client returns an `APIPromise`; anything else passes through.
-      return raw;
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentResponseApiPromise(client, p, params, options),
+      );
     };
 }
 
@@ -273,10 +267,30 @@ export function patchEmbeddingsCreate(
       const options = { ...defaults, ...readMetadata(params) };
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
-      if (isApiPromiseLike(raw)) {
-        return instrumentEmbeddingApiPromise(client, raw, params, options);
-      }
-      // Only a real SDK client returns an `APIPromise`; anything else passes through.
-      return raw;
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentEmbeddingApiPromise(client, p, params, options),
+      );
     };
+}
+
+/**
+ * Instruments what the SDK returned. The request is already on its way by now, so
+ * a telemetry failure (e.g. a `Client` that was shut down) returns the SDK's
+ * result untraced rather than breaking the caller's call.
+ */
+function instrumentOrPassThrough(
+  raw: unknown,
+  instrument: (apiPromise: ApiPromiseLike<unknown>) => unknown,
+): unknown {
+  // Only a real SDK client returns an `APIPromise`; anything else passes through.
+  if (!isApiPromiseLike(raw)) return raw;
+  try {
+    return instrument(raw);
+  } catch (err) {
+    diag.debug(
+      'genai-otel: failed to record OpenAI telemetry; returning the call untraced',
+      err instanceof Error ? err.message : String(err),
+    );
+    return raw;
+  }
 }

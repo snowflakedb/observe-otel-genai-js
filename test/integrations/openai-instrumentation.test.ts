@@ -18,8 +18,9 @@
 
 import { DiagLogLevel, diag } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isInstrumented } from '../../src/integrations/_common/instrumented.js';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
@@ -55,6 +56,47 @@ function patchOpenAI(instr: OpenAIInstrumentation): () => void {
   if (!def?.patch) throw new Error('openai module patch not found in instrumentation');
   def.patch(OpenAIModule);
   return () => def.unpatch?.(OpenAIModule);
+}
+
+type CreateHolder = { create: (...args: unknown[]) => unknown };
+
+/**
+ * Puts a shimmer-style wrapper carrying none of our markers on `proto.create`, as
+ * another library's instrumentation would. `isWrapped` requires all three
+ * markers, which is what shimmer sets; a wrapper missing any reads as unwrapped.
+ */
+function installForeignWrapper(proto: CreateHolder) {
+  const original = proto.create;
+  const foreign = function foreignWrapper(this: unknown, ...args: unknown[]) {
+    return original.apply(this, args);
+  };
+  Object.defineProperty(foreign, '__original', { value: original });
+  Object.defineProperty(foreign, '__unwrap', {
+    value: () => {
+      proto.create = original;
+    },
+  });
+  Object.defineProperty(foreign, '__wrapped', { value: true });
+  proto.create = foreign;
+  return {
+    foreign,
+    restore: () => {
+      proto.create = original;
+    },
+  };
+}
+
+/** A stand-in `openai` module exposing the three resources the instrumentation patches. */
+function fakeOpenAIModule() {
+  const resource = () =>
+    class {
+      create() {
+        return undefined;
+      }
+    };
+  return {
+    OpenAI: { Chat: { Completions: resource() }, Responses: resource(), Embeddings: resource() },
+  };
 }
 
 function chatSpans(h: Harness) {
@@ -326,22 +368,8 @@ describe('OpenAIInstrumentation', () => {
     unpatch?.();
     unpatch = undefined;
 
-    const proto = Object.getPrototypeOf(client.chat.completions) as {
-      create: (...args: unknown[]) => unknown;
-    };
-    const original = proto.create;
-    const foreign = function foreignWrapper(this: unknown, ...args: unknown[]) {
-      return original.apply(this, args);
-    };
-    // `isWrapped` requires all three markers, which is what shimmer sets. A
-    // wrapper missing any of them reads as unwrapped.
-    Object.defineProperty(foreign, '__original', { value: original });
-    Object.defineProperty(foreign, '__unwrap', {
-      value: () => {
-        proto.create = original;
-      },
-    });
-    Object.defineProperty(foreign, '__wrapped', { value: true });
+    const proto = Object.getPrototypeOf(client.chat.completions) as CreateHolder;
+    const { foreign, restore } = installForeignWrapper(proto);
 
     const warnings: string[] = [];
     const previousLogger = {
@@ -352,7 +380,6 @@ describe('OpenAIInstrumentation', () => {
       verbose: () => {},
     };
     try {
-      proto.create = foreign;
       diag.setLogger(previousLogger, DiagLogLevel.ALL);
       const instr = new OpenAIInstrumentation({ enabled: false, client: h.client });
       instr.getModuleDefinitions()[0]?.patch?.(OpenAIModule);
@@ -376,9 +403,131 @@ describe('OpenAIInstrumentation', () => {
       expect(proto.create).toBe(foreign);
     } finally {
       diag.disable();
-      proto.create = original;
+      restore();
     }
   });
+
+  it('leaves a wrapper it deferred to in place when disabled', async () => {
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+    const proto = Object.getPrototypeOf(client.chat.completions) as CreateHolder;
+    const { foreign, restore } = installForeignWrapper(proto);
+
+    try {
+      const instr = new OpenAIInstrumentation({ enabled: false, client: h.client });
+      instr.manuallyInstrument(OpenAIModule);
+      instr.disable();
+
+      expect(proto.create).toBe(foreign);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not remove another instance's patch when disabled", async () => {
+    const client = await setup(() => chatCompletion());
+    const second = new OpenAIInstrumentation({ enabled: false, client: h.client });
+    second.manuallyInstrument(OpenAIModule);
+    second.disable();
+
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(chatSpans(h)).toHaveLength(1);
+  });
+
+  it('unpatches every copy of openai it patched, not only the last one loaded', () => {
+    // Two copies of the module can be loaded side by side, e.g. the app's and the
+    // one @openai/agents-core depends on. OTel's hook remembers only the last.
+    const copies = [fakeOpenAIModule(), fakeOpenAIModule()];
+    const instr = new OpenAIInstrumentation({ enabled: false, client: h.client });
+    const def = instr.getModuleDefinitions()[0];
+    for (const copy of copies) def?.patch?.(copy);
+    expect(
+      copies.every((copy) => isInstrumented(copy.OpenAI.Chat.Completions.prototype.create)),
+    ).toBe(true);
+
+    instr.disable();
+
+    expect(
+      copies.some((copy) => isInstrumented(copy.OpenAI.Chat.Completions.prototype.create)),
+    ).toBe(false);
+  });
+
+  it('unpatches on shutdown, so later calls go straight to the SDK', async () => {
+    server = await startFakeOpenAI(() => chatCompletion());
+    // No `client` in config, so the instrumentation builds and owns one.
+    const instr = new OpenAIInstrumentation({ enabled: false });
+    instr.manuallyInstrument(OpenAIModule);
+    unpatch = () => instr.disable();
+    const client = new OpenAI({ apiKey: 'test', baseURL: server.baseURL });
+    const proto = Object.getPrototypeOf(client.chat.completions) as CreateHolder;
+    // The owned client is built on the first call; shutdown then closes it.
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(chatSpans(h)).toHaveLength(1);
+
+    await instr.shutdown();
+
+    expect(isInstrumented(proto.create)).toBe(false);
+    const result = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(result.choices[0].message.content).toBe('hello from chat');
+  });
+
+  it.each([
+    [
+      'chat.completions',
+      'startGeneration',
+      { choices: [{ message: { content: 'hello from chat' } }] },
+    ],
+    ['responses', 'startGeneration', { id: 'resp-test' }],
+    ['embeddings', 'startEmbedding', { model: 'text-embedding-3-small' }],
+  ] as const)(
+    'returns the SDK result untraced when recording %s fails after the call',
+    async (resource, recorder, expected) => {
+      const client = await setup((req) =>
+        req.url.includes('/embeddings')
+          ? {
+              object: 'list',
+              model: 'text-embedding-3-small',
+              data: [{ object: 'embedding', index: 0, embedding: [0.1] }],
+              usage: { prompt_tokens: 1, total_tokens: 1 },
+            }
+          : req.url.includes('/responses')
+            ? responsesMessage()
+            : chatCompletion(),
+      );
+      // What a shut-down `Client` does: refuse to start a recorder.
+      vi.spyOn(h.client, recorder).mockImplementation(() => {
+        throw new Error('client has been shut down');
+      });
+
+      const result =
+        resource === 'chat.completions'
+          ? await client.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [{ role: 'user', content: 'hi' }],
+            })
+          : resource === 'responses'
+            ? await client.responses.create({ model: 'gpt-4o-mini', input: 'hi' })
+            : await client.embeddings.create({
+                model: 'text-embedding-3-small',
+                input: 'hi',
+                encoding_format: 'float',
+              });
+
+      expect(result).toMatchObject(expected);
+      expect(h.spans.getFinishedSpans()).toHaveLength(0);
+    },
+  );
 
   it('is idempotent: patching twice does not double-instrument', async () => {
     const client = await setup(() => chatCompletion());

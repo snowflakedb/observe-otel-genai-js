@@ -124,8 +124,17 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
    * client alone; its owner shuts it down.
    */
   private ownedClient?: Client;
-  /** Modules patched via {@link manuallyInstrument}; OTel's hook never saw them, so {@link disable} unpatches them itself. */
-  private readonly manualModules = new Set<OpenAIModuleExports>();
+  /**
+   * Every module this instance patched, so {@link disable} can unpatch them all.
+   * OTel's hook remembers only the last copy of a module it loaded, and never sees
+   * ones passed to {@link manuallyInstrument}.
+   */
+  private readonly patchedModules = new Set<OpenAIModuleExports>();
+  /**
+   * The wrappers this instance installed. Unpatching removes only these, never a
+   * wrapper we deferred to (another library's, or another instance's).
+   */
+  private readonly ownWrappers = new WeakSet<object>();
 
   constructor(config: OpenAIInstrumentationConfig = {}) {
     super('@genai-otel/instrumentation-openai', VERSION, config);
@@ -155,9 +164,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
    */
   manuallyInstrument(moduleExports: object): void {
     this._diag.debug('manually instrumenting openai');
-    const exports = moduleExports as OpenAIModuleExports;
-    this.patchModule(exports);
-    this.manualModules.add(exports);
+    this.patchModule(moduleExports as OpenAIModuleExports);
   }
 
   /**
@@ -197,6 +204,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
     for (const key of ['chat.completions', 'responses', 'embeddings'] as ResourceKey[]) {
       this.patchResource(OpenAIClass, key);
     }
+    this.patchedModules.add(moduleExports);
     return moduleExports;
   }
 
@@ -230,7 +238,10 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
     const wrapper = this.createWrapper(key);
     this._wrap(resource.prototype, 'create', wrapper);
     const patched = resource.prototype.create;
-    if (patched) markInstrumented(patched);
+    if (patched) {
+      markInstrumented(patched);
+      this.ownWrappers.add(patched);
+    }
   }
 
   /**
@@ -282,7 +293,8 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
     if (!OpenAIClass) return;
     for (const key of ['chat.completions', 'responses', 'embeddings'] as ResourceKey[]) {
       const resource = resolveResource(OpenAIClass, key);
-      if (resource && isWrapped(resource.prototype.create)) {
+      const create = resource?.prototype.create;
+      if (resource && create && this.ownWrappers.has(create)) {
         this._diag.debug(`unpatching openai ${key}.create`);
         this._unwrap(resource.prototype, 'create');
       }
@@ -290,19 +302,19 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
   }
 
   /**
-   * Removes the require/import hooks and undoes any manual (ESM) patches.
+   * Removes the require/import hooks and undoes every patch this instance made.
    * Synchronous to satisfy the OTel `Instrumentation` contract. Calls in flight
    * finish and emit their spans.
    */
   override disable(): void {
     super.disable();
-    // OTel only unpatches modules its hook saw (CJS); undo our manual (ESM) ones.
-    for (const mod of this.manualModules) this.unpatchModule(mod);
-    this.manualModules.clear();
+    for (const mod of this.patchedModules) this.unpatchModule(mod);
+    this.patchedModules.clear();
   }
 
   /**
-   * Awaitable teardown. When this instrumentation built its own `Client` (config
+   * Awaitable teardown. Unpatches first, so calls made afterwards go straight to
+   * the SDK. Then, when this instrumentation built its own `Client` (config
    * supplied none), shuts that client down so its provider flush runs. It leaves
    * a caller-supplied client alone; you own that shutdown.
    *
@@ -312,6 +324,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
    * flush trailing spans.
    */
   async shutdown(): Promise<void> {
+    this.disable();
     if (this.ownedClient) {
       try {
         await this.ownedClient.shutdown();
