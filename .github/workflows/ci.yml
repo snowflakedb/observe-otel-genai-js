@@ -104,6 +104,9 @@ jobs:
   openai-agents-versions:
     name: "@openai/agents ${{ matrix.agents }}"
     runs-on: ubuntu-latest
+    # `latest` installs whatever was last published, so keep this job's token read-only.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
