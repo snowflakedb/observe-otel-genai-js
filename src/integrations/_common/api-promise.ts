@@ -14,12 +14,13 @@
  * Minimal shape of the SDK's `APIPromise` we depend on:
  *  - `_thenUnwrap(transform)` derives a new `APIPromise` that transforms the
  *    parsed value while preserving `.withResponse()` / `.asResponse()`.
- *  - `asResponse()` resolves the raw `Response` without reading the body (so it
- *    is safe to observe for error handling without disturbing the caller).
+ *  - `asResponse()` resolves the raw `Response` without reading the body.
+ *  - `then` / `catch` / `finally` / `withResponse()` parse the body.
  */
 export interface ApiPromiseLike<T> extends Promise<T> {
   _thenUnwrap<U>(transform: (value: T) => U): ApiPromiseLike<U>;
   asResponse(): Promise<unknown>;
+  withResponse(): Promise<unknown>;
 }
 
 /** Structural type guard for {@link ApiPromiseLike}. */
@@ -38,18 +39,54 @@ interface FinalizableRecorder {
 }
 
 /**
- * Finalize the span when the request fails. `_thenUnwrap`'s transform only runs
- * on success, so failures (transport errors, non-2xx) are observed here through
- * `asResponse()` — which resolves with the raw `Response` (no body read) on
- * success and rejects on failure, leaving the caller's own body consumption
- * untouched. `end()` is idempotent, so this never double-finalizes.
+ * Returns `apiPromise._thenUnwrap(transform)`, making sure the span ends no
+ * matter how the caller consumes it:
+ *  - Parsed (`await`, `then` / `catch` / `finally`, `withResponse()`, or a
+ *    further `_thenUnwrap`): `transform` records the result on success, and a
+ *    request or parse failure is recorded here.
+ *  - Raw only (`asResponse()`): the body is never parsed, so `transform` never
+ *    runs. The span ends once the response arrives.
+ *
+ * Nothing parses the body up front, since that would consume it before an
+ * `asResponse()` caller can read it.
  */
-export function finalizeSpanOnRequestError(
+export function instrumentApiPromise<U>(
   apiPromise: ApiPromiseLike<unknown>,
   rec: FinalizableRecorder,
-): void {
-  void Promise.resolve(apiPromise.asResponse()).then(undefined, (err: unknown) => {
+  transform: (value: unknown) => U,
+): ApiPromiseLike<U> {
+  const fail = (err: unknown) => {
     rec.setCallError(err);
     void rec.end();
-  });
+  };
+  // Request failures (transport errors, non-2xx) reject here without the body being read.
+  void apiPromise.asResponse().then(undefined, fail);
+
+  let parsed = false;
+  const track = <V>(promise: ApiPromiseLike<V>): ApiPromiseLike<V> => {
+    const methods = promise as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const { then, asResponse, _thenUnwrap } = promise;
+    let watching = false;
+    for (const name of ['then', 'catch', 'finally', 'withResponse']) {
+      const original = methods[name]!;
+      methods[name] = (...args) => {
+        parsed = true;
+        if (!watching) {
+          watching = true;
+          // The SDK caches the parse, so this shares the caller's read of the body.
+          then.call(promise, undefined, fail);
+        }
+        return original.apply(promise, args);
+      };
+    }
+    promise.asResponse = () =>
+      asResponse.call(promise).then((response) => {
+        if (!parsed) void rec.end();
+        return response;
+      });
+    promise._thenUnwrap = <W>(next: (value: V) => W) =>
+      track(_thenUnwrap.call(promise, next) as ApiPromiseLike<W>);
+    return promise;
+  };
+  return track(apiPromise._thenUnwrap(transform));
 }

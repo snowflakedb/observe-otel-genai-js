@@ -27,7 +27,7 @@ import {
 import { OP_CHAT } from '../../semconv.js';
 import {
   type ApiPromiseLike,
-  finalizeSpanOnRequestError,
+  instrumentApiPromise,
   isApiPromiseLike,
 } from '../_common/api-promise.js';
 import {
@@ -144,9 +144,8 @@ export async function runChatCompletion(
 /**
  * Instrument a `chat.completions.create` call while preserving the SDK's
  * `APIPromise`, so `.withResponse()` / `.asResponse()` — and helpers that rely
- * on them — keep working. Recording happens in the `_thenUnwrap` transform (runs
- * when the caller consumes the result); request failures are finalized via
- * {@link finalizeSpanOnRequestError}, since the transform only runs on success.
+ * on them — keep working. See {@link instrumentApiPromise} for how the span is
+ * ended for each way the caller can consume the result.
  *
  * @internal
  */
@@ -163,8 +162,7 @@ export function instrumentChatCompletionApiPromise(
     const rec = client.startStreamingGeneration(seed);
     rec.setResult({ input: mapOpenAIInput(params.messages) });
     const handlers = chatStreamHandlers(rec);
-    finalizeSpanOnRequestError(apiPromise, rec);
-    return apiPromise._thenUnwrap((stream) =>
+    return instrumentApiPromise(apiPromise, rec, (stream) =>
       wrapProviderStream<AsyncIterable<ChatChunk>, ChatChunk>(
         stream as AsyncIterable<ChatChunk>,
         handlers,
@@ -173,8 +171,7 @@ export function instrumentChatCompletionApiPromise(
   }
 
   const rec = client.startGeneration(seed);
-  finalizeSpanOnRequestError(apiPromise, rec);
-  return apiPromise._thenUnwrap((result) => {
+  return instrumentApiPromise(apiPromise, rec, (result) => {
     recordChatResult(rec, params, result as ChatCompletionsResult);
     void rec.end();
     return result;
@@ -348,8 +345,7 @@ export function instrumentEmbeddingApiPromise(
   options: OpenAIAdapterOptions,
 ): unknown {
   const rec = client.startEmbedding(buildEmbeddingSeed(params, options));
-  finalizeSpanOnRequestError(apiPromise, rec);
-  return apiPromise._thenUnwrap((result) => {
+  return instrumentApiPromise(apiPromise, rec, (result) => {
     recordEmbeddingResult(rec, params, result as EmbeddingResult);
     void rec.end();
     return result;

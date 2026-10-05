@@ -3,10 +3,11 @@
  * network), so every call here goes through a genuine `APIPromise`, the only shape
  * a real client returns.
  *
- * Covered: `.withResponse()`, `.asResponse()`, streamed `for await`, and
- * `withMetadata`, across chat completions and embeddings.
+ * Covered: `.withResponse()`, `.asResponse()`, streamed `for await`, body parse
+ * failures, and `withMetadata`, across chat completions and embeddings.
  */
 
+import { SpanStatusCode } from '@opentelemetry/api';
 import OpenAI from 'openai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -26,6 +27,14 @@ function jsonResponse(obj: unknown): Response {
   return new Response(JSON.stringify(obj), {
     status: 200,
     headers: { 'content-type': 'application/json', 'x-request-id': 'req_ns' },
+  });
+}
+
+/** A 200 whose body is not valid JSON, so the SDK's parse step fails. */
+function brokenJsonResponse(): Response {
+  return new Response('{not json', {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
   });
 }
 
@@ -134,7 +143,7 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('chatcmpl_ns');
   });
 
-  it('chat.completions.create(...).asResponse() returns a readable raw Response', async () => {
+  it('chat.completions.create(...).asResponse() returns a readable raw Response and ends the span', async () => {
     nextResponse = () => jsonResponse(CHAT_COMPLETION);
     const openai = wrapOpenAI(h.client, makeClient());
 
@@ -142,6 +151,50 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { id: string };
     expect(body.id).toBe('chatcmpl_ns');
+    await tick();
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records the error when a 200 body fails to parse on await', async () => {
+    nextResponse = brokenJsonResponse;
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(openai.chat.completions.create(CHAT_PARAMS)).rejects.toThrow();
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records the error when a 200 body fails to parse in withResponse()', async () => {
+    nextResponse = brokenJsonResponse;
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(openai.chat.completions.create(CHAT_PARAMS).withResponse()).rejects.toThrow();
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records the error when a promise derived via _thenUnwrap fails to parse', async () => {
+    // The SDK's own helpers (e.g. chat.completions.parse) derive from create() this way.
+    nextResponse = brokenJsonResponse;
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const derived = (
+      openai.chat.completions.create(CHAT_PARAMS) as unknown as {
+        _thenUnwrap: (fn: (v: unknown) => unknown) => Promise<unknown>;
+      }
+    )._thenUnwrap((v) => v);
+    await expect(derived).rejects.toThrow();
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
   });
 
   it('streamed chat.completions.create() is iterable and records TTFT + final usage', async () => {
@@ -183,6 +236,32 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(data.data).toHaveLength(1);
     expect(response.status).toBe(200);
     expect(h.spans.getFinishedSpans().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('embeddings.create(...).asResponse() ends the span', async () => {
+    nextResponse = () => jsonResponse(EMBEDDING_RESPONSE);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const response = await openai.embeddings
+      .create({ model: 'text-embedding-3-small', input: 'hello' })
+      .asResponse();
+    expect(response.status).toBe(200);
+    await tick();
+
+    expect(h.spans.getFinishedSpans()).toHaveLength(1);
+  });
+
+  it('records the error when an embeddings body fails to parse', async () => {
+    nextResponse = brokenJsonResponse;
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(
+      openai.embeddings.create({ model: 'text-embedding-3-small', input: 'hello' }),
+    ).rejects.toThrow();
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
   });
 
   it('withMetadata still applies agentName and conversationId', async () => {
