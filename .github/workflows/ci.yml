@@ -51,6 +51,8 @@ jobs:
           test -f dist/integrations/openai/index.d.ts
           test -f dist/integrations/openai/instrumentation.js
           test -f dist/integrations/openai/instrumentation.d.ts
+          test -f dist/integrations/openai-agents/index.js
+          test -f dist/integrations/openai-agents/index.d.ts
           test -f dist/integrations/anthropic/index.js
           test -f dist/integrations/anthropic/index.d.ts
           test -f dist/integrations/langchain/index.js

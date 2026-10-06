@@ -37,10 +37,24 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counters. Streaming takes TTFT from the first `*.delta` event and the final
   output and usage from `response.completed`.
 - The `openai` peer range now includes v7.
+- **OpenAI Agents SDK support** (`@genai-otel/core/openai-agents`).
+  `GenAIOtelTracingProcessor` implements the SDK's `TracingProcessor` interface:
+  `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on the
+  AI SDK path, and an `invoke_agent` container span for each run, named after the
+  trace. On the OpenAI model paths the `chat` span is left
+  to `OpenAIInstrumentation`, so each model call is reported once.
+  - Agent spans carry the agent's input and output messages under content capture.
+  - Durations come from the SDK's own timestamps, not from when callbacks arrive.
+  - Failures the run recovers from do not fail the run.
+  - A run resumed after a tool approval is traced, given the SDK's
+    `getCurrentTrace`.
+  - `gen_ai.provider.name` on AI SDK `chat` spans uses the well-known values.
+  - Open traces are capped; past the cap the least recently active one is ended.
 
 ### Changed
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
+- LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
 - Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release

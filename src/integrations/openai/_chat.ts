@@ -271,7 +271,7 @@ interface OAToolCall {
   id?: string;
   function?: { name?: string; arguments?: string };
 }
-interface OAMessage {
+export interface OAMessage {
   role?: string;
   content?: string | OAContentPart[] | null;
   tool_calls?: OAToolCall[];
@@ -329,7 +329,7 @@ function messageBodyParts(raw: OAMessage): Part[] {
   return parts;
 }
 
-function mapOpenAIInput(messages: unknown): Message[] {
+export function mapOpenAIInput(messages: unknown): Message[] {
   if (!Array.isArray(messages)) return [];
   const out: Message[] = [];
   for (const raw of messages as OAMessage[]) {
@@ -350,7 +350,7 @@ function mapOpenAIInput(messages: unknown): Message[] {
   return out;
 }
 
-function mapOpenAIOutputMessage(message: OAMessage | undefined): Message[] {
+export function mapOpenAIOutputMessage(message: OAMessage | undefined): Message[] {
   if (!message) return [];
   const parts = messageBodyParts(message);
   if (parts.length === 0) return [];

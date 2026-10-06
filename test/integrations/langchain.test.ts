@@ -424,6 +424,15 @@ describe('LangChain adapter — provider name mapping', () => {
     );
   });
 
+  it('maps a Snowflake id path to snowflake', async () => {
+    // Speculative: the path is modeled on Python's ChatSnowflakeCortex. `snowflake`
+    // is not a semconv well-known value; it matches what the Vercel AI SDK
+    // integration reports.
+    expect(
+      await providerFor(['langchain', 'chat_models', 'snowflake', 'ChatSnowflakeCortex']),
+    ).toBe('snowflake');
+  });
+
   it('falls back to metadata ls_provider when the class name matches nothing', async () => {
     // A proxy/gateway class name matches no known provider, but LangChain's run
     // metadata names it.
