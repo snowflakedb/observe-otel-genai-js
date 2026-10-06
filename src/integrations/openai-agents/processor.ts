@@ -30,7 +30,9 @@ import {
 } from '@opentelemetry/api';
 
 import { Client } from '../../client.js';
-import type { ContentCaptureMode } from '../../content/capture.js';
+import { AllowListSpan, allowListSpanOptions } from '../../content/allow-list.js';
+import { type ContentCaptureMode, resolveContentCaptureMode } from '../../content/capture.js';
+import { contentCaptureModeFromContext } from '../../context.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
@@ -206,10 +208,17 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       void this.safely('closeTrace', () => this.closeTrace(trace.traceId));
     // Started under the caller's context, so a run inside a request handler nests
     // under the handler's span.
-    const span = this.tracer.startSpan(trace.name, {
-      kind: SpanKind.INTERNAL,
-      startTime: new Date(this.client.now()),
-    });
+    const options = { kind: SpanKind.INTERNAL, startTime: new Date(this.client.now()) };
+    const mode = resolveContentCaptureMode(
+      this.contentCapture,
+      contentCaptureModeFromContext(),
+      this.client.config.contentCaptureMode,
+    );
+    // Opened without a recorder, so it is filtered here rather than by the `Client`.
+    const span =
+      mode === 'allow_list'
+        ? new AllowListSpan(this.tracer.startSpan(trace.name, allowListSpanOptions(options)))
+        : this.tracer.startSpan(trace.name, options);
     span.setAttribute(ATTR_OPERATION_NAME, OP_INVOKE_AGENT);
     span.setAttribute(ATTR_SDK_NAME, SDK_NAME);
     if (trace.groupId) span.setAttribute(ATTR_CONVERSATION_ID, trace.groupId);
