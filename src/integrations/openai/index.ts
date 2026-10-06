@@ -3,8 +3,8 @@
  *
  * Two entry points:
  *  - `wrapOpenAI(client, openai)` returns a Proxy around the OpenAI client
- *    that auto-instruments `chat.completions.create` and `embeddings.create`.
- *    Drop-in replacement for the OpenAI client.
+ *    that auto-instruments `chat.completions.create`, `responses.create` and
+ *    `embeddings.create`. Drop-in replacement for the OpenAI client.
  *  - Per-method helpers (`instrumentedChatCompletion`, `instrumentedEmbedding`)
  *    if you want to opt into instrumentation per call.
  *
@@ -36,6 +36,7 @@ import {
   identityFieldsFromOptions,
 } from '../_common/metadata.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
+import { instrumentResponseApiPromise } from './_responses.js';
 
 /** Per-call metadata that can be attached via `withMetadata(params, opts)`. */
 export type OpenAIAdapterOptions = AdapterCallOptions;
@@ -283,6 +284,12 @@ function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
 }
 
 // -----------------------------------------------------------------------------
+// responses.create (mapping lives in ./_responses.ts)
+// -----------------------------------------------------------------------------
+
+type ResponseCreateParams = OpenAI.Responses.ResponseCreateParams;
+
+// -----------------------------------------------------------------------------
 // embeddings.create
 // -----------------------------------------------------------------------------
 
@@ -400,6 +407,7 @@ export function wrapOpenAI<T extends OpenAI>(client: Client, openai: T): T {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'chat') return wrapChat(client, openai, value);
+      if (prop === 'responses') return wrapResponses(client, openai, value);
       if (prop === 'embeddings') return wrapEmbeddings(client, openai, value);
       return value;
     },
@@ -428,6 +436,27 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
           const raw = create.call(openai.chat.completions, params, ...rest);
           if (isApiPromiseLike(raw)) {
             return instrumentChatCompletionApiPromise(client, raw, params, options);
+          }
+          return raw;
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function wrapResponses(client: Client, openai: OpenAI, responses: unknown) {
+  return new Proxy(responses as object, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'create') {
+        return (params: ResponseCreateParams, ...rest: unknown[]) => {
+          const options = readMetadata(params);
+          stripMetadata(params);
+          const create = openai.responses.create as (...a: unknown[]) => unknown;
+          const raw = create.call(openai.responses, params, ...rest);
+          if (isApiPromiseLike(raw)) {
+            return instrumentResponseApiPromise(client, raw, params, options);
           }
           return raw;
         };
@@ -486,6 +515,35 @@ export function patchChatCompletionsCreate(
       const raw = original.apply(this, [params, ...rest]);
       if (isApiPromiseLike(raw)) {
         return instrumentChatCompletionApiPromise(client, raw, params, options);
+      }
+      // Only a real SDK client returns an `APIPromise`; anything else passes through.
+      return raw;
+    };
+}
+
+/**
+ * Builds a shimmer-style wrapper for `Responses.prototype.create`, mirroring
+ * {@link patchChatCompletionsCreate}.
+ *
+ * This is the entry point that matters most for the OpenAI Agents SDK: it
+ * defaults to the Responses API, so this patch is what produces the `chat` span
+ * that `invoke_agent` parents.
+ *
+ * @internal
+ */
+export function patchResponsesCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as ResponseCreateParams;
+      const rest = args.slice(1);
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const raw = original.apply(this, [params, ...rest]);
+      if (isApiPromiseLike(raw)) {
+        return instrumentResponseApiPromise(client, raw, params, options);
       }
       // Only a real SDK client returns an `APIPromise`; anything else passes through.
       return raw;

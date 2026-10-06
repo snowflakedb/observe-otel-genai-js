@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **OpenAI Responses API support.** `responses.create` now records a `chat` span
+  through both entry points, the `wrapOpenAI` proxy and `patchResponsesCreate`.
+  The shape shares almost nothing with Chat Completions, so it gets its own
+  mapping: input is a list of typed items, output is a list of typed items, and
+  the stream is a union of named events. `instructions` maps to
+  `gen_ai.system_instructions`, since Responses carries the system prompt
+  out-of-band. Tool definitions come from the top level of each tool.
+  `input_tokens_details.cached_tokens` and
+  `output_tokens_details.reasoning_tokens` map onto the cache-read and reasoning
+  counters. Streaming takes TTFT from the first `*.delta` event and the final
+  output and usage from `response.completed`.
+
 ### Fixed
 - Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release
   only. `^0.200.0` on a `0.x` version means `>=0.200.0 <0.201.0`, so a project on
