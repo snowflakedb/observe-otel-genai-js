@@ -91,6 +91,7 @@ export class ToolExecutionRecorder extends RecorderBase {
       requestModel: this.seed.requestModel ?? '',
       toolName: this.seed.toolName,
       agentName: this.seed.agentName ?? '',
+      conversationId: this.seed.conversationId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

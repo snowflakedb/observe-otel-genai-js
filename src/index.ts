@@ -15,6 +15,7 @@ export {
   type ClientConfig,
   type EmbeddingCaptureConfig,
   type Logger,
+  type MetricAttributesConfig,
   type ResolvedClientConfig,
   type SpanLinkMapConfig,
 } from './config.js';

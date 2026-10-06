@@ -3,6 +3,7 @@
  *  - TTFT histogram includes gen_ai.operation.name
  *  - tool execution duration is on its own histogram (gen_ai.client.tool_execution.duration)
  *  - tool_calls_per_operation includes gen_ai.operation.name
+ *  - gen_ai.conversation.id is added only when the client opts in
  */
 
 import {
@@ -13,6 +14,7 @@ import {
   type ResourceMetrics,
 } from '@opentelemetry/sdk-metrics';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ClientConfig } from '../src/config.js';
 import { type Harness, createHarness } from './_harness.js';
 
 function findMetric(rm: ResourceMetrics, name: string): HistogramMetricData | undefined {
@@ -102,5 +104,63 @@ describe('metric labels', () => {
     expect(toolCalls).toBeDefined();
     const point = findPoint(toolCalls, (a) => a['gen_ai.operation.name'] === 'chat');
     expect(point).toBeDefined();
+  });
+});
+
+describe('conversation id on metrics', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.shutdown();
+    h = undefined;
+  });
+
+  async function recordOneOfEach(config?: ClientConfig, conversationId = 'conv-1') {
+    h = createHarness(config);
+    const gen = h.client.startStreamingGeneration({
+      model: { provider: 'openai', name: 'gpt-4o' },
+      conversationId,
+    });
+    gen.setFirstTokenAt(Date.now() + 5);
+    gen.setResult({ usage: { inputTokens: 10, outputTokens: 5 } });
+    await gen.end();
+    await h.client.startToolExecution({ toolName: 'search', conversationId }).end();
+    await h.client.invokeAgent({ agentName: 'planner', conversationId }).end();
+    await h.client.startRetrieval({ dataSourceId: 'docs', conversationId }).end();
+
+    const metrics = await h.collectMetrics();
+    return metrics[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
+  }
+
+  it('is left off by default', async () => {
+    const all = await recordOneOfEach();
+    const points = all.flatMap((m) => m.dataPoints.map((p) => p.attributes));
+    expect(points.length).toBeGreaterThan(0);
+    for (const attrs of points) {
+      expect(attrs['gen_ai.conversation.id']).toBeUndefined();
+    }
+  });
+
+  it('is added to every metric when the client opts in', async () => {
+    const all = await recordOneOfEach({ metricAttributes: { conversationId: true } });
+    const names = all.map((m) => m.descriptor.name).sort();
+    expect(names).toEqual([
+      'gen_ai.client.operation.duration',
+      'gen_ai.client.time_to_first_token',
+      'gen_ai.client.token.usage',
+      'gen_ai.client.tool_calls_per_operation',
+      'gen_ai.client.tool_execution.duration',
+    ]);
+    for (const m of all) {
+      for (const p of m.dataPoints) {
+        expect(p.attributes['gen_ai.conversation.id'], m.descriptor.name).toBe('conv-1');
+      }
+    }
+  });
+
+  it('is omitted when the operation has no conversation id', async () => {
+    const all = await recordOneOfEach({ metricAttributes: { conversationId: true } }, '');
+    for (const attrs of all.flatMap((m) => m.dataPoints.map((p) => p.attributes))) {
+      expect(attrs).not.toHaveProperty('gen_ai.conversation.id');
+    }
   });
 });

@@ -107,7 +107,7 @@ export class Client implements RecorderHostContext {
     this.tracer = this.config.tracer ?? trace.getTracer(INSTRUMENTATION_NAME, VERSION);
     this.meter = this.config.meter ?? metricsApi.getMeter(INSTRUMENTATION_NAME, VERSION);
 
-    this.metrics = new GenAIMetrics(this.meter);
+    this.metrics = new GenAIMetrics(this.meter, this.config.metricAttributes);
     this.spanLinks = new SpanLinkMap(this.config.spanLinkMap, this.now, this.logger);
   }
 
