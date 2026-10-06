@@ -16,8 +16,15 @@ import type { Span } from '@opentelemetry/api';
  *  - `no_tool_content` → include prompts and completions, but strip tool args/results
  *                        and retrieval query/documents.
  *  - `metadata_only`   → strip ALL content; only structured metadata remains.
+ *  - `allow_list`      → strip ALL content like `metadata_only`, and also drop every
+ *                        span attribute whose key is not in `CONTENT_ALLOW_LIST`.
  */
-export type ContentCaptureMode = 'default' | 'full' | 'no_tool_content' | 'metadata_only';
+export type ContentCaptureMode =
+  | 'default'
+  | 'full'
+  | 'no_tool_content'
+  | 'metadata_only'
+  | 'allow_list';
 
 /**
  * Truncation strategy applied when content exceeds `maxContentLength`.

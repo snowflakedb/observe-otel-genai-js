@@ -100,6 +100,10 @@ To restrict what is captured:
   strips content from every span type (generation, agent, tool, embedding).
   Also settable per call (`contentCapture`) and ambiently
   (`withContentCaptureMode`).
+- **Keep only reviewed attributes:** `contentCaptureMode: 'allow_list'` — no
+  content, and every span keeps only attributes on a fixed allowlist, so a new
+  or unknown attribute is dropped. See
+  [`docs/content-retention.md`](docs/content-retention.md).
 - **Cap size:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
   trims long content while keeping the emitted JSON valid.
 - **Redact fields:** register a redacting `SpanProcessor` at bootstrap. Content
