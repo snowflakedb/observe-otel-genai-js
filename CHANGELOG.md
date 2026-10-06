@@ -37,19 +37,25 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counters. Streaming takes TTFT from the first `*.delta` event and the final
   output and usage from `response.completed`.
 - The `openai` peer range now includes v7.
-- **OpenAI Agents SDK support** (`@genai-otel/core/openai-agents`).
-  `GenAIOtelTracingProcessor` implements the SDK's `TracingProcessor` interface:
-  `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on the
-  AI SDK path, and an `invoke_agent` container span for each run, named after the
-  trace. On the OpenAI model paths the `chat` span is left
-  to `OpenAIInstrumentation`, so each model call is reported once.
+- **OpenAI Agents SDK support.** `OpenAIAgentsInstrumentation`
+  (`@genai-otel/core/openai-agents/instrumentation`) traces agent runs:
+  `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on
+  the AI SDK path, and an `invoke_agent` container span for each run, named after
+  the trace. On the OpenAI model paths the `chat` span comes from
+  `OpenAIInstrumentation`, so each model call is reported once.
+  - Model calls and tool calls run inside their span's OTel context, so spans from
+    other instrumentations nest under the agent or tool, streamed calls included.
+  - Model-call spans from `OpenAIInstrumentation` carry the run's
+    `gen_ai.conversation.id` (from `groupId`) and the calling agent's name.
   - Agent spans carry the agent's input and output messages under content capture.
-  - Durations come from the SDK's own timestamps, not from when callbacks arrive.
-  - Failures the run recovers from do not fail the run.
-  - A run resumed after a tool approval is traced, given the SDK's
-    `getCurrentTrace`.
-  - `gen_ai.provider.name` on AI SDK `chat` spans uses the well-known values.
-  - Open traces are capped; past the cap the least recently active one is ended.
+  - Runs and `withTrace` blocks that reject are closed with the error, since the
+    SDK leaves them open. Failures the run recovers from do not fail the run.
+  - A streamed run that fails reports the error on its container.
+  - The processor stays registered when the SDK's processor list is replaced, so
+    `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
+  - Time-to-first-token on the AI SDK path, measured from the first delta event.
+  - `instrumentModel()` for hand-written `Model` classes, and
+    `GenAIOtelTracingProcessor` (`@genai-otel/core/openai-agents`) for custom setups.
 
 ### Changed
 - Spans that succeed now leave their status unset instead of setting it to OK, as
@@ -63,6 +69,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--legacy-peer-deps`. Both are now `>=0.200.0 <0.300.0`, matching
   `@opentelemetry/instrumentation`. 0.300.x ships with OpenTelemetry JS SDK 3.0
   and stays out until it is tested.
+
+### Known
+- `gen_ai.tool.call.id` is not emitted on `execute_tool` spans from the OpenAI
+  Agents SDK. Its `FunctionSpanData` is `{ name, input, output, mcp_data }` and
+  carries no call id, so the only way to supply one is to scrape the preceding
+  model span's output and pair entries up by tool name and arguments. That pairing
+  breaks on parallel calls to the same tool, and it breaks once
+  `RunConfig.traceIncludeSensitiveData` blanks the arguments being matched on. The
+  conventions ask for the attribute "if available"; from this SDK it is not. The
+  LangChain integration still emits it, where the tool-end message supplies the id
+  directly.
 
 ## [0.6.0] - 2026-09-29
 

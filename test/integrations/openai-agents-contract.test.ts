@@ -10,9 +10,12 @@
  * `tsc` does the work here: if the SDK renames a field, changes `startedAt` from a
  * string to a number, or adds a required method to `TracingProcessor`, this file
  * stops compiling. Without it, such a change would surface as spans missing
- * attributes.
+ * attributes. The runtime checks at the bottom pin the SDK functions the
+ * instrumentation patches or calls, which types alone cannot.
  */
 
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import type {
   AgentSpanData,
   FunctionSpanData,
@@ -24,6 +27,9 @@ import type {
   SpanData,
   TracingProcessor,
 } from '@openai/agents';
+import * as Agents from '@openai/agents';
+import * as AgentsCore from '@openai/agents-core';
+import * as AiSdkExt from '@openai/agents-extensions/ai-sdk';
 
 import { describe, expect, it } from 'vitest';
 
@@ -111,5 +117,29 @@ describe('openai-agents SDK contract', () => {
     expect(parseSdkTimestamp('2026-09-11T04:05:06.7891234Z')).toBeGreaterThan(0);
     expect(parseSdkTimestamp(null)).toBeUndefined();
     expect(parseSdkTimestamp('not a date')).toBeUndefined();
+  });
+
+  it('exposes every SDK function the instrumentation patches or calls', () => {
+    const provider = AgentsCore.getGlobalTraceProvider();
+    expect(provider).toBe(Agents.getGlobalTraceProvider());
+    expect(typeof provider.registerProcessor).toBe('function');
+    expect(typeof provider.setProcessors).toBe('function');
+    expect(typeof AgentsCore.getCurrentSpan).toBe('function');
+    expect(typeof AgentsCore.getCurrentTrace).toBe('function');
+    expect(typeof AgentsCore.withTrace).toBe('function');
+    expect(typeof AgentsCore.Runner.prototype.run).toBe('function');
+    // The runner calls this through its own dist file, which is what the
+    // instrumentation hooks.
+    const require = createRequire(import.meta.url);
+    const toolFile = path.join(path.dirname(require.resolve('@openai/agents-core')), 'tool.js');
+    expect(typeof require(toolFile).invokeFunctionTool).toBe('function');
+    for (const cls of [
+      Agents.OpenAIResponsesModel,
+      Agents.OpenAIChatCompletionsModel,
+      AiSdkExt.AiSdkModel,
+    ]) {
+      expect(typeof cls.prototype.getResponse).toBe('function');
+      expect(typeof cls.prototype.getStreamedResponse).toBe('function');
+    }
   });
 });

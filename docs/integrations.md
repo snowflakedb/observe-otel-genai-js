@@ -7,6 +7,7 @@
 | Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
 | OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 / ^7 |
 | OpenAI SDK (auto) | `@genai-otel/core/openai/instrumentation` | `openai` ^4 / ^5 / ^6 / ^7 |
+| OpenAI Agents SDK | `@genai-otel/core/openai-agents/instrumentation` (processor alone: `@genai-otel/core/openai-agents`) | `@openai/agents` >=0.14 <1, `@opentelemetry/instrumentation` |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30 <1 |
 | Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation`, or `/claude-agent-sdk` for `wrapQuery` | none declared; works with `@anthropic-ai/claude-agent-sdk` >=0.3.142 <0.4.0 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
@@ -38,11 +39,11 @@ bootstrap — see [exporting.md](exporting.md#redacting-content).
 | tool definitions (`gen_ai.tool.definitions`) | — | yes (Responses) | — | — | yes | — |
 | request params (`temperature`, `top_p`, …) | yes | yes | — | yes | — | partial (system prompt, effort, thinking) |
 | separate `execute_tool` spans | yes | no (tool calls ride on messages) | yes | no (tool calls ride on messages) | yes | yes |
-| TTFT on streaming | yes | yes | — | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
+| TTFT on streaming | yes | yes | yes (AI SDK model path) | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
 | per-call metadata | hooks / options | `withMetadata` | `Trace.metadata` / `groupId` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
 | `invoke_agent` spans | via hooks | — | yes | — | via chains | yes |
 | nested `invoke_agent` for subagents | — | — | yes (agents used as tools) | — | — | yes |
-| OTel auto-instrumentation | — | yes | — | — | yes | yes |
+| OTel auto-instrumentation | — | yes | yes | — | yes | yes |
 
 ## Vercel AI SDK
 
@@ -234,19 +235,19 @@ final output and usage from the assembled `Response` on `response.completed`.
 
 ## OpenAI Agents SDK
 
-The Agents SDK reports its work to trace processors. Register this integration's
-processor with the SDK's own API:
-
 ```ts
-import { addTraceProcessor, getCurrentTrace } from '@openai/agents';
-import { GenAIOtelTracingProcessor } from '@genai-otel/core/openai-agents';
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { OpenAIAgentsInstrumentation } from '@genai-otel/core/openai-agents/instrumentation';
+import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
 
-const processor = new GenAIOtelTracingProcessor({ getCurrentTrace });
-addTraceProcessor(processor);
+registerInstrumentations({
+  instrumentations: [new OpenAIAgentsInstrumentation(), new OpenAIInstrumentation()],
+});
 ```
 
-Register `OpenAIInstrumentation` too: on the default OpenAI model paths the `chat`
-spans come from there.
+Register both. On the default OpenAI model paths the `chat` spans come from
+`OpenAIInstrumentation`; without it, runs show `invoke_agent` and `execute_tool` with
+no model call beneath them. `@opentelemetry/instrumentation` is a required peer.
 
 ### What gets a span
 
@@ -269,9 +270,10 @@ call, so this integration emits the span. It records it when the model call
 finishes, so spans the provider client creates during the call sit beside it under
 `invoke_agent`.
 
-The SDK keeps no OTel context active between its span callbacks, so a processor on
-its own cannot make spans from other instrumentations, such as an OpenAI `chat`
-span, nest under the agent span. That needs the SDK's model classes patched.
+Spans from other instrumentations nest correctly: model calls and tool calls run
+inside the OTel context of their agent or tool span. The SDK keeps no OTel context
+active on its own, so without this a `chat` span, or a database span made inside a
+tool, would land beside the agent span instead of under it.
 
 Not emitted:
 
@@ -313,12 +315,11 @@ A run resumed after a tool approval gets a container span of its own, with the
 same name and conversation id as the first part of the run. A run resumed from a
 serialized state (`RunState.fromString`) gets a normal trace start and end from the
 SDK. A run resumed in the same process from `result.state` gets neither, so its
-container closes when the resumed run's `task` span ends. This needs the SDK's
-`getCurrentTrace` passed in, as above.
+container closes when the resumed run's `task` span ends.
 
 With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or
 `turn` spans, so a turn's error is not copied to its agent span, and a resumed run's
-container stays open until the trace cap or `stop()` ends it.
+container stays open until the trace cap or shutdown ends it.
 
 The container carries `gen_ai.conversation.id` from `Trace.groupId` and
 `Trace.metadata` as `genai.metadata.*`. Set them on the `Runner`, since the options
@@ -332,15 +333,24 @@ const runner = new Runner({
 });
 ```
 
+The conversation id and the agent name are also passed down to model calls, so the
+`chat` span from `OpenAIInstrumentation` carries the same `gen_ai.conversation.id`
+and the right `gen_ai.agent.name`. When `groupId` is set it takes precedence over an
+id set with `withConversationId(...)`.
+
 ### Errors
 
-- A model call the SDK retries successfully does not fail the agent span.
+- A run that rejects closes the traces it opened, with the error on the container.
+  The SDK skips `trace.end()` in that case. A streamed run that fails reports its
+  error the same way.
+- A `withTrace(...)` block that throws is closed the same way.
+- A failure the run recovers from does not fail anything above it. That covers a
+  model call the SDK retries, and an agent used as a tool whose failure the outer
+  agent handles.
 - `error.type` is the error's class name when it looks like one (`BoomError`,
   `InputGuardrailTripwireTriggered`); otherwise the span's own category, such as
   `tool_execution_error`, or `_OTHER` on the container. Free-form error text never
   becomes a metric label.
-- The SDK skips `trace.end()` when a run rejects. A processor cannot see that
-  rejection, so the container stays open until the trace cap or `stop()` ends it.
 
 Guardrails get no span of their own: `GuardrailSpanData` carries only
 `{ name, triggered }`. A tripwire shows up as the `error.type` above.
@@ -354,13 +364,56 @@ active one is ended with the data it has.
 - `gen_ai.client.tool_execution.duration` for tool spans.
 - `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted
   twice.
+- On the AI SDK path, `gen_ai.client.time_to_first_token`, measured from the first
+  delta event (text, reasoning or tool arguments), not from the bookkeeping events a
+  stream opens with.
 
-`gen_ai.client.tool_execution.duration` is this library's name, shared by all its
-integrations; the in-development conventions define `gen_ai.execute_tool.duration`.
-The run container records no duration metric.
+`gen_ai.client.time_to_first_token` and `gen_ai.client.tool_execution.duration` are
+this library's names, shared by all its integrations; the conventions have since
+defined `gen_ai.client.operation.time_to_first_chunk` and, in development,
+`gen_ai.execute_tool.duration`. The run container records no duration metric.
 
 On the AI SDK path the SDK does not report why the model stopped, so `chat` spans
 report `tool_call` when the model asked for a tool and otherwise the default `stop`.
+
+### Where agent traces go
+
+The SDK's own export to the OpenAI Traces dashboard keeps running next to this
+integration. To stop it, replace the SDK's processor list. This integration's
+processor stays registered through any replacement:
+
+```ts
+import { setTraceProcessors } from '@openai/agents';
+
+setTraceProcessors([]);
+```
+
+### Custom `Model` classes
+
+Automatic patching reaches the SDK's own model classes only. Wrap a hand-written
+model so spans it creates nest under the agent:
+
+```ts
+import { instrumentModel } from '@genai-otel/core/openai-agents/instrumentation';
+import { getCurrentSpan } from '@openai/agents';
+
+const model = instrumentModel(new MyModel(), instrumentation.processor, getCurrentSpan);
+```
+
+### ESM
+
+Works with the standard OTel loader hook. Without it, hand the module namespaces
+over at startup:
+
+```ts
+import * as Agents from '@openai/agents';
+import * as AiSdk from '@openai/agents-extensions/ai-sdk';
+instrumentation.manuallyInstrument(Agents, AiSdk);
+```
+
+ESM namespaces are read-only, so without the loader hook two things are lost: spans
+created inside tool functions do not nest under `execute_tool`, and a `withTrace`
+block that throws is closed only when the trace cap or shutdown reaches it.
 
 ### Tests under `NODE_ENV=test`
 
@@ -375,14 +428,42 @@ beforeEach(() => setTracingDisabled(false));
 
 ### Supported versions
 
-`@openai/agents` `>=0.14.0 <1`, tested against 0.17. The floor is 0.14 because error
-routing relies on its `task` and `turn` spans.
+`@openai/agents` `>=0.14.0 <1`, tested against 0.14, 0.16 and the latest release.
+The floor is 0.14 because error routing relies on its `task` and `turn` spans.
 
-### Shutdown
+### Shutdown and disable
 
-The SDK calls a processor's `shutdown()` when it replaces its processor list and on
-process signals, so `shutdown()` only flushes. Call `await processor.stop()` to end
-every open span and flush.
+`await instrumentation.shutdown()` ends every open span, flushes, and shuts down a
+`Client` the instrumentation created. A `client` you passed in is left to you.
+`disable()` ends open spans and stops tracing until `enable()`. The processor stays
+in the SDK's list, since the SDK cannot remove one.
+
+The SDK also shuts processors down on process signals and whenever its processor
+list is replaced. This integration only flushes then, so tracing carries on if the
+process does.
+
+### The processor on its own
+
+`@genai-otel/core/openai-agents` exports `GenAIOtelTracingProcessor` for custom
+setups:
+
+```ts
+import { addTraceProcessor, getCurrentTrace } from '@openai/agents';
+import { GenAIOtelTracingProcessor } from '@genai-otel/core/openai-agents';
+
+const processor = new GenAIOtelTracingProcessor({ getCurrentTrace });
+addTraceProcessor(processor);
+// On shutdown: `stop()` ends open spans; `shutdown()` only flushes.
+await processor.stop();
+```
+
+Without the instrumentation:
+
+- spans from other instrumentations, such as OpenAI `chat` spans, do not nest under
+  agent spans;
+- a run that rejects leaves its container span open until the trace cap or `stop()`
+  ends it;
+- the processor can be dropped when the SDK's processor list is replaced.
 
 ## Anthropic SDK
 
