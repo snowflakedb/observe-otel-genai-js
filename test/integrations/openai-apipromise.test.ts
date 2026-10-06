@@ -10,7 +10,7 @@
 
 import { SpanStatusCode } from '@opentelemetry/api';
 import OpenAI from 'openai';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import {
@@ -296,6 +296,43 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);
   });
+
+  it.each(['chat', 'responses', 'embeddings'] as const)(
+    'returns the SDK result untraced when recording fails for %s',
+    async (kind) => {
+      nextResponse = () =>
+        jsonResponse(
+          kind === 'chat'
+            ? CHAT_COMPLETION
+            : kind === 'responses'
+              ? responsesMessage({ id: 'resp_ok' })
+              : EMBEDDING_RESPONSE,
+        );
+      const openai = wrapOpenAI(h.client, makeClient());
+      // What a shut-down `Client` does: refuse to start a recorder.
+      const fail = () => {
+        throw new Error('client has been shut down');
+      };
+      vi.spyOn(h.client, 'startGeneration').mockImplementation(fail);
+      vi.spyOn(h.client, 'startEmbedding').mockImplementation(fail);
+
+      const result =
+        kind === 'chat'
+          ? await openai.chat.completions.create(CHAT_PARAMS)
+          : kind === 'responses'
+            ? await openai.responses.create({ model: 'gpt-x', input: 'hi' })
+            : await openai.embeddings.create({ model: 'text-embedding-3-small', input: 'hello' });
+
+      expect(result).toMatchObject(
+        kind === 'chat'
+          ? { id: 'chatcmpl_ns' }
+          : kind === 'responses'
+            ? { id: 'resp_ok' }
+            : { model: 'text-embedding-3-small' },
+      );
+      expect(h.spans.getFinishedSpans()).toHaveLength(0);
+    },
+  );
 
   it('withMetadata still applies agentName and conversationId', async () => {
     nextResponse = () => jsonResponse(CHAT_COMPLETION);

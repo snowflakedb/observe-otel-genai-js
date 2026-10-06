@@ -5,7 +5,8 @@
 | Adapter | Subpath | Peer dep |
 |---|---|---|
 | Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
-| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 |
+| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 / ^7 |
+| OpenAI SDK (auto) | `@genai-otel/core/openai/instrumentation` | `openai` ^4 / ^5 / ^6 / ^7 |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30 <1 |
 | Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation`, or `/claude-agent-sdk` for `wrapQuery` | none declared; works with `@anthropic-ai/claude-agent-sdk` >=0.3.142 <0.4.0 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
@@ -41,6 +42,7 @@ bootstrap — see [exporting.md](exporting.md#redacting-content).
 | per-call metadata | hooks / options | `withMetadata` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
 | `invoke_agent` spans | via hooks | — | — | via chains | yes |
 | nested `invoke_agent` for subagents | — | — | — | — | yes |
+| OTel auto-instrumentation | — | yes | — | yes | yes |
 
 ## Vercel AI SDK
 
@@ -127,8 +129,90 @@ import {
   instrumentedEmbedding,
 } from '@genai-otel/core/openai';
 
-const result = await instrumentedChatCompletion(client, openai, { /* params */ });
+// Pass a plain client. A wrapped one would trace each request twice.
+const result = await instrumentedChatCompletion(client, new OpenAI(), { /* params */ });
 ```
+
+Use the helpers on their own. Combined with `wrapOpenAI` or
+`OpenAIInstrumentation`, each request is traced twice.
+
+### Auto-instrumentation
+
+`OpenAIInstrumentation` is the OpenTelemetry-native alternative to `wrapOpenAI`.
+It patches the SDK's prototypes so every OpenAI call in the process is traced
+without wrapping a client:
+
+```ts
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+
+registerInstrumentations({
+  instrumentations: [new OpenAIInstrumentation({ agentName: 'planner' })],
+});
+```
+
+Config accepts every per-call metadata field the adapter does. Values you set here
+become process-wide defaults, and `withMetadata` still overrides them per call.
+Covers `chat.completions.create`, `responses.create`, and `embeddings.create`.
+
+With this installed you no longer need `wrapOpenAI`. Leaving it in place is fine:
+`wrapOpenAI` sees the patched method and passes the call through, metadata
+included, so each request still produces one span.
+
+#### When another library instruments `openai` too
+
+`@opentelemetry/instrumentation-openai` patches the same three prototypes, and
+`@opentelemetry/auto-instrumentations-node` enables it by default, so the two do
+meet in practice. Whichever patches first wins; the other one defers and logs at
+`warn`. You get a single span per call either way. When the other library wins, its
+span carries neither this library's Responses mapping nor the
+`gen_ai.conversation.id` / `gen_ai.agent.name` that the Agents integration bridges
+onto model calls, so turn one of them off.
+
+```ts
+// keep this library's spans: turn the other one off
+getNodeAutoInstrumentations({
+  '@opentelemetry/instrumentation-openai': { enabled: false },
+});
+```
+
+```bash
+# or by environment, either direction. Both take a package-name *suffix*.
+OTEL_NODE_DISABLED_INSTRUMENTATIONS=openai   # deny-list: everything else stays on
+OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,pg   # allow-list: anything unlisted is off
+```
+
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS` prepends `@opentelemetry/instrumentation-`
+for you, so the value is `openai`. Pass the full package name and it matches
+nothing and disables nothing; the only trace of the mistake is a
+`Provided instrumentation name ... not found` line logged at `error` level, which
+most setups never surface. The programmatic form above does take the full name.
+
+All three levers work whether you call `getNodeAutoInstrumentations()` yourself or
+preload `@opentelemetry/auto-instrumentations-node/register`. The register entry
+point goes through the same helper, so only the environment variables reach it.
+
+Version resolution can split the decision in two. `@opentelemetry/instrumentation-openai`
+declares `openai` `>=4.19.0 <7`, while `@openai/agents-core` depends on `openai ^7`,
+and those usually resolve to two separate copies. The other library then takes your
+application's own v6 calls while this one takes the v7 copy the Agents SDK drives.
+Turning one off removes the ambiguity.
+
+Works under CommonJS with no extra setup, and under ESM with the standard OTel
+loader hook (`node --import` a preload that calls
+`register('@opentelemetry/instrumentation/hook.mjs', ...)`). If you cannot enable
+the loader, hand the module namespace over once at startup:
+
+```ts
+import * as OpenAIModule from 'openai';
+instrumentation.manuallyInstrument(OpenAIModule);
+```
+
+The patch reaches all three resource prototypes through the `OpenAI` client
+class's own statics (`OpenAI.Chat.Completions`, `OpenAI.Responses`,
+`OpenAI.Embeddings`), which are the same class objects backing a live client's
+resources. So there are no dist file paths to drift, and behavior is identical in
+both module systems.
 
 ### Responses API
 
