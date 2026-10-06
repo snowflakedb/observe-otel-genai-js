@@ -685,7 +685,9 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
 
     const tool = only(spansNamed(OP_EXECUTE_TOOL), 'execute_tool span');
     expect(tool.status.code).toBe(SpanStatusCode.ERROR);
-    expect(tool.attributes[ATTR_ERROR_TYPE]).toBe('Error');
+    // 0.19 redacts tool error details by default, leaving no class name to read,
+    // so error.type falls back to the recorder's own category.
+    expect(['Error', 'tool_execution_error']).toContain(tool.attributes[ATTR_ERROR_TYPE]);
   });
 
   it('nests chat spans and records agent messages on the Chat Completions path', async () => {
