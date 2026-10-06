@@ -1197,9 +1197,9 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     const [failed, recovered] = allSpans(h, CHAT);
     expect(failed!.status.code).toBe(SpanStatusCode.ERROR);
     expect(failed!.status.message).toBe('API Error: 400 unknown model (HTTP 400)');
-    expect(recovered!.status.code).toBe(SpanStatusCode.OK);
+    expect(recovered!.status.code).toBe(SpanStatusCode.UNSET);
     const root = findSpan(h, ROOT);
-    expect(root.status.code).toBe(SpanStatusCode.OK);
+    expect(root.status.code).toBe(SpanStatusCode.UNSET);
     expect(String(attr(root, 'gen_ai.output.messages'))).toContain('recovered');
     expect(String(attr(root, 'gen_ai.output.messages'))).toContain('end_turn');
   });
@@ -1217,7 +1217,7 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
       }),
     ]);
 
-    expect(findSpan(h, CHAT).status.code).toBe(SpanStatusCode.OK);
+    expect(findSpan(h, CHAT).status.code).toBe(SpanStatusCode.UNSET);
     const root = findSpan(h, ROOT);
     expect(root.status.code).toBe(SpanStatusCode.ERROR);
     expect(root.status.message).toBe('Reached maximum number of turns (1)');
@@ -1708,7 +1708,7 @@ describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
     for (const chat of mainChats) expect(attr(chat, 'genai.usage.is_partial')).toBeUndefined();
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(String(attr(delegation, 'gen_ai.tool.call.result'))).not.toContain('launched');
-    expect(root.status.code).toBe(SpanStatusCode.OK);
+    expect(root.status.code).toBe(SpanStatusCode.UNSET);
   });
 
   it('background command', async () => {

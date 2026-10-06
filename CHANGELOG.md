@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Core: recorders accept a framework's own error class as `error.type`
+  (`rec.setErrorType(name)`), for integrations that know a more precise name than
+  the recorder's coarse category. It becomes a metric label, so callers must keep
+  it low-cardinality.
+- `AgentInvocationRecorder.setInput(messages)` and
+  `ToolExecutionRecorder.setToolType(type)`, for integrations that learn an agent's
+  input or a tool's type after the span started.
 - **`OpenAIInstrumentation`** (`@genai-otel/core/openai/instrumentation`), an
   OpenTelemetry-native alternative to `wrapOpenAI`. It patches
   `chat.completions.create`, `responses.create`, and `embeddings.create` on the
@@ -30,6 +37,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counters. Streaming takes TTFT from the first `*.delta` event and the final
   output and usage from `response.completed`.
 - The `openai` peer range now includes v7.
+
+### Changed
+- Spans that succeed now leave their status unset instead of setting it to OK, as
+  the OpenTelemetry conventions recommend for instrumentation libraries.
 
 ### Fixed
 - Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release
