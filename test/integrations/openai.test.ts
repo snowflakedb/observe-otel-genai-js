@@ -1,9 +1,13 @@
 /**
- * Tests for the OpenAI adapter.
+ * Tests for the per-call helpers `instrumentedChatCompletion` and
+ * `instrumentedEmbedding`.
  *
- * We don't hit the real OpenAI API. Instead we construct a fake OpenAI client
- * shape that exposes `chat.completions.create` and `embeddings.create` so we
- * can verify the adapter's instrumentation without a network call.
+ * These await the result themselves and never touch the `APIPromise` machinery,
+ * so a small fake client is enough here.
+ *
+ * `wrapOpenAI` is tested against the real SDK in `openai-apipromise.test.ts`. It
+ * only instruments a real `APIPromise`, so a fake returning a plain promise would
+ * get no span there.
  */
 
 import type OpenAI from 'openai';
@@ -12,8 +16,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   instrumentedChatCompletion,
   instrumentedEmbedding,
-  withMetadata,
-  wrapOpenAI,
 } from '../../src/integrations/openai/index.js';
 import {
   ATTR_OPERATION_NAME,
@@ -36,7 +38,7 @@ interface FakeChatResponse {
 
 function makeFakeOpenAI(
   responses: {
-    chat?: () => Promise<FakeChatResponse> | Promise<AsyncIterable<unknown>>;
+    chat?: () => Promise<FakeChatResponse>;
     embeddings?: () => Promise<{
       data: Array<{ embedding: number[] }>;
       model: string;
@@ -47,11 +49,7 @@ function makeFakeOpenAI(
   return {
     chat: {
       completions: {
-        create: (params: unknown) => {
-          const isStream = (params as { stream?: boolean }).stream === true;
-          if (isStream) return responses.chat!() as Promise<AsyncIterable<unknown>>;
-          return responses.chat!() as Promise<FakeChatResponse>;
-        },
+        create: () => responses.chat!() as Promise<FakeChatResponse>,
       },
     },
     embeddings: {
@@ -142,91 +140,6 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('rate_limit');
-  });
-});
-
-describe('OpenAI adapter — streaming chat', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
-
-  it('captures TTFT + final usage from a streamed response', async () => {
-    const fake = makeFakeOpenAI({
-      chat: async () => {
-        async function* gen() {
-          yield {
-            id: 'chatcmpl-stream-1',
-            model: 'gpt-4o-stream',
-            choices: [{ delta: { content: 'hi' }, finish_reason: null }],
-          };
-          yield {
-            id: 'chatcmpl-stream-1',
-            model: 'gpt-4o-stream',
-            choices: [{ delta: { content: ' there' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
-          };
-        }
-        return gen() as AsyncIterable<unknown>;
-      },
-    });
-
-    const wrapped = wrapOpenAI(h.client, fake);
-    const stream = (await wrapped.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [{ role: 'user', content: 'hi' }],
-      stream: true,
-    } as any)) as unknown as AsyncIterable<unknown>;
-
-    for await (const _chunk of stream) {
-      /* drain */
-    }
-
-    const [span] = h.spans.getFinishedSpans();
-    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
-    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
-    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-4o-stream');
-    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
-    expect(output[0].parts[0].content).toBe('hi there');
-  });
-});
-
-describe('OpenAI adapter — wrapOpenAI proxy + withMetadata', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = createHarness();
-  });
-  afterEach(async () => {
-    await h.shutdown();
-  });
-
-  it('honors agentName and conversationId attached via withMetadata', async () => {
-    const fake = makeFakeOpenAI({
-      chat: async () => ({
-        id: 'r-1',
-        model: 'gpt-4o',
-        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
-        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
-      }),
-    });
-
-    const wrapped = wrapOpenAI(h.client, fake);
-    await wrapped.chat.completions.create(
-      withMetadata(
-        {
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: 'hi' }],
-        },
-        { agentName: 'planner', conversationId: 'conv-meta-1' },
-      ),
-    );
-
-    const [span] = h.spans.getFinishedSpans();
-    expect(span?.attributes['gen_ai.agent.name']).toBe('planner');
-    expect(span?.attributes['gen_ai.conversation.id']).toBe('conv-meta-1');
   });
 });
 
