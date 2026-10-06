@@ -93,8 +93,9 @@ Observe's Python SDK applies the same list, so change both together.
 ## What it does not cover
 
 - **Metrics.** Histogram labels are a fixed set (operation, provider, model,
-  agent name, tool name, error type and category) and carry no content, so they
-  are not filtered.
+  agent name, tool name, token type, error type and category), all on the list,
+  so they are not filtered at runtime. A test fails if a label outside the list
+  is added.
 - **Span names.** Names such as `chat gpt-4o`, `execute_tool search`, or
   `invoke_agent planner` are built from the operation, model, tool, and agent
   names, and are not filtered. Do not put user content in tool or agent names.

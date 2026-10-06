@@ -244,6 +244,23 @@ describe('allow_list content mode', () => {
     ]);
   });
 
+  it('records metrics with allowlisted label keys only', async () => {
+    useHarness({ contentCaptureMode: 'allow_list' });
+    await driveEverySpanType(h.client);
+
+    const metrics = (await h.collectMetrics())
+      .flatMap((rm) => rm.scopeMetrics)
+      .flatMap((sm) => sm.metrics);
+    expect(metrics.length).toBeGreaterThan(0);
+    for (const metric of metrics) {
+      for (const point of metric.dataPoints) {
+        for (const key of Object.keys(point.attributes)) {
+          expect(CONTENT_ALLOW_LIST.has(key), `${metric.descriptor.name}: ${key}`).toBe(true);
+        }
+      }
+    }
+  });
+
   it('keeps allowlisted metadata', async () => {
     useHarness({ contentCaptureMode: 'allow_list' });
     await driveEverySpanType(h.client);
