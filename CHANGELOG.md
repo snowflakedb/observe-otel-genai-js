@@ -64,6 +64,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/content-retention.md`.
 
 ### Changed
+- License changed from MIT to Apache 2.0.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

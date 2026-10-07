@@ -150,4 +150,4 @@ Pre-1.0. APIs may change. See [`docs/blueprint.md`](docs/blueprint.md) for the d
 
 ## License
 
-MIT
+Apache 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

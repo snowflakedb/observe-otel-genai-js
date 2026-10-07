@@ -2,7 +2,7 @@
   "name": "@genai-otel/core",
   "version": "0.6.0",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Snowflake Inc.",
   "repository": {
     "type": "git",
@@ -77,7 +77,7 @@
       "require": "./dist/cjs/integrations/langchain/instrumentation.js"
     }
   },
-  "files": ["dist", "docs", "LICENSE", "README.md"],
+  "files": ["dist", "docs", "LICENSE", "NOTICE", "README.md"],
   "sideEffects": false,
   "engines": {
     "node": ">=22"
