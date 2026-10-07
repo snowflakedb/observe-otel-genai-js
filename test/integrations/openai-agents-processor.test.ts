@@ -9,6 +9,7 @@
 import { SpanStatusCode, context as otelContext, trace as otelTrace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CONTENT_ALLOW_LIST } from '../../src/content/allow-list.js';
 import { mapAgentsItems } from '../../src/integrations/openai-agents/_map.js';
 import type {
   SdkModel,
@@ -618,6 +619,26 @@ describe('GenAIOtelTracingProcessor', () => {
     const root = only(h.spans.getFinishedSpans());
     expect(root.attributes['error.type']).toBe('Error');
     expect(root.status.message).toBe('Error');
+  });
+
+  it('keeps only allowlisted data on the container under allow_list capture', async () => {
+    const strict = new GenAIOtelTracingProcessor({
+      client: h.client,
+      contentCapture: 'allow_list',
+    });
+    const trace = makeTrace({
+      name: 'strict-run',
+      groupId: 'conv-1',
+      metadata: { customer: '42' },
+    });
+    await strict.onTraceStart(trace);
+    await strict.failTrace(trace.traceId, new Error('customer 42 said something private'));
+
+    const root = only(h.spans.getFinishedSpans());
+    expect(Object.keys(root.attributes).filter((k) => !CONTENT_ALLOW_LIST.has(k))).toEqual([]);
+    expect(root.attributes[ATTR_CONVERSATION_ID]).toBe('conv-1');
+    expect(root.attributes['error.type']).toBe('Error');
+    expect(root.status).toEqual({ code: SpanStatusCode.ERROR });
   });
 
   it('reports _OTHER on the container for an error with no class-like name', async () => {

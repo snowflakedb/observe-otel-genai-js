@@ -56,6 +56,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Time-to-first-token on the AI SDK path, measured from the first delta event.
   - `instrumentModel()` for hand-written `Model` classes, and
     `GenAIOtelTracingProcessor` (`@genai-otel/core/openai-agents`) for custom setups.
+- `allow_list` content-capture mode. It strips content like `metadata_only`, and every
+  span the library creates keeps only attributes on a fixed, reviewed allowlist, so a
+  new or unknown attribute is dropped instead of exported. Event and link attributes
+  are filtered too, exceptions keep only `exception.type`, and the status message is
+  dropped. The list is exported as `CONTENT_ALLOW_LIST`. See
+  `docs/content-retention.md`.
 
 ### Changed
 - Spans that succeed now leave their status unset instead of setting it to OK, as

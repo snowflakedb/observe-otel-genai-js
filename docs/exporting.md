@@ -69,7 +69,9 @@ control:
 1. **Coarse, built-in:** `contentCaptureMode`. Set `metadata_only` to drop all
    content across every span type (generation, agent, tool, embedding), or
    `no_tool_content` (the default) to keep prompts/completions but strip tool
-   args/results. This needs no extra code.
+   args/results. Set `allow_list` to drop content and also every attribute not
+   on a fixed, reviewed list (see [content-retention.md](content-retention.md)).
+   This needs no extra code.
 
 2. **Fine-grained:** a redacting `SpanProcessor`. Because content is emitted as
    standard span attributes, a processor can scrub or drop it uniformly for
