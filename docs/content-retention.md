@@ -32,6 +32,11 @@ ambient scope, then the client. So a call or scope that picks another mode
 overrides a client-level `allow_list`. Integrations pass their own
 `contentCapture` option per call, so leave it unset there.
 
+An integration's own `contentCapture` option covers only the spans that
+integration opens. With the OpenAI Agents SDK, the `chat` spans on the OpenAI
+model paths come from `OpenAIInstrumentation`, so setting `allow_list` only on
+`OpenAIAgentsInstrumentation` leaves them unfiltered. Set it on the client.
+
 Only the mode in effect when a span starts counts. Open
 `withContentCaptureMode('allow_list', ...)` before the call that starts the
 span: a span that started inside the scope stays filtered even if it ends after
