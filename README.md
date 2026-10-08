@@ -90,9 +90,10 @@ Prompt and completion **content is captured by default** — the input/output
 messages are emitted as structured `gen_ai.input.messages` /
 `gen_ai.output.messages` span attributes (client default mode
 `no_tool_content`: prompts and completions on, tool args/results off). This
-matches OpenTelemetry's own unbounded-attribute default and keeps traces useful
-out of the box, but it means conversation content leaves your process on every
-span.
+keeps traces useful out of the box, but it means conversation content leaves
+your process on every span. Each content attribute is capped at 1,048,576
+characters (`DEFAULT_MAX_CONTENT_LENGTH`), large enough that typical prompts
+and completions are never trimmed.
 
 To restrict what is captured:
 
@@ -104,8 +105,10 @@ To restrict what is captured:
   content, and every span keeps only attributes on a fixed allowlist, so a new
   or unknown attribute is dropped. See
   [`docs/content-retention.md`](docs/content-retention.md).
-- **Cap size:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
-  trims long content while keeping the emitted JSON valid.
+- **Change the size cap:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
+  trims content longer than the cap while keeping the emitted JSON valid, and
+  marks the attribute with `.truncated` and `.original_size_bytes`. Set
+  `maxContentLength: 0` to turn the cap off.
 - **Redact fields:** register a redacting `SpanProcessor` at bootstrap. Content
   is user-owned and redacted at the OTel layer — the library ships no in-SDK
   sanitizer. See the recipe in [`docs/exporting.md`](docs/exporting.md#redacting-content).

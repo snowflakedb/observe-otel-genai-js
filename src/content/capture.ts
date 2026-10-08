@@ -42,12 +42,9 @@ export interface ContentCapture {
   /** When false, no content is emitted at all (`metadata_only` equivalent). */
   enabled: boolean;
   /**
-   * Optional cap (in characters) on each content payload. When unset, `0`, or
-   * non-finite, content is emitted in full with no truncation — matching
-   * OpenTelemetry's own default (unbounded attribute values) and deferring size
-   * policy to the SDK's `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend.
-   * Set a finite value to opt into truncation (e.g. to stay under a strict
-   * backend per-attribute limit or the OTLP message-size ceiling).
+   * Cap (in characters) on each content attribute. Defaults to
+   * `DEFAULT_MAX_CONTENT_LENGTH`. Set `0` or a non-finite value (e.g.
+   * `Infinity`) to turn the cap off and emit content in full.
    */
   maxContentLength?: number;
   /** How to truncate string payloads when a finite `maxContentLength` is set. */
@@ -55,15 +52,15 @@ export interface ContentCapture {
 }
 
 /**
- * A reasonable cap for callers who want to opt into truncation. NOT applied by
- * default — `defaultContentCapture()` leaves `maxContentLength` unset (unlimited).
+ * Default cap on each content attribute: 1,048,576 characters. Kept large so
+ * it only trims content that would otherwise make a span too big to export.
  */
-export const DEFAULT_MAX_CONTENT_LENGTH = 32 * 1024;
+export const DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024;
 
 export function defaultContentCapture(): ContentCapture {
   return {
     enabled: true,
-    // Unlimited by default — no built-in truncation.
+    maxContentLength: DEFAULT_MAX_CONTENT_LENGTH,
     truncationStrategy: 'middle',
   };
 }

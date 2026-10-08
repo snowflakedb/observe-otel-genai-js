@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveConfig } from '../src/config.js';
 import {
+  DEFAULT_MAX_CONTENT_LENGTH,
   defaultContentCapture,
   resolveContentCaptureMode,
   truncate,
@@ -92,16 +94,36 @@ describe('content on span attributes', () => {
     expect(system).toEqual([{ type: 'text', content: 'You are helpful' }]);
   });
 
-  it('does not truncate by default (unlimited) — emits full valid JSON', async () => {
-    const long = 'X'.repeat(100_000);
+  const overDefaultCap = 'X'.repeat(DEFAULT_MAX_CONTENT_LENGTH + 1);
+
+  it('trims content longer than the default cap', async () => {
     const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: overDefaultCap }] }] });
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
     const raw = span!.attributes[ATTR_INPUT_MESSAGES] as string;
-    const parsed = JSON.parse(raw);
-    expect(parsed).toEqual([{ role: 'user', parts: [{ type: 'text', content: long }] }]);
+    expect(raw.length).toBeLessThanOrEqual(DEFAULT_MAX_CONTENT_LENGTH);
+    expect(JSON.parse(raw)[0].role).toBe('user');
+    expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBe(true);
+  });
+
+  it('keeps the default cap when only other capture fields are set', () => {
+    const config = resolveConfig({ contentCapture: { truncationStrategy: 'end' } });
+    expect(config.contentCapture.maxContentLength).toBe(DEFAULT_MAX_CONTENT_LENGTH);
+  });
+
+  it.each([0, Number.POSITIVE_INFINITY])('maxContentLength %s turns the cap off', async (cap) => {
+    await h.shutdown();
+    h = createHarness({ contentCaptureMode: 'full', contentCapture: { maxContentLength: cap } });
+
+    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: overDefaultCap }] }] });
+    await rec.end();
+
+    const [span] = h.spans.getFinishedSpans();
+    const parsed = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(parsed[0].parts[0].content).toBe(overDefaultCap);
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBeUndefined();
   });
 
