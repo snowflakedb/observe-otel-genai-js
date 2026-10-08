@@ -9,6 +9,7 @@
 import { SpanStatusCode, context as otelContext, trace as otelTrace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Client } from '../../src/client.js';
 import { CONTENT_ALLOW_LIST } from '../../src/content/allow-list.js';
 import { withContentCaptureMode } from '../../src/context.js';
 import { mapAgentsItems } from '../../src/integrations/openai-agents/_map.js';
@@ -31,7 +32,7 @@ import {
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 let nextId = 0;
 function id(prefix: string): string {
@@ -631,6 +632,50 @@ describe('GenAIOtelTracingProcessor', () => {
     await scoped.failTrace(trace.traceId, new Error('customer 42 said something private'));
 
     expect(only(h.spans.getFinishedSpans()).status.message).toBe('Error');
+  });
+
+  it('keeps error text on the container when the context asks for content', async () => {
+    const full = new GenAIOtelTracingProcessor({
+      client: new Client({ contentCaptureMode: 'metadata_only' }),
+    });
+    const trace = makeTrace({ name: 'loud-run' });
+    await withContentCaptureMode('full', () => full.onTraceStart(trace));
+    await full.failTrace(trace.traceId, new Error('customer 42 said something'));
+
+    const root = only(h.spans.getFinishedSpans());
+    expect(root.status).toEqual({
+      code: SpanStatusCode.ERROR,
+      message: 'customer 42 said something',
+    });
+  });
+
+  it('keeps error text off failed agent and tool spans under metadata_only capture', async () => {
+    const quiet = new GenAIOtelTracingProcessor({
+      client: h.client,
+      contentCapture: 'metadata_only',
+    });
+    const trace = makeTrace();
+    await quiet.onTraceStart(trace);
+    const agent = makeSpan(
+      trace.traceId,
+      { type: 'agent', name: 'worker' },
+      { error: { message: 'agent gave up on "secret prompt"' } },
+    );
+    await quiet.onSpanStart(agent);
+    await runSpan(
+      quiet,
+      makeSpan(
+        trace.traceId,
+        { type: 'function', name: 'lookup', input: '{}', output: '' },
+        { parentId: agent.spanId, error: { message: 'no row for "secret query"' } },
+      ),
+    );
+    await quiet.onSpanEnd(agent);
+    await quiet.onTraceEnd(trace);
+
+    const failed = [...spansWithOp(OP_EXECUTE_TOOL), ...agentSpans()];
+    expect(failed).toHaveLength(2);
+    for (const span of failed) expectErrorTextDropped(span, 'secret');
   });
 
   it('keeps only allowlisted data on the container under allow_list capture', async () => {

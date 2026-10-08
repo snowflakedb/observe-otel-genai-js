@@ -1,6 +1,7 @@
 import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { Client } from '../../src/client.js';
 import {
   wrapEmbed,
   wrapGenerateText,
@@ -16,7 +17,7 @@ import {
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 // AI SDK v7 reports usage as a nested provider shape; the SDK flattens
 // `inputTokens.total` / `outputTokens.total` into the top-level
@@ -99,6 +100,25 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.status.code).toBe(2 /* ERROR */);
+  });
+
+  it('keeps the provider error text off the span under metadata_only', async () => {
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-1',
+      doGenerate: async () => {
+        throw new Error('cannot answer "secret prompt"');
+      },
+    });
+
+    await expect(
+      wrapGenerateText(new Client({ contentCaptureMode: 'metadata_only' }), {
+        model,
+        prompt: 'secret prompt',
+      }),
+    ).rejects.toThrow('secret prompt');
+
+    expectErrorTextDropped(h.spans.getFinishedSpans()[0], 'secret');
   });
 });
 

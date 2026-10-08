@@ -4,6 +4,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { Client } from '../../src/client.js';
 import {
   type DeriveOptionsEvent,
   genaiTelemetryIntegration,
@@ -17,7 +18,7 @@ import {
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_GENERATE_CONTENT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 // ---------------------------------------------------------------------------
 // Mock model builders (AI SDK v7 provider shapes)
@@ -384,5 +385,25 @@ describe('genaiTelemetryIntegration', () => {
     );
     const agent = oneByName(h, 'invoke_agent');
     expect(agent?.status.code).toBe(2 /* ERROR */);
+  });
+
+  it('keeps the model error text off every span under metadata_only', async () => {
+    registerTelemetry(
+      genaiTelemetryIntegration(new Client({ contentCaptureMode: 'metadata_only' })),
+    );
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-fail',
+      doGenerate: async () => {
+        throw new Error('cannot answer "secret prompt"');
+      },
+    });
+    await expect(generateText({ model, prompt: 'secret prompt', maxRetries: 0 })).rejects.toThrow(
+      'secret prompt',
+    );
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.name).sort()).toEqual(['chat mock-fail', 'invoke_agent agent']);
+    for (const span of spans) expectErrorTextDropped(span, 'secret');
   });
 });

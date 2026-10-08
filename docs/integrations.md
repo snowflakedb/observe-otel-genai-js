@@ -27,7 +27,10 @@ Control it globally on the `Client` (`contentCaptureMode`), per call (the
 honored by every span type: generation, agent, tool, embedding, retrieval),
 `no_tool_content` (prompts and completions; tool payloads and retrieval content
 stripped), `full` (all content incl. tool args/results and retrieval
-query/documents). For fine-grained, field-level redaction, register a redacting
+query/documents). Error messages can quote the prompt, so under `metadata_only` a
+failed span keeps `error.type` and the ERROR status, records no exception event,
+and puts the error type or category in the status description instead of the
+message. For fine-grained, field-level redaction, register a redacting
 `SpanProcessor` at bootstrap — see [exporting.md](exporting.md#redacting-content).
 
 ### Adapter capability matrix

@@ -8,8 +8,11 @@
  * agent, tool, and embedding.
  */
 
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { ContentCaptureMode } from '../src/content/capture.js';
+import { withContentCaptureMode } from '../src/context.js';
 import type { Message } from '../src/models/message.js';
 import {
   assistantTextMessage,
@@ -25,7 +28,7 @@ import {
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
 } from '../src/semconv.js';
-import { type Harness, createHarness } from './_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from './_harness.js';
 
 describe('metadata_only strips content across all span types', () => {
   let h: Harness;
@@ -87,6 +90,76 @@ describe('metadata_only strips content across all span types', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_EMBEDDING_INPUT_TEXTS]).toBeUndefined();
   });
+});
+
+/**
+ * An error message can quote the prompt, so modes that capture no content keep
+ * only the error type and the ERROR status: no exception event, and a status
+ * description that names the error category instead of the message.
+ */
+describe('metadata_only keeps error text off every span type', () => {
+  const SECRET = 'secret prompt quoted in the error';
+  const MODEL = { provider: 'openai', name: 'gpt-4o' };
+  let h: Harness;
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  /** Fails one span of each type and returns the finished spans. */
+  async function failEverySpanType(contentCapture?: ContentCaptureMode): Promise<ReadableSpan[]> {
+    const generation = h.client.startGeneration({ model: MODEL, contentCapture });
+    generation.setCallError(new Error(SECRET));
+    await generation.end();
+    const mapping = h.client.startGeneration({ model: MODEL, contentCapture });
+    mapping.setMappingError(new Error(SECRET));
+    await mapping.end();
+    const agent = h.client.invokeAgent({ agentName: 'responder', contentCapture });
+    agent.setError(new Error(SECRET));
+    await agent.end();
+    const created = h.client.createAgent({ agentName: 'responder' });
+    created.setError(new Error(SECRET));
+    await created.end();
+    const tool = h.client.startToolExecution({ toolName: 'search', contentCapture });
+    tool.setExecError(new Error(SECRET));
+    await tool.end();
+    const embedding = h.client.startEmbedding({ model: MODEL, contentCapture });
+    embedding.setCallError(new Error(SECRET));
+    await embedding.end();
+    const retrieval = h.client.startRetrieval({ queryText: 'q', contentCapture });
+    retrieval.setCallError(new Error(SECRET));
+    await retrieval.end();
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans).toHaveLength(7);
+    return spans;
+  }
+
+  it('drops the message when metadata_only is set per call', async () => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    const spans = await failEverySpanType('metadata_only');
+    // create_agent takes no per-call mode.
+    for (const span of spans.filter((s) => !s.name.startsWith('create_agent'))) {
+      expectErrorTextDropped(span, SECRET);
+    }
+  });
+
+  it('drops the message when metadata_only is set on the context', async () => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    const spans = await withContentCaptureMode('metadata_only', () => failEverySpanType());
+    for (const span of spans) expectErrorTextDropped(span, SECRET);
+  });
+
+  it.each(['full', 'no_tool_content'] as const)(
+    'keeps the message and exception under %s',
+    async (mode) => {
+      h = createHarness({ contentCaptureMode: mode });
+      for (const span of await failEverySpanType()) {
+        expect(span.status.message, span.name).toBe(SECRET);
+        const exception = span.events.find((e) => e.name === 'exception');
+        expect(exception?.attributes?.['exception.message'], span.name).toBe(SECRET);
+      }
+    },
+  );
 });
 
 /**

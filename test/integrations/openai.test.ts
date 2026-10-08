@@ -13,6 +13,7 @@
 import type OpenAI from 'openai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { Client } from '../../src/client.js';
 import {
   instrumentedChatCompletion,
   instrumentedEmbedding,
@@ -27,7 +28,7 @@ import {
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 interface FakeChatResponse {
   id: string;
@@ -146,6 +147,23 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('rate_limit');
   });
+
+  it('keeps the provider error text off the span under metadata_only', async () => {
+    const fake = makeFakeOpenAI({
+      chat: async () => {
+        throw Object.assign(new Error("secret prompt can't be processed"), { status: 400 });
+      },
+    });
+
+    await expect(
+      instrumentedChatCompletion(new Client({ contentCaptureMode: 'metadata_only' }), fake, {
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'secret prompt' }],
+      }),
+    ).rejects.toThrow('secret prompt');
+
+    expectErrorTextDropped(h.spans.getFinishedSpans()[0], 'secret');
+  });
 });
 
 describe('OpenAI adapter — instrumentedEmbedding', () => {
@@ -175,5 +193,22 @@ describe('OpenAI adapter — instrumentedEmbedding', () => {
     expect(span?.attributes['gen_ai.embeddings.input_count']).toBe(1);
     expect(span?.attributes['gen_ai.embeddings.dimension.count']).toBe(3072);
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
+  });
+
+  it('keeps the provider error text off the span under metadata_only', async () => {
+    const fake = makeFakeOpenAI({
+      embeddings: async () => {
+        throw Object.assign(new Error('input "secret text" is too long'), { status: 400 });
+      },
+    });
+
+    await expect(
+      instrumentedEmbedding(new Client({ contentCaptureMode: 'metadata_only' }), fake, {
+        model: 'text-embedding-3-large',
+        input: 'secret text',
+      }),
+    ).rejects.toThrow('secret text');
+
+    expectErrorTextDropped(h.spans.getFinishedSpans()[0], 'secret');
   });
 });

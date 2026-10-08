@@ -23,7 +23,7 @@ import type {
   AgentQueryParams,
   AgentUsage,
 } from '../../src/integrations/claude-agent-sdk/types.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const ROOT = 'invoke_agent claude-agent-sdk';
@@ -1177,6 +1177,51 @@ describe('Claude Agent SDK adapter: content capture', () => {
         expect(attr(span, 'gen_ai.tool.call.arguments')).toBeUndefined();
         expect(attr(span, 'gen_ai.tool.call.result')).toBeUndefined();
       }
+    });
+
+    it('keeps error text off a failed call, a failed tool, and the run', async () => {
+      const h = harness();
+      await run(h, [
+        init(),
+        assistant('msg_1', [toolUse('tu_1', 'Bash', { command: 'cat secret' })]),
+        toolResult('tu_1', 'secret: no such file', { isError: true }),
+        {
+          type: 'assistant',
+          message: { id: 'uuid-1', model: '<synthetic>', content: [text('API Error: secret')] },
+          parent_tool_use_id: null,
+        },
+        result({ is_error: true, result: 'API Error: secret', api_error_status: 400 }),
+      ]);
+
+      const failed = h.spans
+        .getFinishedSpans()
+        .filter((s) => s.status.code === SpanStatusCode.ERROR);
+      expect(failed.map((s) => s.name).sort()).toEqual([CHAT, 'execute_tool Bash', ROOT].sort());
+      for (const span of failed) expectErrorTextDropped(span, 'secret');
+    });
+
+    it('keeps an early-stop reason and a stream error off the run', async () => {
+      const h = harness();
+      await run(h, [
+        init(),
+        assistant('msg_1', [text('one')]),
+        result({
+          subtype: 'error_max_turns',
+          is_error: true,
+          result: undefined,
+          errors: ['stopped while answering "secret prompt"'],
+        }),
+      ]);
+      expectErrorTextDropped(findSpan(h, ROOT), 'secret');
+
+      h.resetSpans();
+      const query = (_params: AgentQueryParams) =>
+        (async function* () {
+          yield init();
+          throw new Error('cli died reading "secret prompt"');
+        })();
+      await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toThrow('secret');
+      expectErrorTextDropped(findSpan(h, ROOT), 'secret');
     });
   });
 });

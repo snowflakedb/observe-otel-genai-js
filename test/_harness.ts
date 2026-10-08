@@ -6,7 +6,7 @@
  * so providers are clean between runs.
  */
 
-import { context, metrics as metricsApi, trace } from '@opentelemetry/api';
+import { SpanStatusCode, context, metrics as metricsApi, trace } from '@opentelemetry/api';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import {
   AggregationTemporality,
@@ -16,10 +16,12 @@ import {
 } from '@opentelemetry/sdk-metrics';
 import {
   InMemorySpanExporter,
+  type ReadableSpan,
   SimpleSpanProcessor,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { expect } from 'vitest';
 
 import { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
@@ -111,4 +113,19 @@ export function createHarness(input?: ClientConfig): Harness {
  */
 export function findSpan(spans: InMemorySpanExporter, predicate: (name: string) => boolean) {
   return spans.getFinishedSpans().find((s) => predicate(s.name));
+}
+
+/**
+ * Asserts a failed span kept its `error.type` and ERROR status but none of the
+ * error's text: no exception event, and `text` nowhere in the exported span.
+ */
+export function expectErrorTextDropped(span: ReadableSpan | undefined, text: string): void {
+  expect(span?.status.code, span?.name).toBe(SpanStatusCode.ERROR);
+  expect(span?.attributes['error.type'], span?.name).toBeTruthy();
+  expect(
+    span?.events.filter((e) => e.name === 'exception'),
+    span?.name,
+  ).toEqual([]);
+  const exported = JSON.stringify([span?.attributes, span?.events, span?.links, span?.status]);
+  expect(exported, span?.name).not.toContain(text);
 }

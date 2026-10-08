@@ -43,7 +43,7 @@ import {
   OP_INVOKE_AGENT,
   OP_RETRIEVAL,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 const llmSerialized = {
   lc: 1,
@@ -1389,6 +1389,35 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
     const guardedSpan = h.spans.getFinishedSpans()[1]!;
     expect(guardedSpan.attributes[ATTR_INPUT_MESSAGES]).toBeUndefined();
     expect(guardedSpan.attributes[ATTR_OUTPUT_MESSAGES]).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — error text under metadata_only', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('keeps every error message off the spans', async () => {
+    const handler = new GenAIOtelCallbackHandler({
+      client: h.client,
+      contentCapture: 'metadata_only',
+    });
+    await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'c1');
+    await handler.handleLLMError!(new Error('cannot answer "secret prompt"'), 'l1');
+    await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'c1');
+    await handler.handleToolError!(new Error('no row for "secret query"'), 't1');
+    await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
+    await handler.handleRetrieverError!(new Error('bad query "secret query"') as never, 'r1');
+    await handler.handleChainError!(new Error('chain failed on "secret prompt"'), 'c1');
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans).toHaveLength(4);
+    for (const span of spans) expectErrorTextDropped(span, 'secret');
   });
 });
 

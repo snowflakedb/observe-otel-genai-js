@@ -8,6 +8,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { Client } from '../../src/client.js';
 import {
   instrumentedMessageCreate,
   withMetadata,
@@ -23,7 +24,7 @@ import {
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from '../_harness.js';
 
 function makeFakeAnthropic(reply: () => Promise<unknown>): Anthropic {
   return {
@@ -127,6 +128,22 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     const [span] = h.spans.getFinishedSpans();
     const system = JSON.parse(span!.attributes['gen_ai.system_instructions'] as string);
     expect(system).toEqual([{ type: 'text', content: 'be helpful' }]);
+  });
+
+  it('keeps the provider error text off the span under metadata_only', async () => {
+    const fake = makeFakeAnthropic(async () => {
+      throw Object.assign(new Error('messages.0: "secret prompt" is invalid'), { status: 400 });
+    });
+
+    await expect(
+      instrumentedMessageCreate(new Client({ contentCaptureMode: 'metadata_only' }), fake, {
+        model: 'claude',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'secret prompt' }],
+      }),
+    ).rejects.toThrow('secret prompt');
+
+    expectErrorTextDropped(h.spans.getFinishedSpans()[0], 'secret');
   });
 });
 

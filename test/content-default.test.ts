@@ -26,7 +26,7 @@ import {
   ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_DEFINITIONS,
 } from '../src/semconv.js';
-import { type Harness, createHarness } from './_harness.js';
+import { type Harness, createHarness, expectErrorTextDropped } from './_harness.js';
 
 const MODEL = { provider: 'openai', name: 'gpt-4o' };
 
@@ -167,6 +167,11 @@ describe('a Client with no content-capture configuration', () => {
   it.each(spanTypes)('emits no content on %s spans', async (_, record) => {
     await record(h.client);
     expectNoContent(h.spans.getFinishedSpans()[0]!);
+  });
+
+  it.each(spanTypes)('keeps the error type and ERROR status on %s spans', async (_, record) => {
+    await record(h.client);
+    expectErrorTextDropped(h.spans.getFinishedSpans()[0], 'secret');
   });
 
   it('keeps embedding input texts off even with embedding input capture turned on', async () => {
