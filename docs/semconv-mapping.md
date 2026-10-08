@@ -135,7 +135,7 @@ By default a recorder reports a coarse category for its own kind of work. An int
 
 ## Content capture (structured attributes)
 
-Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`.
+Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`. The default mode is `metadata_only`, so content is off until you opt in with `no_tool_content` or `full`.
 
 | Attribute | Type | Where |
 |---|---|---|

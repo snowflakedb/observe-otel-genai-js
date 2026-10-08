@@ -86,20 +86,28 @@ For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/e
 
 ## Content capture and privacy
 
-Prompt and completion **content is captured by default** — the input/output
-messages are emitted as structured `gen_ai.input.messages` /
-`gen_ai.output.messages` span attributes (client default mode
-`no_tool_content`: prompts and completions on, tool args/results off). This
-matches OpenTelemetry's own unbounded-attribute default and keeps traces useful
-out of the box, but it means conversation content leaves your process on every
+Prompt and completion **content is not captured by default.** The client
+default mode is `metadata_only`: every span keeps its structured metadata
+(model, token usage, timing, error type) but carries no prompts, completions,
+system instructions, tool arguments or results, or retrieval and embedding
+text. The exception events the library records and raw error messages are left
+off too, since they can quote the input that caused them.
+
+To capture content, opt in:
+
+- **Prompts and completions:** `new Client({ contentCaptureMode: 'no_tool_content' })` —
+  emits the input/output messages as structured `gen_ai.input.messages` /
+  `gen_ai.output.messages` span attributes, but keeps tool arguments/results and
+  retrieval query/documents off.
+- **Everything:** `new Client({ contentCaptureMode: 'full' })` — also emits tool
+  arguments/results and retrieval query/documents.
+
+Both are also settable per call (`contentCapture`) and ambiently
+(`withContentCaptureMode`). Once content is on, it leaves your process on every
 span.
 
-To restrict what is captured:
+To restrict what is exported:
 
-- **Turn content off:** `new Client({ contentCaptureMode: 'metadata_only' })` —
-  strips content from every span type (generation, agent, tool, embedding).
-  Also settable per call (`contentCapture`) and ambiently
-  (`withContentCaptureMode`).
 - **Keep only reviewed attributes:** `contentCaptureMode: 'allow_list'` — no
   content, and every span keeps only attributes on a fixed allowlist, so a new
   or unknown attribute is dropped. See

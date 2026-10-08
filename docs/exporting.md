@@ -62,16 +62,17 @@ A row should appear within seconds.
 
 ## Redacting content
 
-The library captures prompt/completion content by default (see
+The library captures no prompt/completion content by default (see
 [integrations.md](integrations.md#content-capture)). There are two layers of
 control:
 
-1. **Coarse, built-in:** `contentCaptureMode`. Set `metadata_only` to drop all
-   content across every span type (generation, agent, tool, embedding), or
-   `no_tool_content` (the default) to keep prompts/completions but strip tool
-   args/results. Set `allow_list` to drop content and also every attribute not
-   on a fixed, reviewed list (see [content-retention.md](content-retention.md)).
-   This needs no extra code.
+1. **Coarse, built-in:** `contentCaptureMode`. `metadata_only` (the default)
+   drops all content across every span type (generation, agent, tool, embedding,
+   retrieval); `no_tool_content` keeps prompts/completions but strips tool
+   args/results and retrieval content; `full` keeps everything. Set
+   `allow_list` to drop content and also every attribute not on a fixed,
+   reviewed list (see [content-retention.md](content-retention.md)). This needs
+   no extra code.
 
 2. **Fine-grained:** a redacting `SpanProcessor`. Because content is emitted as
    standard span attributes, a processor can scrub or drop it uniformly for

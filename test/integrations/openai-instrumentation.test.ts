@@ -158,7 +158,9 @@ describe('OpenAIInstrumentation', () => {
   });
 
   it('emits a chat span for the Responses API, mapping instructions to system_instructions', async () => {
-    const client = await setup(() => responsesMessage({ id: 'resp-1', text: 'terse answer' }));
+    const client = await setup(() => responsesMessage({ id: 'resp-1', text: 'terse answer' }), {
+      contentCapture: 'no_tool_content',
+    });
 
     const result = await client.responses.create({
       model: 'gpt-4o-mini',
@@ -203,11 +205,8 @@ describe('OpenAIInstrumentation', () => {
     expect(definitions).toContain('city');
   });
 
-  it('omits tool descriptions and schemas under the default capture mode', async () => {
-    // The library defaults to `no_tool_content`, so a tool definition is reduced
-    // to its identity. Pinning it means a change to that default has to come
-    // through this test rather than through what a plain install starts sending.
-    const client = await setup(() => responsesMessage());
+  it('omits tool descriptions and schemas under no_tool_content capture', async () => {
+    const client = await setup(() => responsesMessage(), { contentCapture: 'no_tool_content' });
 
     await client.responses.create({
       model: 'gpt-4o-mini',

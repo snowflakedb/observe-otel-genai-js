@@ -45,6 +45,7 @@ describe('EmbeddingRecorder', () => {
   it('captures and truncates inputTexts when captureInput=true', async () => {
     const rec = h.client.startEmbedding({
       model: { provider: 'openai', name: 'text-embedding-3-large' },
+      contentCapture: 'full',
     });
     rec.setResult({
       inputCount: 4,

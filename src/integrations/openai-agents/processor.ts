@@ -135,6 +135,8 @@ interface TraceRecord {
   /** Opened inside a `Runner.run()` call, so a failure of the run is a failure of the trace. */
   readonly ownedByRun: boolean;
   readonly span: Span;
+  /** Content-capture mode resolved when the trace opened. */
+  readonly mode: ContentCaptureMode;
   readonly context: Context;
   readonly spanIds: Set<string>;
   /** Spans already ended, so a start delivered after its end does not open the span again. */
@@ -230,6 +232,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       resumed,
       ownedByRun: this.activeRun() !== undefined,
       span,
+      mode,
       context: otelTrace.setSpan(otelContext.active(), span),
       spanIds: new Set(),
       endedSpanIds: new Set(),
@@ -572,11 +575,9 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     const errorType = error == null ? '' : (errorName(error) ?? '_OTHER');
     if (errorType) {
       span.setAttribute(ATTR_ERROR_TYPE, errorType);
-      const metadataOnly =
-        (this.contentCapture ?? this.client.config.contentCaptureMode) === 'metadata_only';
       span.setStatus({
         code: SpanStatusCode.ERROR,
-        message: metadataOnly ? errorType : errorMessage(error),
+        message: trace.mode === 'metadata_only' ? errorType : errorMessage(error),
       });
     }
 

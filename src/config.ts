@@ -61,8 +61,8 @@ export interface ClientConfig {
   /**
    * Default content-capture mode. Resolution order at recording time:
    *   per-call → context → this default.
-   * Note: `default` here falls through to `no_tool_content` so tool args /
-   * results are not emitted unless the caller explicitly opts in.
+   * Unset, or `default`, means `metadata_only`: no content is emitted unless
+   * the caller opts in with `no_tool_content` or `full`.
    */
   contentCaptureMode?: ContentCaptureMode;
   /** Truncation / blob-store / use-events configuration. */
@@ -118,7 +118,7 @@ export function defaultConfig(): ResolvedClientConfig {
     agentVersion: '',
     userId: '',
     tags: {},
-    contentCaptureMode: 'no_tool_content',
+    contentCaptureMode: 'metadata_only',
     contentCapture: defaultContentCapture(),
     embeddingCapture: {
       captureInput: false,

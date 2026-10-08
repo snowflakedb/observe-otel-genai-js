@@ -53,7 +53,8 @@ import { setupOtel } from '../_setup.js';
 const { tracerProvider, meterProvider } = setupOtel('openai-agents-example');
 
 const agents = new OpenAIAgentsInstrumentation({
-  // Tool arguments and results are stripped under the default capture mode.
+  // The default capture mode records no content; `full` records it all,
+  // including tool arguments and results.
   contentCapture: 'full',
 });
 

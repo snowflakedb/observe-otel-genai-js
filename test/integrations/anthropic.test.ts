@@ -86,11 +86,12 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
       usage: { input_tokens: 1, output_tokens: 1 },
     }));
 
-    await instrumentedMessageCreate(h.client, fake, {
-      model: 'claude',
-      max_tokens: 16,
-      messages: [{ role: 'user', content: 'hi' }],
-    });
+    await instrumentedMessageCreate(
+      h.client,
+      fake,
+      { model: 'claude', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+      { contentCapture: 'no_tool_content' },
+    );
 
     const [span] = h.spans.getFinishedSpans();
     const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
@@ -111,12 +112,17 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
       usage: { input_tokens: 1, output_tokens: 1 },
     }));
 
-    await instrumentedMessageCreate(h.client, fake, {
-      model: 'claude',
-      max_tokens: 10,
-      system: 'be helpful',
-      messages: [{ role: 'user', content: 'hi' }],
-    });
+    await instrumentedMessageCreate(
+      h.client,
+      fake,
+      {
+        model: 'claude',
+        max_tokens: 10,
+        system: 'be helpful',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      { contentCapture: 'no_tool_content' },
+    );
 
     const [span] = h.spans.getFinishedSpans();
     const system = JSON.parse(span!.attributes['gen_ai.system_instructions'] as string);
@@ -127,7 +133,7 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
 describe('Anthropic adapter — streaming', () => {
   let h: Harness;
   beforeEach(() => {
-    h = createHarness();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
   });
   afterEach(async () => {
     await h.shutdown();

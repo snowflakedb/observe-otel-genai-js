@@ -64,11 +64,24 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/content-retention.md`.
 
 ### Changed
+- **`metadata_only` is now the default content-capture mode.** A `Client` with no
+  `contentCaptureMode`, and the `default` mode's fallthrough, no longer capture
+  prompts and completions: spans keep their metadata but carry no messages,
+  system instructions, tool definitions or payloads, retrieval or embedding text,
+  exception events, or raw error messages. To capture content again, set
+  `contentCaptureMode: 'no_tool_content'` (prompts and completions) or `'full'`
+  (also tool arguments/results and retrieval content) on the `Client`, per call,
+  or with `withContentCaptureMode`.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- OpenAI Agents integration: the run container span read its content-capture mode
+  from the processor option alone, falling back to the client default only when
+  unset. So a processor set to `default`, or a `metadata_only` scope opened with
+  `withContentCaptureMode`, still put the raw error message on its status. It now
+  uses the mode resolved when the trace opens.
 - Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release
   only. `^0.200.0` on a `0.x` version means `>=0.200.0 <0.201.0`, so a project on
   any current release (0.201 and later) could not install this package without

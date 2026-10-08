@@ -28,6 +28,7 @@ describe('AgentInvocationRecorder', () => {
       requestProvider: 'openai',
       requestModel: 'gpt-4o',
       input: [userTextMessage('answer the question')],
+      contentCapture: 'full',
     });
     rec.setOutput([assistantTextMessage('hello there')]);
     await rec.end();
