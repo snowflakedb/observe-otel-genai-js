@@ -57,8 +57,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **OpenAI Agents SDK support.** `OpenAIAgentsInstrumentation`
   (`@genai-otel/core/openai-agents/instrumentation`) traces agent runs:
   `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on
-  the AI SDK path, and an `invoke_agent` container span for each run, named after
-  the trace. On the OpenAI model paths the `chat` span comes from
+  the AI SDK path, and an `invoke_workflow` span for each run, with
+  `gen_ai.workflow.name`. The workflow is named after the trace, or after the agent
+  passed to `run()` when the run has no name. On the OpenAI model paths the `chat` span comes from
   `OpenAIInstrumentation`, so each model call is reported once.
   - Model calls and tool calls run inside their span's OTel context, so spans from
     other instrumentations nest under the agent or tool, streamed calls included.
@@ -67,7 +68,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Agent spans carry the agent's input and output messages under content capture.
   - Runs and `withTrace` blocks that reject are closed with the error, since the
     SDK leaves them open. Failures the run recovers from do not fail the run.
-  - A streamed run that fails reports the error on its container.
+  - A streamed run that fails reports the error on its workflow span.
   - The processor stays registered when the SDK's processor list is replaced, so
     `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
   - Time-to-first-token on the AI SDK path, measured from the first delta event.
@@ -159,7 +160,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   this the agent spans and the chat spans under them could carry different ids.
 - Embedding spans no longer drop `gen_ai.agent.name` under `metadata_only`. The
   agent name is metadata, and the other span types already keep it.
-- OpenAI Agents integration: the run container span read its content-capture mode
+- OpenAI Agents integration: the run's workflow span read its content-capture mode
   from the processor option alone, falling back to the client default only when
   unset. So a processor set to `default`, or a `metadata_only` scope opened with
   `withContentCaptureMode`, still put the raw error message on its status. It now

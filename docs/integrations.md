@@ -68,7 +68,7 @@ of the places above. The full rules are in
 
 Where each integration reads the span's own value. A `withX(...)` scope and the
 `Client` work everywhere, and are the only way to set a field marked "–". The one
-exception is the OpenAI Agents run container span, which takes only the run's
+exception is the OpenAI Agents `invoke_workflow` span, which takes only the run's
 `conversationId` or `groupId`.
 
 | Integration | Agent name | Agent version | Conversation id | Conversation title | User id |
@@ -300,7 +300,7 @@ no model call beneath them. `@opentelemetry/instrumentation` is a required peer.
 
 | SDK span type | OTel span |
 |---|---|
-| trace | run container named after the trace, with operation `invoke_agent` (see below) |
+| trace | `invoke_workflow <workflow name>` (see below) |
 | `agent` | `invoke_agent <name>` |
 | `function` | `execute_tool <name>` |
 | `generation` on the AI SDK path (`aisdk(model)`) | `chat <model>` |
@@ -346,37 +346,42 @@ counts, and agent spans on the AI SDK and Chat Completions paths carry no messag
 whatever content capture is set to. The default Responses path still reports its
 input and output to trace processors, so agent spans there keep their messages.
 
-### The run container span
+### The workflow span
 
-Every run gets a container span, named after the trace (`RunConfig.workflowName`,
-or the SDK's default `Agent workflow`), with `gen_ai.operation.name` set to
-`invoke_agent`. It looks the same whether the run uses one agent or hands off
-between several, which matches the Python OpenTelemetry instrumentation for this
-SDK. The agents themselves get their own `invoke_agent <name>` spans beneath it.
+Every run gets a span named `invoke_workflow <workflow name>`, with
+`gen_ai.operation.name = invoke_workflow`. The workflow name is the trace's name
+(`RunConfig.workflowName`, or the name given to `withTrace`) and is also set as
+`gen_ai.workflow.name`. A run given no name, which the SDK calls `Agent workflow`,
+is named after the agent passed to `run()`. The span has no `gen_ai.agent.name`,
+since it sits above the agents. Each agent gets its own `invoke_agent <name>` span
+beneath it, so a run that hands off between agents shows them side by side under
+one workflow.
 
-The conventions suggest `invoke_workflow` for multi-agent runs. This integration does
-not emit it: telling the two kinds of run apart is only possible once the run is
-over, and one shape for every run is simpler to query.
+The semantic conventions report a workflow span only for runs that coordinate
+several agents. This integration opens one for every run, even one with a single
+agent, so every trace has one root that carries the run's conversation id and
+metadata.
 
-A run resumed after a tool approval gets a container span of its own, with the
+A run resumed after a tool approval gets a workflow span of its own, with the
 same name and conversation id as the first part of the run. A run resumed from a
 serialized state (`RunState.fromString`) gets a normal trace start and end from the
 SDK. A run resumed in the same process from `result.state` gets neither, so its
-container closes when the resumed run's `task` span ends.
+workflow span closes when the resumed run's `task` span ends.
 
 With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or
 `turn` spans, so a turn's error is not copied to its agent span, and a resumed run's
-container stays open until the trace cap or shutdown ends it.
+workflow span stays open until the trace cap or shutdown ends it.
 
-The container carries `gen_ai.conversation.id` and `Trace.metadata` as
+The workflow span carries `gen_ai.conversation.id` and `Trace.metadata` as
 `genai.metadata.*`. The conversation id is the `conversationId` passed to `run()`
 (or kept in a resumed run's state) when there is one, since the SDK sends it as the
-Responses `conversation`, and `Trace.groupId` otherwise. Set the group id and the metadata on the `Runner`, since
-the options passed to `run()` do not carry them:
+Responses `conversation`, and `Trace.groupId` otherwise. Set the workflow name, the
+group id and the metadata on the `Runner`, since the options passed to `run()` do
+not carry them:
 
 ```ts
 const runner = new Runner({
-  workflowName: 'triage-workflow',   // becomes the container span's name
+  workflowName: 'triage-workflow',   // becomes gen_ai.workflow.name and the span name
   groupId: 'chat-thread-1',          // gen_ai.conversation.id, unless run() gets a conversationId
   traceMetadata: { tenant: 'acme' }, // becomes genai.metadata.tenant
 });
@@ -389,17 +394,17 @@ a `withConversationId(...)` or `withAgent(...)` scope around the run.
 
 ### Errors
 
-- A run that rejects closes the traces it opened, with the error on the container.
-  The SDK skips `trace.end()` in that case. A streamed run that fails reports its
-  error the same way.
+- A run that rejects closes the traces it opened, with the error on the workflow
+  span. The SDK skips `trace.end()` in that case. A streamed run that fails reports
+  its error the same way.
 - A `withTrace(...)` block that throws is closed the same way.
 - A failure the run recovers from does not fail anything above it. That covers a
   model call the SDK retries, and an agent used as a tool whose failure the outer
   agent handles.
 - `error.type` is the error's class name when it looks like one (`BoomError`,
   `InputGuardrailTripwireTriggered`); otherwise the span's own category, such as
-  `tool_execution_error`, or `_OTHER` on the container. Free-form error text never
-  becomes a metric label.
+  `tool_execution_error`, or `_OTHER` on the workflow span. Free-form error text
+  never becomes a metric label.
 
 Guardrails get no span of their own: `GuardrailSpanData` carries only
 `{ name, triggered }`. A tripwire shows up as the `error.type` above.
@@ -409,7 +414,8 @@ active one is ended with the data it has.
 
 ### Metrics
 
-- `gen_ai.client.operation.duration` for agent spans and AI SDK `chat` spans.
+- `gen_ai.client.operation.duration` for agent spans and AI SDK `chat` spans. The
+  workflow span records no metric.
 - `gen_ai.client.tool_execution.duration` for tool spans.
 - `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted
   twice.
@@ -420,7 +426,7 @@ active one is ended with the data it has.
 `gen_ai.client.time_to_first_token` and `gen_ai.client.tool_execution.duration` are
 this library's names, shared by all its integrations; the conventions have since
 defined `gen_ai.client.operation.time_to_first_chunk` and, in development,
-`gen_ai.execute_tool.duration`. The run container records no duration metric.
+`gen_ai.execute_tool.duration`.
 
 On the AI SDK path the SDK does not report why the model stopped, so `chat` spans
 report `tool_call` when the model asked for a tool and otherwise the default `stop`.
@@ -510,7 +516,7 @@ Without the instrumentation:
 
 - spans from other instrumentations, such as OpenAI `chat` spans, do not nest under
   agent spans;
-- a run that rejects leaves its container span open until the trace cap or `stop()`
+- a run that rejects leaves its workflow span open until the trace cap or `stop()`
   ends it;
 - the processor can be dropped when the SDK's processor list is replaced.
 

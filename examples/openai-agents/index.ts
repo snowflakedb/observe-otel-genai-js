@@ -21,7 +21,7 @@
  * Shows the arrangement the integration is designed around: two instrumentations
  * registered together, producing one nested trace.
  *
- *   triage-workflow                      <- the run container (invoke_agent), from RunConfig.workflowName
+ *   invoke_workflow triage-workflow      <- the run, named from RunConfig.workflowName
  *     invoke_agent triage-agent
  *       chat gpt-4o-mini                 <- from OpenAIInstrumentation
  *     invoke_agent spanish-agent         <- the handoff; no span of its own
@@ -232,13 +232,13 @@ async function main() {
   // The tracing identity lives on `RunConfig`, which means the `Runner`
   // constructor. `run()`'s own options are per-invocation (`stream`, `maxTurns`, …).
   const runner = new Agents.Runner({
-    // Names the run container span.
+    // Names the run's invoke_workflow span.
     workflowName: 'triage-workflow',
     // The SDK documents this as a chat-thread identifier, which is what
     // `gen_ai.conversation.id` means. Nothing below the agents layer can see it: a
     // model-provider instrumentation sees one isolated HTTP call.
     groupId: 'chat-thread-1',
-    // Lands on the container span as `genai.metadata.*`.
+    // Lands on the workflow span as `genai.metadata.*`.
     traceMetadata: { tenant: 'acme', channel: 'web' },
   });
 
@@ -246,7 +246,7 @@ async function main() {
 
   console.log(`\nfinal output: ${result.finalOutput}`);
 
-  // Drain the processor before shutting the providers down, so the container
+  // Drain the processor before shutting the providers down, so the workflow
   // span and any in-flight spans are exported.
   await agents.shutdown();
   await server.close();

@@ -101,14 +101,14 @@ describe('openai-agents + openai — CJS auto-patch (require-in-the-middle)', ()
       .map((line) => line.slice('SPAN='.length));
 
     // Two model calls (tool request, then the answer), one tool execution with a
-    // span of its own, one agent, one run container, and the failing block.
+    // span of its own, one agent, one workflow, and the failing block.
     expect(output).toContain('SPAN_COUNT=7');
     expect(
       tree.filter((l) => l.startsWith('chat gpt-4o-mini <- invoke_agent cjs-agent')),
     ).toHaveLength(2);
     expect(tree).toContain('execute_tool get_weather <- invoke_agent cjs-agent');
-    expect(tree).toContain('invoke_agent cjs-agent <- Agent workflow');
-    expect(tree).toContain('Agent workflow <- <root>');
+    expect(tree).toContain('invoke_agent cjs-agent <- invoke_workflow cjs-agent');
+    expect(tree).toContain('invoke_workflow cjs-agent <- <root>');
     expect(tree).toContain('db.query <- execute_tool get_weather');
   });
 

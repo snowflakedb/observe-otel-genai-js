@@ -8,7 +8,7 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `create_agent`, `retrieval` |
+| `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `invoke_workflow`, `create_agent`, `retrieval` |
 | `gen_ai.conversation.id` | string | every span except `create_agent`, when set (see Identity resolution) |
 | `genai.conversation.title` | string | when `conversationTitle` is set (see Identity resolution) |
 | `genai.conversation.turn_index` | int | when `turnIndex` is set on the start |
@@ -119,14 +119,16 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.input.messages` | string (JSON, structured message array — from `AgentInvocationStart.input` or `recorder.setInput(Message[])`) |
 | `gen_ai.output.messages` | string (JSON, structured message array — from `recorder.setOutput(Message[])`) |
 
-### OpenAI Agents run container
+### OpenAI Agents workflow
 
-Each OpenAI Agents run gets a container span named after the trace, above the run's `invoke_agent <name>` spans.
+Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span, above the run's `invoke_agent <name>` spans. It has no `gen_ai.agent.name`.
 
 | Attribute | Type | Notes |
 |---|---|---|
-| `gen_ai.operation.name` | string | `invoke_agent`, whether the run uses one agent or several |
-| `gen_ai.conversation.id` | string | From the SDK's `Trace.groupId` |
+| `gen_ai.operation.name` | string | `invoke_workflow`, whether the run uses one agent or several |
+| `gen_ai.workflow.name` | string | The trace name (`RunConfig.workflowName`, or the `withTrace` name); for a run given none, the agent passed to `run()` |
+| `gen_ai.conversation.id` | string | The `conversationId` passed to `run()`, else the SDK's `Trace.groupId` |
+| `error.type` | string | When the run fails |
 | `genai.metadata.<key>` | string / number / boolean | Custom; one per scalar entry in the SDK's `Trace.metadata` |
 
 ### Agent-creation-only
@@ -181,7 +183,7 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 | Tool execution | `INTERNAL` |
 | Agent invocation | `INTERNAL` |
 | Agent creation | `INTERNAL` |
-| OpenAI Agents run container | `INTERNAL` |
+| Workflow invocation (OpenAI Agents run) | `INTERNAL` |
 
 ## Instrumentation scope
 

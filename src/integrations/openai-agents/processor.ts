@@ -23,7 +23,7 @@
  * processor and adds the context handling a processor cannot do by itself.
  *
  * SDK span to OTel span:
- *  - trace: a run container span named after the trace, with operation `invoke_agent`
+ *  - trace: `invoke_workflow`, named after the trace
  *  - `agent`: `invoke_agent`
  *  - `function`: `execute_tool`
  *  - `generation` from the AI SDK bridge: `chat`. The OpenAI model paths are left
@@ -60,11 +60,13 @@ import {
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
   ATTR_SDK_NAME,
+  ATTR_WORKFLOW_NAME,
   INSTRUMENTATION_NAME,
   OP_CHAT,
-  OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   SDK_NAME,
 } from '../../semconv.js';
+import { workflowSpanName } from '../../spans/names.js';
 import { VERSION } from '../../version.js';
 import { type OAMessage, mapOpenAIInput, mapOpenAIOutputMessage } from '../openai/_chat.js';
 import { mapResponsesOutput } from '../openai/_responses.js';
@@ -106,6 +108,9 @@ export interface GenAIOtelTracingProcessorOptions {
   getCurrentTrace?: () => SdkTrace | null;
 }
 
+/** The SDK's name for a trace given none, which says nothing about the workflow. */
+const SDK_DEFAULT_WORKFLOW_NAME = 'Agent workflow';
+
 /** Context key marking which `Runner.run()` call the current code runs under. */
 export const RUN_TOKEN_KEY = createContextKey('@genai-otel/openai-agents-run-token');
 
@@ -144,6 +149,8 @@ interface SpanRecord {
 interface TraceRecord {
   readonly sdkTrace: SdkTrace;
   readonly conversationId?: string;
+  /** `gen_ai.workflow.name`: the trace's own name, else its first agent's. */
+  workflowName?: string;
   /**
    * Opened again for a run resumed in the same process. The SDK sends no trace start
    * or end for those, so the trace closes when the run's top-level task ends.
@@ -151,6 +158,7 @@ interface TraceRecord {
   readonly resumed: boolean;
   /** Opened inside a `Runner.run()` call, so a failure of the run is a failure of the trace. */
   readonly ownedByRun: boolean;
+  /** The `invoke_workflow` span. */
   readonly span: Span;
   /** Content-capture mode resolved when the trace opened. */
   readonly mode: ContentCaptureMode;
@@ -172,6 +180,8 @@ interface RunState {
   readonly streaming: boolean;
   /** The `conversationId` passed to `run()`, which the SDK sends as the Responses `conversation`. */
   readonly conversationId?: string;
+  /** The agent passed to `run()`, which names a workflow given no name of its own. */
+  readonly startingAgent?: string;
   readonly traceIds: Set<string>;
 }
 
@@ -234,13 +244,17 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       contentCaptureModeFromContext(),
       this.client.config.contentCaptureMode,
     );
+    const workflowName =
+      trace.name === SDK_DEFAULT_WORKFLOW_NAME ? this.activeRun()?.startingAgent : trace.name;
+    const name = workflowSpanName(workflowName ?? '');
     // Opened without a recorder, so it is filtered here rather than by the `Client`.
     const span =
       mode === 'allow_list'
-        ? new AllowListSpan(this.tracer.startSpan(trace.name, allowListSpanOptions(options)))
-        : this.tracer.startSpan(trace.name, options);
-    span.setAttribute(ATTR_OPERATION_NAME, OP_INVOKE_AGENT);
+        ? new AllowListSpan(this.tracer.startSpan(name, allowListSpanOptions(options)))
+        : this.tracer.startSpan(name, options);
+    span.setAttribute(ATTR_OPERATION_NAME, OP_INVOKE_WORKFLOW);
     span.setAttribute(ATTR_SDK_NAME, SDK_NAME);
+    if (workflowName) span.setAttribute(ATTR_WORKFLOW_NAME, workflowName);
     const conversationId = this.activeRun()?.conversationId || trace.groupId || undefined;
     if (conversationId) span.setAttribute(ATTR_CONVERSATION_ID, conversationId);
     applyMetadataAttributes(span, trace.metadata);
@@ -248,6 +262,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     const record: TraceRecord = {
       sdkTrace: trace,
       conversationId,
+      workflowName,
       resumed,
       ownedByRun: this.activeRun() !== undefined,
       span,
@@ -354,9 +369,9 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
    * context under {@link RUN_TOKEN_KEY}, so traces the run opens can be closed if it
    * rejects, and chat spans know whether the run streams.
    */
-  beginRun(streaming: boolean, conversationId?: string): object {
+  beginRun(streaming: boolean, conversationId?: string, startingAgent?: string): object {
     const token = {};
-    this.runs.set(token, { streaming, conversationId, traceIds: new Set() });
+    this.runs.set(token, { streaming, conversationId, startingAgent, traceIds: new Set() });
     return token;
   }
 
@@ -427,6 +442,12 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       }),
     );
     record.agent = { name: data.name, recorder };
+    // Without a run to name it (the processor used alone), name it after its first agent.
+    if (!trace.workflowName && data.name) {
+      trace.workflowName = data.name;
+      trace.span.setAttribute(ATTR_WORKFLOW_NAME, data.name);
+      trace.span.updateName(workflowSpanName(data.name));
+    }
   }
 
   private startTool(
@@ -590,10 +611,10 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       else await this.abandonSpan(record, error);
     }
 
-    this.endContainerSpan(trace, error ?? trace.error);
+    this.endWorkflowSpan(trace, error ?? trace.error);
   }
 
-  private endContainerSpan(trace: TraceRecord, error: unknown): void {
+  private endWorkflowSpan(trace: TraceRecord, error: unknown): void {
     const span = trace.span;
     const errorType = error == null ? '' : (errorName(error) ?? '_OTHER');
     if (errorType) {

@@ -45,6 +45,7 @@ export const ATTR_AGENT_NAME = 'gen_ai.agent.name';
 export const ATTR_AGENT_VERSION = 'gen_ai.agent.version';
 export const ATTR_AGENT_ID = 'gen_ai.agent.id';
 export const ATTR_AGENT_DESCRIPTION = 'gen_ai.agent.description';
+export const ATTR_WORKFLOW_NAME = 'gen_ai.workflow.name';
 export const ATTR_USER_ID = 'user.id';
 export const ATTR_SDK_NAME = 'genai.sdk.name';
 export const ATTR_GENERATION_ID = 'genai.generation.id';
@@ -149,6 +150,7 @@ export const OP_GENERATE_CONTENT = 'generate_content';
 export const OP_EMBEDDINGS = 'embeddings';
 export const OP_EXECUTE_TOOL = 'execute_tool';
 export const OP_INVOKE_AGENT = 'invoke_agent';
+export const OP_INVOKE_WORKFLOW = 'invoke_workflow';
 export const OP_CREATE_AGENT = 'create_agent';
 export const OP_RETRIEVAL = 'retrieval';
 
@@ -159,6 +161,7 @@ export type OperationName =
   | typeof OP_EMBEDDINGS
   | typeof OP_EXECUTE_TOOL
   | typeof OP_INVOKE_AGENT
+  | typeof OP_INVOKE_WORKFLOW
   | typeof OP_CREATE_AGENT
   | typeof OP_RETRIEVAL;
 

@@ -22,8 +22,8 @@
  * `@genai-otel/core/openai-agents/instrumentation`. The processor exported here is
  * for custom setups: on its own it emits agent, tool and AI SDK chat spans, but
  * spans from other instrumentations (such as OpenAI chat spans) will not nest
- * under them, and a run that rejects leaves its container span open until the
- * trace cap or `stop()` ends it.
+ * under them, and a run that rejects leaves its `invoke_workflow` span open until
+ * the trace cap or `stop()` ends it.
  */
 
 export {

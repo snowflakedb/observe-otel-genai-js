@@ -23,7 +23,13 @@
  * the payload that tells the AI SDK path from the OpenAI one.
  */
 
-import { SpanStatusCode, context as otelContext, trace as otelTrace } from '@opentelemetry/api';
+import {
+  SpanKind,
+  SpanStatusCode,
+  context as otelContext,
+  trace as otelTrace,
+} from '@opentelemetry/api';
+import { DataPointType, type HistogramMetricData } from '@opentelemetry/sdk-metrics';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTENT_ALLOW_LIST } from '../../src/content/allow-list.js';
@@ -41,12 +47,16 @@ import { RUN_TOKEN_KEY } from '../../src/integrations/openai-agents/processor.js
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
+  ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_WORKFLOW_NAME,
+  METRIC_OPERATION_DURATION,
   OP_CHAT,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
@@ -107,9 +117,19 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(list).toHaveLength(1);
     return list[0] as T;
   };
-  /** `invoke_agent` spans for the SDK's agents, leaving out the run container. */
-  const agentSpans = () =>
-    spansWithOp(OP_INVOKE_AGENT).filter((s) => s.name.startsWith(`${OP_INVOKE_AGENT} `));
+  const agentSpans = () => spansWithOp(OP_INVOKE_AGENT);
+  /** Data points of the operation duration histogram for one operation. */
+  const durationPoints = async (op: string) => {
+    const histogram = (await h.collectMetrics())
+      .at(-1)
+      ?.scopeMetrics.flatMap((sm) => sm.metrics)
+      .find(
+        (m): m is HistogramMetricData =>
+          m.descriptor.name === METRIC_OPERATION_DURATION &&
+          m.dataPointType === DataPointType.HISTOGRAM,
+      );
+    return (histogram?.dataPoints ?? []).filter((p) => p.attributes[ATTR_OPERATION_NAME] === op);
+  };
   const ops = () =>
     h.spans.getFinishedSpans().map((s) => s.attributes[ATTR_OPERATION_NAME] ?? '<none>');
 
@@ -133,8 +153,8 @@ describe('GenAIOtelTracingProcessor', () => {
     for (const data of suppressed) await runSpan(processor, makeSpan(trace.traceId, data));
     await processor.onTraceEnd(trace);
 
-    // Only the run container, which every trace gets.
-    expect(names()).toEqual(['Agent workflow']);
+    // Only the workflow span, which every trace gets.
+    expect(names()).toEqual(['invoke_workflow']);
   });
 
   it('emits a chat span for an AI SDK generation but not for an OpenAI one', async () => {
@@ -284,7 +304,7 @@ describe('GenAIOtelTracingProcessor', () => {
     await expect(processor.onTraceEnd(trace)).resolves.toBeUndefined();
   });
 
-  it('reports the run container as invoke_agent, named after the trace', async () => {
+  it('reports each run as an invoke_workflow span named after the trace', async () => {
     // One shape for every run, single agent or handed off, as the Python
     // instrumentation reports it.
     for (const [name, agents] of [
@@ -300,11 +320,108 @@ describe('GenAIOtelTracingProcessor', () => {
     }
 
     const roots = h.spans.getFinishedSpans().filter((s) => !s.parentSpanContext);
-    expect(roots.map((s) => s.name)).toEqual(['solo-run', 'multi-run']);
+    expect(roots.map((s) => s.name)).toEqual([
+      'invoke_workflow solo-run',
+      'invoke_workflow multi-run',
+    ]);
     for (const root of roots) {
-      expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+      expect(root.kind).toBe(SpanKind.INTERNAL);
+      expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
       expect(root.attributes[ATTR_AGENT_NAME]).toBeUndefined();
     }
+    expect(roots.map((s) => s.attributes[ATTR_WORKFLOW_NAME])).toEqual(['solo-run', 'multi-run']);
+
+    // Every agent sits directly under its run's workflow span.
+    const multi = roots[1];
+    const children = agentSpans().filter(
+      (s) => s.parentSpanContext?.spanId === multi?.spanContext().spanId,
+    );
+    expect(children.map((s) => s.attributes[ATTR_AGENT_NAME])).toEqual(['first', 'second']);
+  });
+
+  it("names an unnamed workflow after the run's starting agent, not the first agent span", async () => {
+    // A run resumed while a handed-off agent is active starts with that agent's span.
+    const trace = makeTrace({ name: 'Agent workflow' });
+    const run = otelContext
+      .active()
+      .setValue(RUN_TOKEN_KEY, processor.beginRun(false, undefined, 'entry-agent'));
+    await otelContext.with(run, async () => {
+      await processor.onTraceStart(trace);
+      await runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'second-agent' }));
+      await processor.onTraceEnd(trace);
+    });
+
+    const root = only(spansWithOp(OP_INVOKE_WORKFLOW));
+    expect(root.name).toBe('invoke_workflow entry-agent');
+    expect(root.attributes[ATTR_WORKFLOW_NAME]).toBe('entry-agent');
+  });
+
+  it('names an unnamed workflow after its first agent when no run names it', async () => {
+    const trace = makeTrace({ name: 'Agent workflow' });
+    await processor.onTraceStart(trace);
+    await runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'first-agent' }));
+    await processor.onTraceEnd(trace);
+
+    expect(only(spansWithOp(OP_INVOKE_WORKFLOW)).name).toBe('invoke_workflow first-agent');
+  });
+
+  it('names the workflow span after the operation alone when the trace has no name', async () => {
+    const trace = makeTrace({ name: '' });
+    await processor.onTraceStart(trace);
+    await processor.onTraceEnd(trace);
+
+    const root = only(h.spans.getFinishedSpans());
+    expect(root.name).toBe(OP_INVOKE_WORKFLOW);
+    expect(root.attributes[ATTR_WORKFLOW_NAME]).toBeUndefined();
+  });
+
+  it('records no duration metric for the workflow, only for its agents', async () => {
+    const trace = makeTrace({ name: 'timed-run' });
+    await processor.onTraceStart(trace);
+    await runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'a' }));
+    await processor.onTraceEnd(trace);
+
+    expect(await durationPoints(OP_INVOKE_WORKFLOW)).toEqual([]);
+    expect(only(await durationPoints(OP_INVOKE_AGENT)).attributes[ATTR_AGENT_NAME]).toBe('a');
+  });
+
+  it('ends the workflow span of a run ended by a resume, the trace cap, or stop()', async () => {
+    const resumed = makeTrace({ name: 'resumed-run' });
+    const bounded = new GenAIOtelTracingProcessor({
+      client: h.client,
+      maxTracesInFlight: 1,
+      getCurrentTrace: () => resumed,
+    });
+    const workflowRuns = () =>
+      h.spans
+        .getFinishedSpans()
+        .filter((span) => span.attributes[ATTR_OPERATION_NAME] === OP_INVOKE_WORKFLOW).length;
+
+    // A run resumed in the same process closes when its task span ends.
+    const now = new Date().toISOString();
+    await runSpan(
+      bounded,
+      makeSpan(resumed.traceId, { type: 'task', name: 'run' }, { startedAt: now }),
+    );
+    expect(workflowRuns()).toBe(1);
+
+    // A second open trace past the cap ends the first.
+    await bounded.onTraceStart(makeTrace({ name: 'evicted' }));
+    await bounded.onTraceStart(makeTrace({ name: 'kept' }));
+    await vi.waitFor(() => expect(workflowRuns()).toBe(2));
+
+    await bounded.stop();
+    expect(workflowRuns()).toBe(3);
+  });
+
+  it('records error.type on the workflow span of a failed run', async () => {
+    const error = new Error('boom');
+    error.name = 'BoomError';
+    const trace = makeTrace({ name: 'failed-run' });
+    await processor.onTraceStart(trace);
+    await processor.failTrace(trace.traceId, error);
+
+    expect(only(h.spans.getFinishedSpans()).attributes[ATTR_ERROR_TYPE]).toBe('BoomError');
   });
 
   it('omits a failed tool result but keeps its arguments', async () => {
@@ -424,7 +541,7 @@ describe('GenAIOtelTracingProcessor', () => {
     // Activity on t1 makes t2 the idle one.
     await bounded.onSpanStart(makeSpan(t1.traceId, { type: 'turn', turn: 1, agent_name: 'a' }));
     await bounded.onTraceStart(t3);
-    await vi.waitFor(() => expect(names()).toEqual(['t2']));
+    await vi.waitFor(() => expect(names()).toEqual(['invoke_workflow t2']));
 
     expect(h.spans.getFinishedSpans()[0]?.status.code).toBe(SpanStatusCode.UNSET);
     await bounded.stop();
@@ -441,7 +558,7 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceStart(after);
     await processor.onTraceEnd(after);
 
-    expect(names()).toEqual(['still-running', 'after-shutdown']);
+    expect(names()).toEqual(['invoke_workflow still-running', 'invoke_workflow after-shutdown']);
   });
 
   it('ends everything still open on stop, and ignores work until resumed', async () => {
@@ -451,7 +568,7 @@ describe('GenAIOtelTracingProcessor', () => {
       makeSpan(trace.traceId, { type: 'agent', name: 'stuck' }, { endedAt: null }),
     );
     await processor.stop();
-    expect(names().sort()).toEqual(['abandoned', 'invoke_agent stuck']);
+    expect(names().sort()).toEqual(['invoke_agent stuck', 'invoke_workflow abandoned']);
 
     const ignored = makeTrace({ name: 'while-stopped' });
     await processor.onTraceStart(ignored);
@@ -461,8 +578,8 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceStart(resumed);
     await processor.onTraceEnd(resumed);
 
-    expect(names()).not.toContain('while-stopped');
-    expect(names()).toContain('after-resume');
+    expect(names()).not.toContain('invoke_workflow while-stopped');
+    expect(names()).toContain('invoke_workflow after-resume');
   });
 
   it('gives a span its normal ending when the trace end arrives before the span end', async () => {
@@ -485,7 +602,7 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(agentSpan.status.code).toBe(SpanStatusCode.UNSET);
   });
 
-  it('puts a top-level task error on the container of the run that owns it', async () => {
+  it('puts a top-level task error on the workflow span of the run that owns it', async () => {
     // A streamed run that fails reports the error only on its task span; the run
     // itself does not reject.
     const failedTask = (traceId: string) =>
@@ -507,8 +624,8 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceEnd(block);
 
     const byName = (name: string) => h.spans.getFinishedSpans().find((s) => s.name === name);
-    expect(byName('owned-run')?.attributes['error.type']).toBe('BadRequestError');
-    expect(byName('user-block')?.status.code).toBe(SpanStatusCode.UNSET);
+    expect(byName('invoke_workflow owned-run')?.attributes['error.type']).toBe('BadRequestError');
+    expect(byName('invoke_workflow user-block')?.status.code).toBe(SpanStatusCode.UNSET);
   });
 
   it('records a span it only hears about when the span ends', async () => {
@@ -544,7 +661,9 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceEnd(second);
 
     await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
-    expect(names()).toEqual(expect.arrayContaining(['first', 'second', 'invoke_agent a']));
+    expect(names()).toEqual(
+      expect.arrayContaining(['invoke_workflow first', 'invoke_workflow second', 'invoke_agent a']),
+    );
   });
 
   it('drops a span start that arrives after its trace closed', async () => {
@@ -556,7 +675,7 @@ describe('GenAIOtelTracingProcessor', () => {
     );
     await processor.stop();
 
-    expect(names()).toEqual(['finished']);
+    expect(names()).toEqual(['invoke_workflow finished']);
   });
 
   it('does not reopen a trace for a late span from the run that produced it', async () => {
@@ -579,7 +698,7 @@ describe('GenAIOtelTracingProcessor', () => {
     });
     await tracked.stop();
 
-    expect(names()).toEqual(['guarded-run']);
+    expect(names()).toEqual(['invoke_workflow guarded-run']);
   });
 
   it('reopens the trace of a resumed run, and closes it when the run ends', async () => {
@@ -602,7 +721,7 @@ describe('GenAIOtelTracingProcessor', () => {
     );
     await resuming.onSpanEnd(task);
 
-    expect(names().sort()).toEqual(['invoke_agent a', 'resumed-run']);
+    expect(names().sort()).toEqual(['invoke_agent a', 'invoke_workflow resumed-run']);
     expect(h.openSpanCount()).toBe(0);
   });
 
@@ -626,7 +745,7 @@ describe('GenAIOtelTracingProcessor', () => {
   });
 
   it.each(['metadata_only', 'default'] as const)(
-    'keeps error text off the container under %s capture',
+    'keeps error text off the workflow span under %s capture',
     async (contentCapture) => {
       const quiet = new GenAIOtelTracingProcessor({ client: h.client, contentCapture });
       const trace = makeTrace({ name: 'quiet-run' });
@@ -650,7 +769,7 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(only(h.spans.getFinishedSpans()).status.message).toBe('Error');
   });
 
-  it('keeps only allowlisted data on the container under allow_list capture', async () => {
+  it('keeps only allowlisted data on the workflow span under allow_list capture', async () => {
     const strict = new GenAIOtelTracingProcessor({
       client: h.client,
       contentCapture: 'allow_list',
@@ -670,7 +789,7 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(root.status).toEqual({ code: SpanStatusCode.ERROR });
   });
 
-  it('reports _OTHER on the container for an error with no class-like name', async () => {
+  it('reports _OTHER on the workflow span for an error with no class-like name', async () => {
     const trace = makeTrace({ name: 'odd-run' });
     await processor.onTraceStart(trace);
     await processor.failTrace(trace.traceId, 'just a string');

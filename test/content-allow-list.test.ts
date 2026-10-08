@@ -75,6 +75,7 @@ const NOT_ALLOWLISTED: Record<string, string> = {
   'gen_ai.embeddings.dimension.count': 'pending privacy review',
   'gen_ai.data_source.id': 'pending privacy review',
   'gen_ai.retrieval.top_k': 'pending privacy review',
+  'gen_ai.workflow.name': 'pending privacy review',
 };
 
 /**

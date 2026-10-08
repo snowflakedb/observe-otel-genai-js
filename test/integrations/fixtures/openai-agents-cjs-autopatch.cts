@@ -194,7 +194,7 @@ async function main() {
   let failed: any;
   for (let i = 0; i < 50 && !failed; i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
-    failed = exporter.getFinishedSpans().find((s: any) => s.name === 'failing-block');
+    failed = exporter.getFinishedSpans().find((s: any) => s.name === 'invoke_workflow failing-block');
   }
   console.log(`FAILED_BLOCK_STATUS=${failed?.status.code ?? 'still open'}`);
 

@@ -29,6 +29,7 @@ import {
   OP_EMBEDDINGS,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
   type OperationName,
 } from '../semconv.js';
@@ -55,6 +56,12 @@ export function agentSpanName(agentName = '') {
   const name = agentName.trim();
   if (name === '') return OP_INVOKE_AGENT;
   return `${OP_INVOKE_AGENT} ${name}`;
+}
+
+export function workflowSpanName(workflowName: string) {
+  const name = workflowName.trim();
+  if (name === '') return OP_INVOKE_WORKFLOW;
+  return `${OP_INVOKE_WORKFLOW} ${name}`;
 }
 
 export function agentCreateSpanName(agentName: string) {
