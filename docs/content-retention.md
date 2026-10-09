@@ -6,10 +6,10 @@ under a zero data retention agreement.
 
 `metadata_only`, the default mode, already stops the library from writing the
 content it knows about. `allow_list` goes one step further: every span the
-library creates keeps **only** the attributes on a fixed, reviewed list. Anything else is dropped,
-including attributes added later by a new library version, an adapter, or your
-own code. A new attribute stays off the wire until someone reviews it and adds
-it to the list.
+library creates keeps **only** the attributes on a fixed, reviewed list.
+Anything else is dropped, including attributes added later by a new library
+version, an adapter, or your own code. A new attribute stays off the wire until
+someone reviews it and adds it to the list.
 
 ## Turning it on
 

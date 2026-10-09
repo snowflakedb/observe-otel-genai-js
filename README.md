@@ -43,6 +43,7 @@ import { bootstrapOtel } from '@genai-otel/core/bootstrap';
 // Set up OTel providers from OTEL_EXPORTER_OTLP_* env vars.
 const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
 
+// Records metadata only; see "Content capture and privacy" to export messages.
 await using client = new Client();
 
 await using rec = client.startGeneration({
@@ -89,9 +90,10 @@ For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/e
 Prompt and completion **content is not captured by default.** The client
 default mode is `metadata_only`: every span keeps its structured metadata
 (model, token usage, timing, error type) but carries no prompts, completions,
-system instructions, tool arguments or results, or retrieval and embedding
-text. The exception events the library records and raw error messages are left
-off too, since they can quote the input that caused them.
+system instructions, tool definitions, tool arguments or results, conversation
+title, or retrieval and embedding text. The exception events the library
+records and raw error messages are left off too, since they can quote the
+input that caused them.
 
 To capture content, opt in:
 
@@ -100,11 +102,12 @@ To capture content, opt in:
   `gen_ai.output.messages` span attributes, but keeps tool arguments/results and
   retrieval query/documents off.
 - **Everything:** `new Client({ contentCaptureMode: 'full' })` — also emits tool
-  arguments/results and retrieval query/documents.
+  arguments/results, full tool definitions, and retrieval query/documents.
 
 Both are also settable per call (`contentCapture`) and ambiently
-(`withContentCaptureMode`). Once content is on, it leaves your process on every
-span.
+(`withContentCaptureMode`). Embedding input texts stay off in every mode until
+you also set `embeddingCapture.captureInput: true`. Once content is on, it
+leaves your process on every span.
 
 To restrict what is exported:
 

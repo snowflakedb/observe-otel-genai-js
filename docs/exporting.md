@@ -43,7 +43,7 @@ OTLP_SMOKE_TOKEN=<your-token> \
 The test:
 
 1. Calls `bootstrapOtel({ serviceName: 'genai-otel-smoke' })`.
-2. Emits one chat span with input/output messages.
+2. Emits one chat span with token usage and no messages.
 3. Force-flushes the providers and shuts down.
 
 If the test passes, the OTLP/HTTP path is reachable. To confirm visibility, query your backend for:

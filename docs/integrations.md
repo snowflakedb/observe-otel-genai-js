@@ -289,10 +289,10 @@ Tools served by an MCP server get `gen_ai.tool.type = mcp`; other tools get
 
 ### Agent input and output
 
-Under content capture, `invoke_agent` spans carry `gen_ai.input.messages` from the
-agent's first model call and `gen_ai.output.messages` from its last. On the AI SDK
-path, the agent's instructions go to `gen_ai.system_instructions` on the `chat`
-span, the same attribute the OpenAI paths use.
+When content capture is on, `invoke_agent` spans carry `gen_ai.input.messages`
+from the agent's first model call and `gen_ai.output.messages` from its last. On
+the AI SDK path, the agent's instructions go to `gen_ai.system_instructions` on
+the `chat` span, the same attribute the OpenAI paths use.
 
 These messages come from the SDK's own trace data. With the SDK's
 `traceIncludeSensitiveData: false`, AI SDK `chat` spans carry no messages or token
@@ -790,8 +790,9 @@ The standard modes apply. Only `full` capture records tool arguments and results
 which here are shell commands, file paths, file bodies and command output. A
 subagent's prompt and report are the delegation tool's argument and result, so
 they follow the same rule: they appear on its `invoke_agent` span, and as its
-first `chat` input, only with full capture. What the subagent's model writes is a completion like any other,
-so its `chat` output follows the completion rule.
+first `chat` input, only with full capture. What the subagent's model writes is a
+completion like any other, so its `chat` output appears under `no_tool_content`
+or `full`.
 
 ## Composing with `bootstrapOtel`
 

@@ -67,11 +67,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`metadata_only` is now the default content-capture mode.** A `Client` with no
   `contentCaptureMode`, and the `default` mode's fallthrough, no longer capture
   prompts and completions: spans keep their metadata but carry no messages,
-  system instructions, tool definitions or payloads, retrieval or embedding text,
-  exception events, or raw error messages. To capture content again, set
-  `contentCaptureMode: 'no_tool_content'` (prompts and completions) or `'full'`
-  (also tool arguments/results and retrieval content) on the `Client`, per call,
-  or with `withContentCaptureMode`.
+  system instructions, tool definitions or payloads, conversation title,
+  retrieval or embedding text, library-recorded exception events, or raw error
+  messages. To capture content again, set `contentCaptureMode: 'no_tool_content'`
+  (prompts and completions) or `'full'` (also tool arguments/results and
+  retrieval content) on the `Client`, per call, or with `withContentCaptureMode`.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
