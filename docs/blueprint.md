@@ -86,7 +86,7 @@ Skip-on-zero rule: token-usage records skip emission when `value === 0` so `cach
 See [`docs/semconv-mapping.md`](semconv-mapping.md) for the exhaustive attribute list. Key behaviors:
 
 - Modes: `default` → `full` → `no_tool_content` → `metadata_only`. Resolution order is per-call > context > client default; `default` falls through to `no_tool_content` so tool args/results stay off the wire unless explicitly opted in.
-- Truncation: `middle` (default), `end`, `head_tail` for plain string attributes. Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
+- Truncation: applies once an attribute is longer than `maxContentLength` (1,048,576 characters by default). `middle` (default), `end`, `head_tail` for plain string attributes (tool arguments/results, retrieval query). Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Multi-turn conversations
 

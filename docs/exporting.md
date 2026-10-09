@@ -56,7 +56,7 @@ A row should appear within seconds.
 
 ## Things to verify on first integration
 
-- **Per-attribute size limit:** backends cap attribute size (commonly in the 64–256 KB range). If your prompts exceed it, lower `Client({ contentCapture: { maxContentLength: <smaller> } })`.
+- **Size limits:** the library caps each content attribute at 1,048,576 characters by default. The cap counts characters, not bytes, and applies to each attribute separately, so it does not keep a whole span under a backend's size limit. Many backends cap attributes lower (commonly in the 64–256 KB range); if yours does, set `Client({ contentCapture: { maxContentLength: <smaller> } })`.
 - **Bucket boundaries on histograms:** your backend should render the advisory boundaries correctly. If dashboards don't look right, see [`docs/semconv-mapping.md`](semconv-mapping.md) for the canonical bucket families.
 - **`service.name` routing:** most backends group data by service. Set `OTEL_SERVICE_NAME` per environment so dev/staging/prod stay separate.
 
