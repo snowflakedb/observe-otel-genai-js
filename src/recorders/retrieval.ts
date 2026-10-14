@@ -69,6 +69,7 @@ export class RetrievalRecorder extends RecorderBase {
       providerName: this.seed.provider ?? '',
       requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName ?? '',
+      conversationId: this.seed.conversationId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

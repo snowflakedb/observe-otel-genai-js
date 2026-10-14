@@ -36,6 +36,16 @@ export interface EmbeddingCaptureConfig {
 }
 
 /**
+ * Optional attributes added to every metric data point. All are off by default
+ * because each one is high-cardinality: turning on `conversationId` adds a new
+ * time series per conversation to every histogram.
+ */
+export interface MetricAttributesConfig {
+  /** Add `gen_ai.conversation.id` when the operation has one. */
+  conversationId: boolean;
+}
+
+/**
  * Client-wide configuration. All fields are optional; the library applies
  * sensible defaults when omitted via {@link resolveConfig}.
  */
@@ -76,6 +86,9 @@ export interface ClientConfig {
 
   /** Tunables for the in-memory parent-generation span map. */
   spanLinkMap?: SpanLinkMapConfig;
+
+  /** Opt-in metric attributes. */
+  metricAttributes?: Partial<MetricAttributesConfig>;
 }
 
 /**
@@ -101,6 +114,7 @@ export interface ResolvedClientConfig {
 
   embeddingCapture: EmbeddingCaptureConfig;
   spanLinkMap: SpanLinkMapConfig;
+  metricAttributes: MetricAttributesConfig;
 }
 
 const defaultLogger: Logger = {
@@ -129,6 +143,9 @@ export function defaultConfig(): ResolvedClientConfig {
       maxEntries: 10_000,
       ttlMs: 5 * 60 * 1000,
     },
+    metricAttributes: {
+      conversationId: false,
+    },
   };
 }
 
@@ -153,5 +170,6 @@ export function resolveConfig(input?: ClientConfig): ResolvedClientConfig {
     errorClassifier: input.errorClassifier,
     embeddingCapture: { ...base.embeddingCapture, ...(input.embeddingCapture ?? {}) },
     spanLinkMap: { ...base.spanLinkMap, ...(input.spanLinkMap ?? {}) },
+    metricAttributes: { ...base.metricAttributes, ...(input.metricAttributes ?? {}) },
   };
 }

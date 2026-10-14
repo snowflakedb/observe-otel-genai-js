@@ -157,6 +157,8 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 
 `gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_creation`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
 
+`gen_ai.conversation.id` is off by default on metrics because it adds one time series per conversation. Turn it on with `new Client({ metricAttributes: { conversationId: true } })`. It is then added to every data point whose operation has a conversation ID: chat, `invoke_agent`, `execute_tool`, and retrieval. Embedding and `create_agent` have no conversation ID, so their data points never carry it.
+
 ## Span kinds
 
 | Operation | SpanKind |

@@ -7,6 +7,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Core: opt-in `gen_ai.conversation.id` on metrics. Set
+  `new Client({ metricAttributes: { conversationId: true } })` to add it to every
+  histogram data point whose operation has a conversation ID. Off by default, since
+  each conversation becomes its own time series.
 - Core: recorders accept a framework's own error class as `error.type`
   (`rec.setErrorType(name)`), for integrations that know a more precise name than
   the recorder's coarse category. It becomes a metric label, so callers must keep
