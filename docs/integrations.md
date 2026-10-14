@@ -16,22 +16,23 @@ All peer deps are declared optional — the core install does not pull them in.
 
 ## Content capture
 
-Every adapter captures prompt and completion **content** — the input and output
-messages — as structured `gen_ai.input.messages` / `gen_ai.output.messages` span
-attributes. This is ON by default (client default mode `no_tool_content`:
-prompts and completions are captured; tool args/results and retrieval
-query/documents are stripped).
+Content capture is **off by default** (client default mode `metadata_only`):
+adapters record model, usage, timing, and error metadata, but no prompt or
+completion content. Opt in to capture the input and output messages as
+structured `gen_ai.input.messages` / `gen_ai.output.messages` span attributes.
 
 Control it globally on the `Client` (`contentCaptureMode`), per call (the
 `contentCapture` option accepted by every adapter), or ambiently
-(`withContentCaptureMode`). Modes: `full` (all content incl. tool args/results
-and retrieval query/documents), `no_tool_content` (default — tool payloads and
-retrieval content stripped), `metadata_only` (no content at all — honored by
-every span type: generation, agent, tool, embedding, retrieval). For
-fine-grained, field-level redaction, register a redacting `SpanProcessor` at
-bootstrap — see [exporting.md](exporting.md#redacting-content).
+(`withContentCaptureMode`). Modes: `metadata_only` (default — no content at all,
+honored by every span type: generation, agent, tool, embedding, retrieval),
+`no_tool_content` (prompts and completions; tool payloads and retrieval content
+stripped), `full` (all content incl. tool args/results and retrieval
+query/documents). For fine-grained, field-level redaction, register a redacting
+`SpanProcessor` at bootstrap — see [exporting.md](exporting.md#redacting-content).
 
 ### Adapter capability matrix
+
+Messages and tool definitions appear only once content capture is on.
 
 | Capability | Vercel | OpenAI | OpenAI Agents | Anthropic | LangChain | Claude Agent SDK |
 |---|---|---|---|---|---|---|
@@ -288,10 +289,10 @@ Tools served by an MCP server get `gen_ai.tool.type = mcp`; other tools get
 
 ### Agent input and output
 
-Under content capture, `invoke_agent` spans carry `gen_ai.input.messages` from the
-agent's first model call and `gen_ai.output.messages` from its last. On the AI SDK
-path, the agent's instructions go to `gen_ai.system_instructions` on the `chat`
-span, the same attribute the OpenAI paths use.
+When content capture is on, `invoke_agent` spans carry `gen_ai.input.messages`
+from the agent's first model call and `gen_ai.output.messages` from its last. On
+the AI SDK path, the agent's instructions go to `gen_ai.system_instructions` on
+the `chat` span, the same attribute the OpenAI paths use.
 
 These messages come from the SDK's own trace data. With the SDK's
 `traceIncludeSensitiveData: false`, AI SDK `chat` spans carry no messages or token
@@ -557,7 +558,7 @@ Retrievers emit a `retrieval` span (kind CLIENT); an in-retriever query rewrite 
 
 The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a `messages` array uses the `BaseMessage` mapping, a string or a string `input` / `question` / `text` field becomes one user message, any other shape is JSON-encoded, and empty input emits nothing.
 
-`chat` spans also carry `gen_ai.tool.definitions`, the model's bound tools normalized to the semconv `{ type, name, description, parameters }` shape. `type` and `name` are always emitted; `description` and `parameters` only under `full` content capture.
+`chat` spans also carry `gen_ai.tool.definitions`, the model's bound tools normalized to the semconv `{ type, name, description, parameters }` shape. `type` and `name` are emitted whenever content capture is on; `description` and `parameters` only under `full`.
 
 `gen_ai.provider.name` uses the semconv well-known values (`openai`, `anthropic`, `aws.bedrock`, `gcp.gemini`, and so on). A hosting platform wins over the vendor it hosts, so a Bedrock-hosted Anthropic model reports `aws.bedrock`.
 
@@ -785,12 +786,13 @@ counts for the same call.
 
 ### Content capture
 
-The standard modes apply. The default hides tool arguments and results, which here
-are shell commands, file paths, file bodies and command output. A subagent's prompt
-and report are the delegation tool's argument and result, so they follow the same
-rule: they appear on its `invoke_agent` span, and as its first `chat` input, only
-with full capture. What the subagent's model writes is a completion like any other,
-so its `chat` output follows the completion rule.
+The standard modes apply. Only `full` capture records tool arguments and results,
+which here are shell commands, file paths, file bodies and command output. A
+subagent's prompt and report are the delegation tool's argument and result, so
+they follow the same rule: they appear on its `invoke_agent` span, and as its
+first `chat` input, only with full capture. What the subagent's model writes is a
+completion like any other, so its `chat` output appears under `no_tool_content`
+or `full`.
 
 ## Composing with `bootstrapOtel`
 

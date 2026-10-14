@@ -20,7 +20,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `genai.conversation.turn_index` / `genai.conversation.turn_role` (library extensions; the spec only defines `gen_ai.conversation.id`).
 - **Agent-task span hierarchy**: first-class `invokeAgent(...)` Client method + `AgentInvocationRecorder` matching OTel GenAI semconv `gen_ai.operation.name = "invoke_agent"`.
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec-aligned operation value rides on the span via `gen_ai.operation.name`, defaulting to `chat`. `text_completion` and `generate_content` are supported overrides.
-- **Tool content capture**: ON by default (`contentCaptureMode: 'no_tool_content'` is the global default — note: `no_tool_content` strips tool content, but `full` includes it; per-call override beats both).
+- **Content capture**: OFF by default (`contentCaptureMode: 'metadata_only'` is the global default). Opt in with `no_tool_content` (prompts and completions, no tool content) or `full` (everything, including tool args/results); per-call override beats the client default.
 - **PII / secret redaction**: user-owned, at the OpenTelemetry layer. Use `contentCaptureMode` (`metadata_only` / `no_tool_content`) as the coarse cross-span control, and register a redacting `SpanProcessor` at bootstrap for fine-grained scrubbing of any span attribute before export. The library ships no built-in redactor and no in-SDK sanitizer hook. See [exporting.md](exporting.md) for the recipe.
 
 ## Out of scope for v1
@@ -85,7 +85,7 @@ Skip-on-zero rule: token-usage records skip emission when `value === 0` so `cach
 
 See [`docs/semconv-mapping.md`](semconv-mapping.md) for the exhaustive attribute list. Key behaviors:
 
-- Modes: `default` → `full` → `no_tool_content` → `metadata_only`. Resolution order is per-call > context > client default; `default` falls through to `no_tool_content` so tool args/results stay off the wire unless explicitly opted in.
+- Modes: `full`, `no_tool_content`, `metadata_only` (the default), and `allow_list`, plus `default`, which defers to the next level. Resolution order is per-call > context > client default; a `default` that reaches the client resolves to `metadata_only`, so no content goes on the wire unless explicitly opted in.
 - Truncation: `middle` (default), `end`, `head_tail` for plain string attributes. Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Multi-turn conversations

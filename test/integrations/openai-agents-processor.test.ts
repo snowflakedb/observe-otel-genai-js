@@ -10,6 +10,7 @@ import { SpanStatusCode, context as otelContext, trace as otelTrace } from '@ope
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTENT_ALLOW_LIST } from '../../src/content/allow-list.js';
+import { withContentCaptureMode } from '../../src/context.js';
 import { mapAgentsItems } from '../../src/integrations/openai-agents/_map.js';
 import type {
   SdkModel,
@@ -607,18 +608,29 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(only(spansWithOp(OP_EXECUTE_TOOL)).attributes['gen_ai.tool.type']).toBe('mcp');
   });
 
-  it('keeps error text off the container under metadata_only capture', async () => {
-    const quiet = new GenAIOtelTracingProcessor({
-      client: h.client,
-      contentCapture: 'metadata_only',
-    });
-    const trace = makeTrace({ name: 'quiet-run' });
-    await quiet.onTraceStart(trace);
-    await quiet.failTrace(trace.traceId, new Error('customer 42 said something private'));
+  it.each(['metadata_only', 'default'] as const)(
+    'keeps error text off the container under %s capture',
+    async (contentCapture) => {
+      const quiet = new GenAIOtelTracingProcessor({ client: h.client, contentCapture });
+      const trace = makeTrace({ name: 'quiet-run' });
+      await quiet.onTraceStart(trace);
+      await quiet.failTrace(trace.traceId, new Error('customer 42 said something private'));
 
-    const root = only(h.spans.getFinishedSpans());
-    expect(root.attributes['error.type']).toBe('Error');
-    expect(root.status.message).toBe('Error');
+      const root = only(h.spans.getFinishedSpans());
+      expect(root.attributes['error.type']).toBe('Error');
+      expect(root.status.message).toBe('Error');
+    },
+  );
+
+  it('keeps error text off the container under a metadata_only context scope', async () => {
+    await h.shutdown();
+    h = createHarness({ contentCaptureMode: 'full' });
+    const scoped = new GenAIOtelTracingProcessor({ client: h.client });
+    const trace = makeTrace({ name: 'scoped-run' });
+    await withContentCaptureMode('metadata_only', () => scoped.onTraceStart(trace));
+    await scoped.failTrace(trace.traceId, new Error('customer 42 said something private'));
+
+    expect(only(h.spans.getFinishedSpans()).status.message).toBe('Error');
   });
 
   it('keeps only allowlisted data on the container under allow_list capture', async () => {

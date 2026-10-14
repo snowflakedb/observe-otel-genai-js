@@ -310,7 +310,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
 
   it('captures tool arguments and results only under full content capture', async () => {
     // Under `full` capture the tool payloads reach the span. The default,
-    // `no_tool_content`, keeps them off a plain install.
+    // `metadata_only`, keeps them off a plain install.
     const setupResult = await setup(
       (_req, i) =>
         i % 2 === 0

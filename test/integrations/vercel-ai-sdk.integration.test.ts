@@ -117,7 +117,7 @@ const oneByName = (h: Harness, prefix: string) =>
 describe('genaiTelemetryIntegration', () => {
   let h: Harness;
   beforeEach(() => {
-    h = createHarness();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
   });
   afterEach(async () => {
     clearIntegrations();
