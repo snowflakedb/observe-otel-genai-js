@@ -11,6 +11,85 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `new Client({ metricAttributes: { conversationId: true } })` to add it to every
   histogram data point whose operation has a conversation ID. Off by default, since
   each conversation becomes its own time series.
+- Core: recorders accept a framework's own error class as `error.type`
+  (`rec.setErrorType(name)`), for integrations that know a more precise name than
+  the recorder's coarse category. It becomes a metric label, so callers must keep
+  it low-cardinality.
+- `AgentInvocationRecorder.setInput(messages)` and
+  `ToolExecutionRecorder.setToolType(type)`, for integrations that learn an agent's
+  input or a tool's type after the span started.
+- **`OpenAIInstrumentation`** (`@genai-otel/core/openai/instrumentation`), an
+  OpenTelemetry-native alternative to `wrapOpenAI`. It patches
+  `chat.completions.create`, `responses.create`, and `embeddings.create` on the
+  prototypes the `OpenAI` client's own statics expose, so there are no dist file
+  paths to drift and behavior matches across CommonJS and ESM. CommonJS
+  auto-patches through the require hook; ESM is served by `manuallyInstrument`,
+  which needs no launch flags. Installing both this and `wrapOpenAI` still yields
+  one span per request: the patch marks each method it wraps and the proxy passes
+  marked methods through. When another library reached the prototypes first, this
+  one steps aside and says so at `warn` level, naming the ways to disable the
+  other one.
+- **OpenAI Responses API support.** `responses.create` now records a `chat` span
+  through both entry points, the `wrapOpenAI` proxy and `patchResponsesCreate`.
+  The shape shares almost nothing with Chat Completions, so it gets its own
+  mapping: input is a list of typed items, output is a list of typed items, and
+  the stream is a union of named events. `instructions` maps to
+  `gen_ai.system_instructions`, since Responses carries the system prompt
+  out-of-band. Tool definitions come from the top level of each tool.
+  `input_tokens_details.cached_tokens` and
+  `output_tokens_details.reasoning_tokens` map onto the cache-read and reasoning
+  counters. Streaming takes TTFT from the first `*.delta` event and the final
+  output and usage from `response.completed`.
+- The `openai` peer range now includes v7.
+- **OpenAI Agents SDK support.** `OpenAIAgentsInstrumentation`
+  (`@genai-otel/core/openai-agents/instrumentation`) traces agent runs:
+  `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on
+  the AI SDK path, and an `invoke_agent` container span for each run, named after
+  the trace. On the OpenAI model paths the `chat` span comes from
+  `OpenAIInstrumentation`, so each model call is reported once.
+  - Model calls and tool calls run inside their span's OTel context, so spans from
+    other instrumentations nest under the agent or tool, streamed calls included.
+  - Model-call spans from `OpenAIInstrumentation` carry the run's
+    `gen_ai.conversation.id` (from `groupId`) and the calling agent's name.
+  - Agent spans carry the agent's input and output messages under content capture.
+  - Runs and `withTrace` blocks that reject are closed with the error, since the
+    SDK leaves them open. Failures the run recovers from do not fail the run.
+  - A streamed run that fails reports the error on its container.
+  - The processor stays registered when the SDK's processor list is replaced, so
+    `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
+  - Time-to-first-token on the AI SDK path, measured from the first delta event.
+  - `instrumentModel()` for hand-written `Model` classes, and
+    `GenAIOtelTracingProcessor` (`@genai-otel/core/openai-agents`) for custom setups.
+- `allow_list` content-capture mode. It strips content like `metadata_only`, and every
+  span the library creates keeps only attributes on a fixed, reviewed allowlist, so a
+  new or unknown attribute is dropped instead of exported. Event and link attributes
+  are filtered too, exceptions keep only `exception.type`, and the status message is
+  dropped. The list is exported as `CONTENT_ALLOW_LIST`. See
+  `docs/content-retention.md`.
+
+### Changed
+- Spans that succeed now leave their status unset instead of setting it to OK, as
+  the OpenTelemetry conventions recommend for instrumentation libraries.
+- LangChain adapter: provider matching now also ignores `.` in provider ids.
+
+### Fixed
+- Peer ranges for the OpenTelemetry OTLP exporters accepted one minor release
+  only. `^0.200.0` on a `0.x` version means `>=0.200.0 <0.201.0`, so a project on
+  any current release (0.201 and later) could not install this package without
+  `--legacy-peer-deps`. Both are now `>=0.200.0 <0.300.0`, matching
+  `@opentelemetry/instrumentation`. 0.300.x ships with OpenTelemetry JS SDK 3.0
+  and stays out until it is tested.
+
+### Known
+- `gen_ai.tool.call.id` is not emitted on `execute_tool` spans from the OpenAI
+  Agents SDK. Its `FunctionSpanData` is `{ name, input, output, mcp_data }` and
+  carries no call id, so the only way to supply one is to scrape the preceding
+  model span's output and pair entries up by tool name and arguments. That pairing
+  breaks on parallel calls to the same tool, and it breaks once
+  `RunConfig.traceIncludeSensitiveData` blanks the arguments being matched on. The
+  conventions ask for the attribute "if available"; from this SDK it is not. The
+  LangChain integration still emits it, where the tool-end message supplies the id
+  directly.
 
 ## [0.6.0] - 2026-09-29
 

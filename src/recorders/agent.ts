@@ -35,6 +35,7 @@ import { RecorderBase, type RecorderHostContext } from './base.js';
 
 export class AgentInvocationRecorder extends RecorderBase {
   private readonly seed: AgentInvocationStart;
+  private inputMessages: Message[] | undefined;
   private outputMessages: Message[] | undefined;
   private stopReason: string | undefined;
 
@@ -47,6 +48,11 @@ export class AgentInvocationRecorder extends RecorderBase {
   ) {
     super(host, span, startedAtMs, perCallContentCapture);
     this.seed = seed;
+  }
+
+  /** Records the agent's input when it is only known after the span started. Replaces `seed.input`. */
+  setInput(messages: Message[]): void {
+    this.inputMessages = messages;
   }
 
   /**
@@ -85,7 +91,7 @@ export class AgentInvocationRecorder extends RecorderBase {
     if (!stripped && captureConfig.enabled) {
       emitAgentContent(
         this.span,
-        this.seed.input,
+        this.inputMessages ?? this.seed.input,
         this.outputMessages,
         captureConfig,
         this.stopReason,

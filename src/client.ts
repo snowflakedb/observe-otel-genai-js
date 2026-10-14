@@ -14,6 +14,9 @@
  * nested spans (other `startX` calls inside) parent under the agent
  * automatically via OTel context.
  *
+ * Under the `allow_list` content mode every span is wrapped in an
+ * `AllowListSpan` before anything is written to it (see `startSpan`).
+ *
  * `flush()` / `shutdown()` best-effort call `forceFlush` on whatever
  * TracerProvider / MeterProvider is currently registered — duck-typed via
  * `hasattr` so we never import from `@opentelemetry/sdk-*`.
@@ -25,7 +28,9 @@ import {
   type Span,
   type SpanContext,
   SpanKind,
+  type SpanOptions,
   type Tracer,
+  context,
   metrics as metricsApi,
   trace,
 } from '@opentelemetry/api';
@@ -36,9 +41,12 @@ import {
   defaultConfig,
   resolveConfig,
 } from './config.js';
+import { AllowListSpan, allowListSpanOptions } from './content/allow-list.js';
+import { type ContentCaptureMode, resolveContentCaptureMode } from './content/capture.js';
 import {
   agentNameFromContext,
   agentVersionFromContext,
+  contentCaptureModeFromContext,
   conversationIdFromContext,
   conversationTitleFromContext,
   userIdFromContext,
@@ -133,13 +141,14 @@ export class Client implements RecorderHostContext {
     seed.startedAt = startedAtMs;
 
     const { links } = this.spanLinks.resolveLinks(seed.parentGenerationIds);
-    const span = this.tracer.startSpan(
+    const span = this.startSpan(
       generationSpanName(seed.operationName ?? OP_CHAT, seed.model.name),
       {
         kind: SpanKind.CLIENT,
         startTime: new Date(startedAtMs),
         links,
       },
+      seed.contentCapture,
     );
 
     if (seed.id) this.spanLinks.set(seed.id, span.spanContext());
@@ -162,10 +171,11 @@ export class Client implements RecorderHostContext {
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
-    const span = this.tracer.startSpan(embeddingSpanName(seed.model.name), {
-      kind: SpanKind.CLIENT,
-      startTime: new Date(startedAtMs),
-    });
+    const span = this.startSpan(
+      embeddingSpanName(seed.model.name),
+      { kind: SpanKind.CLIENT, startTime: new Date(startedAtMs) },
+      seed.contentCapture,
+    );
     applyEmbeddingStartAttributes(span, seed);
 
     return new EmbeddingRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
@@ -181,10 +191,11 @@ export class Client implements RecorderHostContext {
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
-    const span = this.tracer.startSpan(toolSpanName(seed.toolName), {
-      kind: SpanKind.INTERNAL,
-      startTime: new Date(startedAtMs),
-    });
+    const span = this.startSpan(
+      toolSpanName(seed.toolName),
+      { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs) },
+      seed.contentCapture,
+    );
     applyToolAttributes(span, seed);
 
     return new ToolExecutionRecorder(
@@ -206,10 +217,11 @@ export class Client implements RecorderHostContext {
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
-    const span = this.tracer.startSpan(retrievalSpanName(seed.dataSourceId ?? ''), {
-      kind: SpanKind.CLIENT,
-      startTime: new Date(startedAtMs),
-    });
+    const span = this.startSpan(
+      retrievalSpanName(seed.dataSourceId ?? ''),
+      { kind: SpanKind.CLIENT, startTime: new Date(startedAtMs) },
+      seed.contentCapture,
+    );
     applyRetrievalAttributes(span, seed);
 
     return new RetrievalRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
@@ -249,11 +261,11 @@ export class Client implements RecorderHostContext {
     const { links } = this.spanLinks.resolveLinks(seed.parentGenerationIds);
 
     if (!fn) {
-      const span = this.tracer.startSpan(agentSpanName(seed.agentName), {
-        kind: SpanKind.INTERNAL,
-        startTime: new Date(startedAtMs),
-        links,
-      });
+      const span = this.startSpan(
+        agentSpanName(seed.agentName),
+        { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs), links },
+        seed.contentCapture,
+      );
       applyAgentAttributes(span, seed);
       return new AgentInvocationRecorder(
         this,
@@ -267,9 +279,10 @@ export class Client implements RecorderHostContext {
     // Callback variant: use startActiveSpan so children parent correctly.
     return new Promise<T>((resolve, reject) => {
       try {
-        this.tracer.startActiveSpan(
+        this.startActiveSpan(
           agentSpanName(seed.agentName),
           { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs), links },
+          seed.contentCapture,
           async (span: Span) => {
             applyAgentAttributes(span, seed);
             const recorder = new AgentInvocationRecorder(
@@ -334,7 +347,7 @@ export class Client implements RecorderHostContext {
     seed.startedAt = startedAtMs;
 
     if (!fn) {
-      const span = this.tracer.startSpan(agentCreateSpanName(seed.agentName), {
+      const span = this.startSpan(agentCreateSpanName(seed.agentName), {
         kind: SpanKind.INTERNAL,
         startTime: new Date(startedAtMs),
       });
@@ -344,9 +357,10 @@ export class Client implements RecorderHostContext {
 
     return new Promise<T>((resolve, reject) => {
       try {
-        this.tracer.startActiveSpan(
+        this.startActiveSpan(
           agentCreateSpanName(seed.agentName),
           { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs) },
+          undefined,
           async (span: Span) => {
             applyAgentCreationAttributes(span, seed);
             const recorder = new AgentCreationRecorder(this, span, seed, startedAtMs, 'default');
@@ -411,6 +425,28 @@ export class Client implements RecorderHostContext {
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
+
+  /** Starts a span, wrapped in an `AllowListSpan` when the mode is `allow_list`. */
+  private startSpan(name: string, options: SpanOptions, perCall?: ContentCaptureMode): Span {
+    const mode = resolveContentCaptureMode(
+      perCall,
+      contentCaptureModeFromContext(),
+      this.config.contentCaptureMode,
+    );
+    if (mode !== 'allow_list') return this.tracer.startSpan(name, options);
+    return new AllowListSpan(this.tracer.startSpan(name, allowListSpanOptions(options)));
+  }
+
+  /** `tracer.startActiveSpan`, with the span from `startSpan`. */
+  private startActiveSpan<T>(
+    name: string,
+    options: SpanOptions,
+    perCall: ContentCaptureMode | undefined,
+    fn: (span: Span) => T,
+  ): T {
+    const span = this.startSpan(name, options, perCall);
+    return context.with(trace.setSpan(context.active(), span), fn, undefined, span);
+  }
 
   private normalizeGenerationSeed(
     input: GenerationStart,

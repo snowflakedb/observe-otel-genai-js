@@ -3,8 +3,8 @@
  *
  * Two entry points:
  *  - `wrapOpenAI(client, openai)` returns a Proxy around the OpenAI client
- *    that auto-instruments `chat.completions.create` and `embeddings.create`.
- *    Drop-in replacement for the OpenAI client.
+ *    that auto-instruments `chat.completions.create`, `responses.create` and
+ *    `embeddings.create`. Drop-in replacement for the OpenAI client.
  *  - Per-method helpers (`instrumentedChatCompletion`, `instrumentedEmbedding`)
  *    if you want to opt into instrumentation per call.
  *
@@ -12,25 +12,17 @@
  * etc.) you can pass through a `WeakMap`-keyed call site override.
  */
 
+import { diag } from '@opentelemetry/api';
 import type OpenAI from 'openai';
 
 import type { Client } from '../../client.js';
 import { ValidationError } from '../../errors.js';
-import type { GenerationStart } from '../../models/generation.js';
-import {
-  type Message,
-  type Part,
-  textPart,
-  toolCallPart,
-  toolResultPart,
-} from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
-import {
-  type AdapterCallOptions,
-  createMetadataAccessor,
-  identityFieldsFromOptions,
-} from '../_common/metadata.js';
-import { wrapProviderStream } from '../_common/stream.js';
+import { type ApiPromiseLike, isApiPromiseLike } from '../_common/api-promise.js';
+import { isInstrumented } from '../_common/instrumented.js';
+import { type AdapterCallOptions, createMetadataAccessor } from '../_common/metadata.js';
+import { instrumentChatCompletionApiPromise, runChatCompletion } from './_chat.js';
+import { instrumentEmbeddingApiPromise, runEmbedding } from './_embeddings.js';
+import { instrumentResponseApiPromise } from './_responses.js';
 
 /** Per-call metadata that can be attached via `withMetadata(params, opts)`. */
 export type OpenAIAdapterOptions = AdapterCallOptions;
@@ -42,7 +34,7 @@ const stripMetadata = accessor.stripMetadata;
 const resolveParams = accessor.resolveParams;
 
 // -----------------------------------------------------------------------------
-// chat.completions.create
+// chat.completions.create (core and message mapping live in ./_chat.ts)
 // -----------------------------------------------------------------------------
 
 type ChatCompletionsCreateParams = OpenAI.Chat.Completions.ChatCompletionCreateParams;
@@ -70,130 +62,20 @@ export async function instrumentedChatCompletion(
   }
   return runChatCompletion(
     client,
-    openai,
+    (p) => openai.chat.completions.create(p) as Promise<unknown>,
     resolved.params,
     resolved.options,
   ) as Promise<ChatCompletionsResult>;
 }
 
-async function runChatCompletion(
-  client: Client,
-  openai: OpenAI,
-  params: ChatCompletionsCreateParams,
-  options: OpenAIAdapterOptions,
-): Promise<unknown> {
-  const isStream = (params as { stream?: boolean }).stream === true;
+// -----------------------------------------------------------------------------
+// responses.create (mapping lives in ./_responses.ts)
+// -----------------------------------------------------------------------------
 
-  const seed: GenerationStart = {
-    model: { provider: 'openai', name: params.model },
-    operationName: OP_CHAT,
-    maxTokens:
-      (params as { max_completion_tokens?: number }).max_completion_tokens ??
-      (params as { max_tokens?: number }).max_tokens,
-    temperature: params.temperature ?? undefined,
-    topP: params.top_p ?? undefined,
-    frequencyPenalty: params.frequency_penalty ?? undefined,
-    presencePenalty: params.presence_penalty ?? undefined,
-    stopSequences: normalizeStop(params.stop),
-    seed: params.seed ?? undefined,
-    choiceCount: params.n ?? undefined,
-    toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
-    ...identityFieldsFromOptions(options),
-    contentCapture: options.contentCapture,
-    tags: options.tags,
-    metadata: options.metadata,
-    parentGenerationIds: options.parentGenerationIds,
-  };
-
-  if (isStream) {
-    const rec = client.startStreamingGeneration(seed);
-    rec.setResult({ input: mapOpenAIInput(params.messages) });
-    let firstTokenSeen = false;
-    let finalUsage: ChatUsageShape | undefined;
-    let finalModel: string | undefined;
-    let finalFinishReason: string | undefined;
-    let finalId: string | undefined;
-    let outputText = '';
-    const toolAcc = new Map<number, { id?: string; name?: string; args: string }>();
-
-    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    try {
-      stream = (await openai.chat.completions.create(
-        params,
-      )) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    } catch (err) {
-      rec.setCallError(err);
-      await rec.end();
-      throw err;
-    }
-
-    return wrapProviderStream<typeof stream, OpenAI.Chat.Completions.ChatCompletionChunk>(stream, {
-      onChunk: (chunk) => {
-        if (!firstTokenSeen) {
-          firstTokenSeen = true;
-          rec.setFirstTokenAt(Date.now());
-        }
-        if (chunk.usage) finalUsage = chunk.usage;
-        if (chunk.model) finalModel = chunk.model;
-        if (chunk.id) finalId = chunk.id;
-        const finish = chunk.choices?.[0]?.finish_reason;
-        if (finish) finalFinishReason = finish;
-        const delta = chunk.choices?.[0]?.delta as OAStreamDelta | undefined;
-        if (delta) {
-          if (typeof delta.content === 'string') outputText += delta.content;
-          if (Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              const entry = toolAcc.get(idx) ?? { args: '' };
-              if (tc.id) entry.id = tc.id;
-              if (tc.function?.name) entry.name = tc.function.name;
-              if (typeof tc.function?.arguments === 'string') entry.args += tc.function.arguments;
-              toolAcc.set(idx, entry);
-            }
-          }
-        }
-      },
-      onComplete: async () => {
-        rec.setResult({
-          responseId: finalId,
-          responseModel: finalModel,
-          stopReason: finalFinishReason,
-          usage: mapUsage(finalUsage),
-          output: buildStreamOutputMessages(outputText, toolAcc),
-        });
-        await rec.end();
-      },
-      onError: async (err) => {
-        rec.setCallError(err);
-        await rec.end();
-      },
-      onAbandoned: async () => {
-        rec.setCallError(new Error('openai stream was never consumed'));
-        await rec.end();
-      },
-    });
-  }
-
-  await using rec = client.startGeneration(seed);
-  try {
-    const result = (await openai.chat.completions.create(params)) as ChatCompletionsResult;
-    rec.setResult({
-      responseId: result.id,
-      responseModel: result.model,
-      stopReason: result.choices?.[0]?.finish_reason,
-      usage: mapUsage(result.usage),
-      input: mapOpenAIInput(params.messages),
-      output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
-    });
-    return result;
-  } catch (err) {
-    rec.setCallError(err);
-    throw err;
-  }
-}
+type ResponseCreateParams = OpenAI.Responses.ResponseCreateParams;
 
 // -----------------------------------------------------------------------------
-// embeddings.create
+// embeddings.create (core lives in ./_embeddings.ts)
 // -----------------------------------------------------------------------------
 
 type EmbeddingCreateParams = OpenAI.Embeddings.EmbeddingCreateParams;
@@ -205,35 +87,13 @@ export async function instrumentedEmbedding(
   params: EmbeddingCreateParams,
   options: OpenAIAdapterOptions = {},
 ): Promise<EmbeddingResult> {
-  await using rec = client.startEmbedding({
-    model: { provider: 'openai', name: params.model },
-    agentName: options.agentName,
-    agentVersion: options.agentVersion,
-    dimensions: params.dimensions,
-    encodingFormat: params.encoding_format,
-    tags: options.tags,
-    metadata: options.metadata,
-  });
-
-  try {
-    const result = await openai.embeddings.create(params);
-    const inputs = Array.isArray(params.input)
-      ? params.input.filter((v): v is string => typeof v === 'string')
-      : typeof params.input === 'string'
-        ? [params.input]
-        : undefined;
-    rec.setResult({
-      inputCount: Array.isArray(params.input) ? params.input.length : 1,
-      inputTokens: result.usage?.prompt_tokens,
-      dimensions: result.data?.[0]?.embedding?.length,
-      responseModel: result.model,
-      inputTexts: inputs,
-    });
-    return result;
-  } catch (err) {
-    rec.setCallError(err);
-    throw err;
-  }
+  const resolved = resolveParams(params, options);
+  return runEmbedding(
+    client,
+    (p) => openai.embeddings.create(p),
+    resolved.params,
+    resolved.options,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -251,6 +111,7 @@ export function wrapOpenAI<T extends OpenAI>(client: Client, openai: T): T {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'chat') return wrapChat(client, openai, value);
+      if (prop === 'responses') return wrapResponses(client, openai, value);
       if (prop === 'embeddings') return wrapEmbeddings(client, openai, value);
       return value;
     },
@@ -272,10 +133,36 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
-        return (params: ChatCompletionsCreateParams) => {
+        return (params: ChatCompletionsCreateParams, ...rest: unknown[]) => {
+          const create = openai.chat.completions.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.chat.completions, params, ...rest);
           const options = readMetadata(params);
           stripMetadata(params);
-          return runChatCompletion(client, openai, params, options);
+          const raw = create.call(openai.chat.completions, params, ...rest);
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentChatCompletionApiPromise(client, p, params, options),
+          );
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function wrapResponses(client: Client, openai: OpenAI, responses: unknown) {
+  return new Proxy(responses as object, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'create') {
+        return (params: ResponseCreateParams, ...rest: unknown[]) => {
+          const create = openai.responses.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.responses, params, ...rest);
+          const options = readMetadata(params);
+          stripMetadata(params);
+          const raw = create.call(openai.responses, params, ...rest);
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentResponseApiPromise(client, p, params, options),
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -288,10 +175,15 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === 'create') {
-        return (params: EmbeddingCreateParams) => {
+        return (params: EmbeddingCreateParams, ...rest: unknown[]) => {
+          const create = openai.embeddings.create as (...a: unknown[]) => unknown;
+          if (isInstrumented(create)) return create.call(openai.embeddings, params, ...rest);
           const options = readMetadata(params);
           stripMetadata(params);
-          return instrumentedEmbedding(client, openai, params, options);
+          const raw = create.call(openai.embeddings, params, ...rest);
+          return instrumentOrPassThrough(raw, (p) =>
+            instrumentEmbeddingApiPromise(client, p, params, options),
+          );
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -300,146 +192,105 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
 }
 
 // -----------------------------------------------------------------------------
-// Helpers
+// Prototype-patch entry points (used by OpenAIInstrumentation)
 // -----------------------------------------------------------------------------
 
-interface ChatUsageShape {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
-  completion_tokens_details?: { reasoning_tokens?: number };
-}
-
-function mapUsage(usage: ChatUsageShape | undefined) {
-  if (!usage) return undefined;
-  return {
-    inputTokens: usage.prompt_tokens,
-    outputTokens: usage.completion_tokens,
-    totalTokens: usage.total_tokens,
-    cacheReadInputTokens: usage.prompt_tokens_details?.cached_tokens,
-    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
-  };
-}
-
-function normalizeStop(stop: unknown): string[] | undefined {
-  if (typeof stop === 'string') return [stop];
-  if (Array.isArray(stop)) return stop.filter((s): s is string => typeof s === 'string');
-  return undefined;
-}
-
-// -----------------------------------------------------------------------------
-// Content mapping (chat messages -> genai-otel Message[])
-//
-// Note: OpenAI carries system instructions inline in the `messages` array (part
-// of the chat history), so they map to `gen_ai.input.messages` with role
-// `system` rather than to `gen_ai.system_instructions`. Non-text content parts
-// (image/audio/file) are not modeled and are skipped.
-// -----------------------------------------------------------------------------
-
-interface OAContentPart {
-  type?: string;
-  text?: string;
-}
-interface OAToolCall {
-  id?: string;
-  function?: { name?: string; arguments?: string };
-}
-interface OAMessage {
-  role?: string;
-  content?: string | OAContentPart[] | null;
-  tool_calls?: OAToolCall[];
-  tool_call_id?: string;
-  name?: string;
-}
-interface OAStreamToolCall extends OAToolCall {
-  index?: number;
-}
-interface OAStreamDelta {
-  content?: string | null;
-  tool_calls?: OAStreamToolCall[];
-}
-
-function normalizeOpenAIRole(role: string | undefined): Message['role'] {
-  switch (role) {
-    case 'system':
-    case 'developer':
-      return 'system';
-    case 'assistant':
-      return 'assistant';
-    case 'tool':
-    case 'function':
-      return 'tool';
-    default:
-      return 'user';
-  }
-}
-
-function contentToText(content: string | OAContentPart[] | null | undefined): string | undefined {
-  if (typeof content === 'string') return content || undefined;
-  if (Array.isArray(content)) {
-    let s = '';
-    for (const p of content) if (p?.type === 'text' && typeof p.text === 'string') s += p.text;
-    return s || undefined;
-  }
-  return undefined;
-}
-
-function messageBodyParts(raw: OAMessage): Part[] {
-  const parts: Part[] = [];
-  const text = contentToText(raw.content);
-  if (text) parts.push(textPart(text));
-  if (Array.isArray(raw.tool_calls)) {
-    for (const tc of raw.tool_calls) {
-      parts.push(
-        toolCallPart({
-          name: tc.function?.name ?? '',
-          id: tc.id,
-          inputJson: tc.function?.arguments,
-        }),
+/**
+ * Builds a shimmer-style wrapper for `Completions.prototype.create`. The
+ * instrumentation applies this to the SDK's prototype method; `original` is the
+ * un-instrumented `create`. We read any per-call metadata attached via
+ * {@link withMetadata}, strip it before it hits the wire, and drive the shared
+ * {@link runChatCompletion} core with an `invoke` that calls `original` on the
+ * resource instance — so we never recurse back into the patched method.
+ *
+ * @internal
+ */
+export function patchChatCompletionsCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as ChatCompletionsCreateParams;
+      const rest = args.slice(1);
+      // Instrumentation-level defaults, overridable per call via withMetadata().
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const raw = original.apply(this, [params, ...rest]);
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentChatCompletionApiPromise(client, p, params, options),
       );
-    }
-  }
-  return parts;
+    };
 }
 
-function mapOpenAIInput(messages: unknown): Message[] {
-  if (!Array.isArray(messages)) return [];
-  const out: Message[] = [];
-  for (const raw of messages as OAMessage[]) {
-    if (!raw || typeof raw !== 'object') continue;
-    const role = normalizeOpenAIRole(raw.role);
-    if (role === 'tool') {
-      out.push({
-        role: 'tool',
-        parts: [
-          toolResultPart({ toolCallId: raw.tool_call_id, content: contentToText(raw.content) }),
-        ],
-      });
-      continue;
-    }
-    const parts = messageBodyParts(raw);
-    if (parts.length > 0) out.push(raw.name ? { role, parts, name: raw.name } : { role, parts });
-  }
-  return out;
+/**
+ * Builds a shimmer-style wrapper for `Responses.prototype.create`, mirroring
+ * {@link patchChatCompletionsCreate}.
+ *
+ * This is the entry point that matters most for the OpenAI Agents SDK: it
+ * defaults to the Responses API, so this patch is what produces the `chat` span
+ * that `invoke_agent` parents.
+ *
+ * @internal
+ */
+export function patchResponsesCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as ResponseCreateParams;
+      const rest = args.slice(1);
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const raw = original.apply(this, [params, ...rest]);
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentResponseApiPromise(client, p, params, options),
+      );
+    };
 }
 
-function mapOpenAIOutputMessage(message: OAMessage | undefined): Message[] {
-  if (!message) return [];
-  const parts = messageBodyParts(message);
-  if (parts.length === 0) return [];
-  return [{ role: 'assistant', parts }];
+/**
+ * Builds a shimmer-style wrapper for `Embeddings.prototype.create`, mirroring
+ * {@link patchChatCompletionsCreate}.
+ *
+ * @internal
+ */
+export function patchEmbeddingsCreate(
+  client: Client,
+  defaults: OpenAIAdapterOptions = {},
+): (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
+  return (original) =>
+    function patchedCreate(this: unknown, ...args: unknown[]): unknown {
+      const params = args[0] as EmbeddingCreateParams;
+      const rest = args.slice(1);
+      const options = { ...defaults, ...readMetadata(params) };
+      stripMetadata(params);
+      const raw = original.apply(this, [params, ...rest]);
+      return instrumentOrPassThrough(raw, (p) =>
+        instrumentEmbeddingApiPromise(client, p, params, options),
+      );
+    };
 }
 
-function buildStreamOutputMessages(
-  text: string,
-  toolAcc: Map<number, { id?: string; name?: string; args: string }>,
-): Message[] {
-  const parts: Part[] = [];
-  if (text) parts.push(textPart(text));
-  for (const [, tc] of [...toolAcc.entries()].sort((a, b) => a[0] - b[0])) {
-    parts.push(toolCallPart({ name: tc.name ?? '', id: tc.id, inputJson: tc.args || undefined }));
+/**
+ * Instruments what the SDK returned. The request is already on its way by now, so
+ * a telemetry failure (e.g. a `Client` that was shut down) returns the SDK's
+ * result untraced rather than breaking the caller's call.
+ */
+function instrumentOrPassThrough(
+  raw: unknown,
+  instrument: (apiPromise: ApiPromiseLike<unknown>) => unknown,
+): unknown {
+  // Only a real SDK client returns an `APIPromise`; anything else passes through.
+  if (!isApiPromiseLike(raw)) return raw;
+  try {
+    return instrument(raw);
+  } catch (err) {
+    diag.debug(
+      'genai-otel: failed to record OpenAI telemetry; returning the call untraced',
+      err instanceof Error ? err.message : String(err),
+    );
+    return raw;
   }
-  if (parts.length === 0) return [];
-  return [{ role: 'assistant', parts }];
 }

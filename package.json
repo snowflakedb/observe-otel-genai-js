@@ -31,6 +31,21 @@
       "import": "./dist/integrations/vercel-ai-sdk/index.js",
       "require": "./dist/cjs/integrations/vercel-ai-sdk/index.js"
     },
+    "./openai-agents": {
+      "types": "./dist/integrations/openai-agents/index.d.ts",
+      "import": "./dist/integrations/openai-agents/index.js",
+      "require": "./dist/cjs/integrations/openai-agents/index.js"
+    },
+    "./openai-agents/instrumentation": {
+      "types": "./dist/integrations/openai-agents/instrumentation.d.ts",
+      "import": "./dist/integrations/openai-agents/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai-agents/instrumentation.js"
+    },
+    "./openai/instrumentation": {
+      "types": "./dist/integrations/openai/instrumentation.d.ts",
+      "import": "./dist/integrations/openai/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai/instrumentation.js"
+    },
     "./openai": {
       "types": "./dist/integrations/openai/index.d.ts",
       "import": "./dist/integrations/openai/index.js",
@@ -84,12 +99,15 @@
     "lint:fix": "biome check --write ."
   },
   "peerDependencies": {
+    "@openai/agents": ">=0.14.0 <1",
+    "@openai/agents-core": ">=0.14.0 <1",
+    "@openai/agents-extensions": ">=0.14.0 <1",
     "@anthropic-ai/sdk": ">=0.30.0 <1",
     "@langchain/core": "^0.3.0 || ^1.0.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.0.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.200.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.200.0",
+    "@opentelemetry/exporter-metrics-otlp-http": ">=0.200.0 <0.300.0",
+    "@opentelemetry/exporter-trace-otlp-http": ">=0.200.0 <0.300.0",
     "@opentelemetry/instrumentation": ">=0.200.0 <0.300.0",
     "@opentelemetry/resources": "^2.0.0",
     "@opentelemetry/sdk-metrics": "^2.0.0",
@@ -97,9 +115,18 @@
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0",
     "ai": "^7.0.0",
-    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0"
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
   "peerDependenciesMeta": {
+    "@openai/agents": {
+      "optional": true
+    },
+    "@openai/agents-core": {
+      "optional": true
+    },
+    "@openai/agents-extensions": {
+      "optional": true
+    },
     "@anthropic-ai/sdk": {
       "optional": true
     },
@@ -144,6 +171,10 @@
     "@anthropic-ai/sdk": "^0.111.0",
     "@biomejs/biome": "^1.9.4",
     "@langchain/core": "^0.3.0",
+    "@openai/agents": "~0.17.0",
+    "@openai/agents-core": "~0.17.0",
+    "@openai/agents-extensions": "~0.17.0",
+    "@openai/agents-openai": "~0.17.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.0.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.205.0",
@@ -161,6 +192,6 @@
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.0",
-    "zod": "^3.23.0"
+    "zod": "^4.5.4"
   }
 }

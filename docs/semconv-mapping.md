@@ -107,8 +107,18 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type |
 |---|---|
-| `gen_ai.input.messages` | string (JSON, structured message array — from `AgentInvocationStart.input`) |
+| `gen_ai.input.messages` | string (JSON, structured message array — from `AgentInvocationStart.input` or `recorder.setInput(Message[])`) |
 | `gen_ai.output.messages` | string (JSON, structured message array — from `recorder.setOutput(Message[])`) |
+
+### OpenAI Agents run container
+
+Each OpenAI Agents run gets a container span named after the trace, above the run's `invoke_agent <name>` spans.
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `gen_ai.operation.name` | string | `invoke_agent`, whether the run uses one agent or several |
+| `gen_ai.conversation.id` | string | From the SDK's `Trace.groupId` |
+| `genai.metadata.<key>` | string / number / boolean | Custom; one per scalar entry in the SDK's `Trace.metadata` |
 
 ### Agent-creation-only
 
@@ -118,12 +128,14 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type | Values |
 |---|---|---|
-| `error.type` | string | `provider_call_error` / `mapping_error` / `tool_execution_error` / `validation_error` |
+| `error.type` | string | `provider_call_error` / `mapping_error` / `tool_execution_error` / `validation_error`, or a framework-supplied error class name (see below) |
 | `error.category` | string | `timeout` / `rate_limit` / `auth_error` / `server_error` / `client_error` / `sdk_error` |
+
+By default a recorder reports a coarse category for its own kind of work. An integration holding a more precise name from the framework can override that through `recorder.setErrorType(...)`. The OpenAI Agents integration does, so an agent span reports the SDK's own error class (`InputGuardrailTripwireTriggered`, say) where it would otherwise report a flat `provider_call_error`. It overrides only with a class-like name ending in `Error`, `Exception`, or `TripwireTriggered`; otherwise the recorder's own category stands, so free-form error text can never become an unbounded metric label.
 
 ## Content capture (structured attributes)
 
-Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only`.
+Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`.
 
 | Attribute | Type | Where |
 |---|---|---|
@@ -158,7 +170,8 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 | Tool execution | `INTERNAL` |
 | Agent invocation | `INTERNAL` |
 | Agent creation | `INTERNAL` |
+| OpenAI Agents run container | `INTERNAL` |
 
 ## Instrumentation scope
 
-All spans + metrics are emitted under the OTel instrumentation scope name `@genai-otel/core`.
+Spans and metrics from a `Client` you create are emitted under the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai-agents`, unless you pass them a `client`.

@@ -65,6 +65,8 @@ export abstract class RecorderBase {
   protected completedAtMs?: number;
   /** Caller-supplied end timestamp; see {@link setEndedAt}. */
   private endedAtMsOverride?: number;
+  /** Caller-supplied `error.type`; see {@link setErrorType}. */
+  private errorTypeOverride?: string;
 
   constructor(
     host: RecorderHostContext,
@@ -117,6 +119,26 @@ export abstract class RecorderBase {
   /** The end timestamp `finalize()` should use: the override, else now. */
   protected resolveCompletedAtMs(): number {
     return this.endedAtMsOverride ?? this.host.now();
+  }
+
+  /**
+   * Overrides the `error.type` this recorder reports, on both the span attribute
+   * and the metric label.
+   *
+   * Each recorder reports a coarse category for its own kind of work
+   * (`provider_call_error`, `tool_execution_error`, …), which fits when the
+   * recorder made the failing call itself. Use this when an upstream framework
+   * named the failure better: an OpenAI Agents guardrail trip surfaces as
+   * `InputGuardrailTripwireTriggered`, and there is no guardrail span to carry
+   * it, so collapsing it to `provider_call_error` destroys the one signal
+   * available.
+   *
+   * Keep the value bounded. It becomes a metric label, so free-form text here is
+   * a cardinality problem.
+   */
+  setErrorType(errorType: string | undefined): void {
+    if (!errorType) return;
+    this.errorTypeOverride = errorType;
   }
 
   /** Stores a provider/runtime call error to surface on the span at end(). */
@@ -187,7 +209,11 @@ export abstract class RecorderBase {
     const classifier = this.host.errorClassifier ?? classifyError;
     const category = (classifier(err) || ERR_CATEGORY_SDK) as ErrorCategory;
     const statusMessage = isMetadataOnly ? category : stringifyError(err);
-    return { errorType: defaultType, errorCategory: category, statusMessage };
+    return {
+      errorType: this.errorTypeOverride ?? defaultType,
+      errorCategory: category,
+      statusMessage,
+    };
   }
 
   /**
@@ -216,11 +242,9 @@ export abstract class RecorderBase {
     }
   }
 
+  /** Leaves the status unset on success, as the OTel conventions recommend for instrumentation. */
   protected setSpanStatus(classified: ClassifiedError): void {
-    if (classified.errorType === '') {
-      this.span.setStatus({ code: SpanStatusCode.OK });
-      return;
-    }
+    if (classified.errorType === '') return;
     this.span.setAttribute(ATTR_ERROR_TYPE, classified.errorType);
     if (classified.errorCategory) {
       this.span.setAttribute(ATTR_ERROR_CATEGORY, classified.errorCategory);

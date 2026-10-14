@@ -5,7 +5,9 @@
 | Adapter | Subpath | Peer dep |
 |---|---|---|
 | Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
-| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 |
+| OpenAI SDK | `@genai-otel/core/openai` | `openai` ^4 / ^5 / ^6 / ^7 |
+| OpenAI SDK (auto) | `@genai-otel/core/openai/instrumentation` | `openai` ^4 / ^5 / ^6 / ^7 |
+| OpenAI Agents SDK | `@genai-otel/core/openai-agents/instrumentation` (processor alone: `@genai-otel/core/openai-agents`) | `@openai/agents` >=0.14 <1, `@opentelemetry/instrumentation` |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30 <1 |
 | Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation`, or `/claude-agent-sdk` for `wrapQuery` | none declared; works with `@anthropic-ai/claude-agent-sdk` >=0.3.142 <0.4.0 |
 | LangChain.js | `@genai-otel/core/langchain` | `@langchain/core` ^0.3.0 |
@@ -31,16 +33,17 @@ bootstrap — see [exporting.md](exporting.md#redacting-content).
 
 ### Adapter capability matrix
 
-| Capability | Vercel | OpenAI | Anthropic | LangChain | Claude Agent SDK |
-|---|---|---|---|---|---|
-| input / output messages | yes | yes | yes | yes | yes (reconstructed from the message stream) |
-| tool definitions (`gen_ai.tool.definitions`) | — | — | — | yes | — |
-| request params (`temperature`, `top_p`, …) | yes | yes | yes | — | partial (system prompt, effort, thinking) |
-| separate `execute_tool` spans | yes | no (tool calls ride on messages) | no (tool calls ride on messages) | yes | yes |
-| TTFT on streaming | yes | yes | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
-| per-call metadata | hooks / options | `withMetadata` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
-| `invoke_agent` spans | via hooks | — | — | via chains | yes |
-| nested `invoke_agent` for subagents | — | — | — | — | yes |
+| Capability | Vercel | OpenAI | OpenAI Agents | Anthropic | LangChain | Claude Agent SDK |
+|---|---|---|---|---|---|---|
+| input / output messages | yes | yes | yes | yes | yes | yes (reconstructed from the message stream) |
+| tool definitions (`gen_ai.tool.definitions`) | — | yes (Responses) | — | — | yes | — |
+| request params (`temperature`, `top_p`, …) | yes | yes | — | yes | — | partial (system prompt, effort, thinking) |
+| separate `execute_tool` spans | yes | no (tool calls ride on messages) | yes | no (tool calls ride on messages) | yes | yes |
+| TTFT on streaming | yes | yes | yes (AI SDK model path) | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
+| per-call metadata | hooks / options | `withMetadata` | `Trace.metadata` / `groupId` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
+| `invoke_agent` spans | via hooks | — | yes | — | via chains | yes |
+| nested `invoke_agent` for subagents | — | — | yes (agents used as tools) | — | — | yes |
+| OTel auto-instrumentation | — | yes | yes | — | yes | yes |
 
 ## Vercel AI SDK
 
@@ -127,12 +130,340 @@ import {
   instrumentedEmbedding,
 } from '@genai-otel/core/openai';
 
-const result = await instrumentedChatCompletion(client, openai, { /* params */ });
+// Pass a plain client. A wrapped one would trace each request twice.
+const result = await instrumentedChatCompletion(client, new OpenAI(), { /* params */ });
 ```
+
+Use the helpers on their own. Combined with `wrapOpenAI` or
+`OpenAIInstrumentation`, each request is traced twice.
+
+### Auto-instrumentation
+
+`OpenAIInstrumentation` is the OpenTelemetry-native alternative to `wrapOpenAI`.
+It patches the SDK's prototypes so every OpenAI call in the process is traced
+without wrapping a client:
+
+```ts
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+
+registerInstrumentations({
+  instrumentations: [new OpenAIInstrumentation({ agentName: 'planner' })],
+});
+```
+
+Config accepts every per-call metadata field the adapter does. Values you set here
+become process-wide defaults, and `withMetadata` still overrides them per call.
+Covers `chat.completions.create`, `responses.create`, and `embeddings.create`.
+
+With this installed you no longer need `wrapOpenAI`. Leaving it in place is fine:
+`wrapOpenAI` sees the patched method and passes the call through, metadata
+included, so each request still produces one span.
+
+#### When another library instruments `openai` too
+
+`@opentelemetry/instrumentation-openai` patches the same three prototypes, and
+`@opentelemetry/auto-instrumentations-node` enables it by default, so the two do
+meet in practice. Whichever patches first wins; the other one defers and logs at
+`warn`. You get a single span per call either way. When the other library wins, its
+span carries neither this library's Responses mapping nor the
+`gen_ai.conversation.id` / `gen_ai.agent.name` that the Agents integration bridges
+onto model calls, so turn one of them off.
+
+```ts
+// keep this library's spans: turn the other one off
+getNodeAutoInstrumentations({
+  '@opentelemetry/instrumentation-openai': { enabled: false },
+});
+```
+
+```bash
+# or by environment, either direction. Both take a package-name *suffix*.
+OTEL_NODE_DISABLED_INSTRUMENTATIONS=openai   # deny-list: everything else stays on
+OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,pg   # allow-list: anything unlisted is off
+```
+
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS` prepends `@opentelemetry/instrumentation-`
+for you, so the value is `openai`. Pass the full package name and it matches
+nothing and disables nothing; the only trace of the mistake is a
+`Provided instrumentation name ... not found` line logged at `error` level, which
+most setups never surface. The programmatic form above does take the full name.
+
+All three levers work whether you call `getNodeAutoInstrumentations()` yourself or
+preload `@opentelemetry/auto-instrumentations-node/register`. The register entry
+point goes through the same helper, so only the environment variables reach it.
+
+Version resolution can split the decision in two. `@opentelemetry/instrumentation-openai`
+declares `openai` `>=4.19.0 <7`, while `@openai/agents-core` depends on `openai ^7`,
+and those usually resolve to two separate copies. The other library then takes your
+application's own v6 calls while this one takes the v7 copy the Agents SDK drives.
+Turning one off removes the ambiguity.
+
+Works under CommonJS with no extra setup, and under ESM with the standard OTel
+loader hook (`node --import` a preload that calls
+`register('@opentelemetry/instrumentation/hook.mjs', ...)`). If you cannot enable
+the loader, hand the module namespace over once at startup:
+
+```ts
+import * as OpenAIModule from 'openai';
+instrumentation.manuallyInstrument(OpenAIModule);
+```
+
+The patch reaches all three resource prototypes through the `OpenAI` client
+class's own statics (`OpenAI.Chat.Completions`, `OpenAI.Responses`,
+`OpenAI.Embeddings`), which are the same class objects backing a live client's
+resources. So there are no dist file paths to drift, and behavior is identical in
+both module systems.
+
+### Responses API
+
+`responses.create` is mapped alongside Chat Completions, with two differences:
+
+- `instructions` becomes `gen_ai.system_instructions`. Responses carries the system
+  prompt out-of-band, so it never appears as a message in the history.
+- Tool definitions are read from the top level of each tool (`name`, `description`,
+  `parameters`) instead of from a nested `function` object.
+
+Usage maps `input_tokens_details.cached_tokens` and
+`output_tokens_details.reasoning_tokens` onto the cache-read and reasoning
+counters. Streaming records TTFT from the first `*.delta` event and takes the
+final output and usage from the assembled `Response` on `response.completed`.
 
 ### Streaming behavior
 
 `wrapOpenAI` detects `{ stream: true }` automatically. The returned async iterator yields each `ChatCompletionChunk` to the consumer; the adapter observes them in-band to record TTFT (first chunk), final model + id (latest chunk values), and final usage (sent by OpenAI in the last chunk when `stream_options: { include_usage: true }` is set — without it the duration histogram still fires correctly, token usage is just zero).
+
+## OpenAI Agents SDK
+
+```ts
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { OpenAIAgentsInstrumentation } from '@genai-otel/core/openai-agents/instrumentation';
+import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+
+registerInstrumentations({
+  instrumentations: [new OpenAIAgentsInstrumentation(), new OpenAIInstrumentation()],
+});
+```
+
+Register both. On the default OpenAI model paths the `chat` spans come from
+`OpenAIInstrumentation`; without it, runs show `invoke_agent` and `execute_tool` with
+no model call beneath them. `@opentelemetry/instrumentation` is a required peer.
+
+### What gets a span
+
+| SDK span type | OTel span |
+|---|---|
+| trace | run container named after the trace, with operation `invoke_agent` (see below) |
+| `agent` | `invoke_agent <name>` |
+| `function` | `execute_tool <name>` |
+| `generation` on the AI SDK path (`aisdk(model)`) | `chat <model>` |
+| `generation` / `response` on the OpenAI paths | none; `OpenAIInstrumentation` emits the `chat` span |
+| `task`, `turn` | none; their errors are recorded on the enclosing span |
+| `handoff` | none; the next `invoke_agent` span is the handoff |
+| `guardrail`, `custom`, `mcp_tools`, `speech`, `transcription`, `speech_group` | none |
+
+The rows marked none that are not model calls have no operation in the conventions.
+Model calls on the OpenAI paths are left to `OpenAIInstrumentation` because it sees
+the HTTP call, including time-to-first-token and `server.address`, and emitting from
+both layers would count every call twice. On the AI SDK path nothing else sees the
+call, so this integration emits the span. It records it when the model call
+finishes, so spans the provider client creates during the call sit beside it under
+`invoke_agent`.
+
+Spans from other instrumentations nest correctly: model calls and tool calls run
+inside the OTel context of their agent or tool span. The SDK keeps no OTel context
+active on its own, so without this a `chat` span, or a database span made inside a
+tool, would land beside the agent span instead of under it.
+
+Not emitted:
+
+- `create_agent`: the SDK reports nothing when an `Agent` is constructed.
+- `gen_ai.tool.call.id`: the SDK's tool span carries no call id. It could only be
+  guessed by matching tool names and arguments, which fails for parallel calls to
+  the same tool.
+- `gen_ai.tool.definitions`: the SDK reports tool names only.
+
+Tools served by an MCP server get `gen_ai.tool.type = mcp`; other tools get
+`function`.
+
+### Agent input and output
+
+Under content capture, `invoke_agent` spans carry `gen_ai.input.messages` from the
+agent's first model call and `gen_ai.output.messages` from its last. On the AI SDK
+path, the agent's instructions go to `gen_ai.system_instructions` on the `chat`
+span, the same attribute the OpenAI paths use.
+
+These messages come from the SDK's own trace data. With the SDK's
+`traceIncludeSensitiveData: false`, AI SDK `chat` spans carry no messages or token
+counts, and agent spans on the AI SDK and Chat Completions paths carry no messages,
+whatever content capture is set to. The default Responses path still reports its
+input and output to trace processors, so agent spans there keep their messages.
+
+### The run container span
+
+Every run gets a container span, named after the trace (`RunConfig.workflowName`,
+or the SDK's default `Agent workflow`), with `gen_ai.operation.name` set to
+`invoke_agent`. It looks the same whether the run uses one agent or hands off
+between several, which matches the Python OpenTelemetry instrumentation for this
+SDK. The agents themselves get their own `invoke_agent <name>` spans beneath it.
+
+The conventions suggest `invoke_workflow` for multi-agent runs. This integration does
+not emit it: telling the two kinds of run apart is only possible once the run is
+over, and one shape for every run is simpler to query.
+
+A run resumed after a tool approval gets a container span of its own, with the
+same name and conversation id as the first part of the run. A run resumed from a
+serialized state (`RunState.fromString`) gets a normal trace start and end from the
+SDK. A run resumed in the same process from `result.state` gets neither, so its
+container closes when the resumed run's `task` span ends.
+
+With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or
+`turn` spans, so a turn's error is not copied to its agent span, and a resumed run's
+container stays open until the trace cap or shutdown ends it.
+
+The container carries `gen_ai.conversation.id` from `Trace.groupId` and
+`Trace.metadata` as `genai.metadata.*`. Set them on the `Runner`, since the options
+passed to `run()` do not carry them:
+
+```ts
+const runner = new Runner({
+  workflowName: 'triage-workflow',   // becomes the container span's name
+  groupId: 'chat-thread-1',          // becomes gen_ai.conversation.id
+  traceMetadata: { tenant: 'acme' }, // becomes genai.metadata.tenant
+});
+```
+
+The conversation id and the agent name are also passed down to model calls, so the
+`chat` span from `OpenAIInstrumentation` carries the same `gen_ai.conversation.id`
+and the right `gen_ai.agent.name`. When `groupId` is set it takes precedence over an
+id set with `withConversationId(...)`.
+
+### Errors
+
+- A run that rejects closes the traces it opened, with the error on the container.
+  The SDK skips `trace.end()` in that case. A streamed run that fails reports its
+  error the same way.
+- A `withTrace(...)` block that throws is closed the same way.
+- A failure the run recovers from does not fail anything above it. That covers a
+  model call the SDK retries, and an agent used as a tool whose failure the outer
+  agent handles.
+- `error.type` is the error's class name when it looks like one (`BoomError`,
+  `InputGuardrailTripwireTriggered`); otherwise the span's own category, such as
+  `tool_execution_error`, or `_OTHER` on the container. Free-form error text never
+  becomes a metric label.
+
+Guardrails get no span of their own: `GuardrailSpanData` carries only
+`{ name, triggered }`. A tripwire shows up as the `error.type` above.
+
+Open traces are capped at 1000 (`maxTracesInFlight`). Past that, the least recently
+active one is ended with the data it has.
+
+### Metrics
+
+- `gen_ai.client.operation.duration` for agent spans and AI SDK `chat` spans.
+- `gen_ai.client.tool_execution.duration` for tool spans.
+- `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted
+  twice.
+- On the AI SDK path, `gen_ai.client.time_to_first_token`, measured from the first
+  delta event (text, reasoning or tool arguments), not from the bookkeeping events a
+  stream opens with.
+
+`gen_ai.client.time_to_first_token` and `gen_ai.client.tool_execution.duration` are
+this library's names, shared by all its integrations; the conventions have since
+defined `gen_ai.client.operation.time_to_first_chunk` and, in development,
+`gen_ai.execute_tool.duration`. The run container records no duration metric.
+
+On the AI SDK path the SDK does not report why the model stopped, so `chat` spans
+report `tool_call` when the model asked for a tool and otherwise the default `stop`.
+
+### Where agent traces go
+
+The SDK's own export to the OpenAI Traces dashboard keeps running next to this
+integration. To stop it, replace the SDK's processor list. This integration's
+processor stays registered through any replacement:
+
+```ts
+import { setTraceProcessors } from '@openai/agents';
+
+setTraceProcessors([]);
+```
+
+### Custom `Model` classes
+
+Automatic patching reaches the SDK's own model classes only. Wrap a hand-written
+model so spans it creates nest under the agent:
+
+```ts
+import { instrumentModel } from '@genai-otel/core/openai-agents/instrumentation';
+import { getCurrentSpan } from '@openai/agents';
+
+const model = instrumentModel(new MyModel(), instrumentation.processor, getCurrentSpan);
+```
+
+### ESM
+
+Works with the standard OTel loader hook. Without it, hand the module namespaces
+over at startup:
+
+```ts
+import * as Agents from '@openai/agents';
+import * as AiSdk from '@openai/agents-extensions/ai-sdk';
+instrumentation.manuallyInstrument(Agents, AiSdk);
+```
+
+ESM namespaces are read-only, so without the loader hook two things are lost: spans
+created inside tool functions do not nest under `execute_tool`, and a `withTrace`
+block that throws is closed only when the trace cap or shutdown reaches it.
+
+### Tests under `NODE_ENV=test`
+
+The SDK turns tracing off when `NODE_ENV === 'test'`. Turn it back on before each
+test, since the switch is process-wide:
+
+```ts
+import { setTracingDisabled } from '@openai/agents';
+
+beforeEach(() => setTracingDisabled(false));
+```
+
+### Supported versions
+
+`@openai/agents` `>=0.14.0 <1`, tested against 0.14, 0.16 and the latest release.
+The floor is 0.14 because error routing relies on its `task` and `turn` spans.
+
+### Shutdown and disable
+
+`await instrumentation.shutdown()` ends every open span, flushes, and shuts down a
+`Client` the instrumentation created. A `client` you passed in is left to you.
+`disable()` ends open spans and stops tracing until `enable()`. The processor stays
+in the SDK's list, since the SDK cannot remove one.
+
+The SDK also shuts processors down on process signals and whenever its processor
+list is replaced. This integration only flushes then, so tracing carries on if the
+process does.
+
+### The processor on its own
+
+`@genai-otel/core/openai-agents` exports `GenAIOtelTracingProcessor` for custom
+setups:
+
+```ts
+import { addTraceProcessor, getCurrentTrace } from '@openai/agents';
+import { GenAIOtelTracingProcessor } from '@genai-otel/core/openai-agents';
+
+const processor = new GenAIOtelTracingProcessor({ getCurrentTrace });
+addTraceProcessor(processor);
+// On shutdown: `stop()` ends open spans; `shutdown()` only flushes.
+await processor.stop();
+```
+
+Without the instrumentation:
+
+- spans from other instrumentations, such as OpenAI `chat` spans, do not nest under
+  agent spans;
+- a run that rejects leaves its container span open until the trace cap or `stop()`
+  ends it;
+- the processor can be dropped when the SDK's processor list is replaced.
 
 ## Anthropic SDK
 
@@ -484,6 +815,5 @@ const openai = wrapOpenAI(client, new OpenAI());
 - LangGraph-specific helpers (graph node → workflow step semantics beyond what the LangChain adapter already gives you).
 - Google Gemini SDK (`@google/genai`).
 - LlamaIndex.TS (`llamaindex`).
-- OpenAI Agents SDK (`@openai/agents`).
-- `plan` / `invoke_workflow` / memory spans for the Claude Agent SDK. The GenAI conventions define them, but this library does not support those operation names yet.
+- `plan` / `invoke_workflow` / memory spans for the Claude Agent SDK. The GenAI conventions define them, but the Claude Agent SDK adapter does not emit them yet.
 - Mastra.

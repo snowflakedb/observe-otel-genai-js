@@ -57,6 +57,7 @@ export {
   type TruncationResult,
   type TruncationStrategy,
 } from './content/capture.js';
+export { CONTENT_ALLOW_LIST } from './content/allow-list.js';
 export {
   resolveFinishReason,
   toSemconvInputMessages,
