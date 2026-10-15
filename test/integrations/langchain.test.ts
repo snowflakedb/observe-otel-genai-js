@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for the LangChain adapter.
  *
@@ -908,7 +925,7 @@ describe('LangChain adapter — streaming', () => {
   const streamParams = { invocation_params: { model: 'claude-opus-4-8', stream: true } };
 
   it('marks the span as streaming and recovers input_tokens from message.usage_metadata', async () => {
-    // The OB-65331 scenario: an Anthropic stream delivers input tokens on
+    // An Anthropic stream delivers input tokens on
     // message_start, which LangChain aggregates onto the generation message's
     // usage_metadata — not llmOutput. The span must still carry both token
     // counts and be flagged as a stream.

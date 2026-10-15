@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * AI SDK v7 `Telemetry` integration for genai-otel.
  *
@@ -169,8 +186,10 @@ class GenaiTelemetry {
   onStepStart(event: AiStepStartEvent): void {
     const op = this.get(event.callId);
     if (!op) return;
-    const systemPrompt = typeof event.instructions === 'string' ? event.instructions : undefined;
-    const input = this.recordInputs(event) ? mapModelMessages(event.messages ?? []) : [];
+    const recordInputs = this.recordInputs(event);
+    const systemPrompt =
+      recordInputs && typeof event.instructions === 'string' ? event.instructions : undefined;
+    const input = recordInputs ? mapModelMessages(event.messages ?? []) : [];
     this.openStep(
       op,
       event.stepNumber,
@@ -186,6 +205,7 @@ class GenaiTelemetry {
   onObjectStepStart(event: AiObjectStepStartEvent): void {
     const op = this.get(event.callId);
     if (!op) return;
+    const recordInputs = this.recordInputs(event);
     const { messages, systemPrompt } = mapProviderPrompt(event.promptMessages ?? []);
     this.openStep(
       op,
@@ -193,8 +213,8 @@ class GenaiTelemetry {
       { provider: event.provider, modelId: event.modelId },
       {
         operationName: OP_GENERATE_CONTENT,
-        systemPrompt,
-        input: this.recordInputs(event) ? messages : [],
+        systemPrompt: recordInputs ? systemPrompt : undefined,
+        input: recordInputs ? messages : [],
       },
     );
   }
@@ -214,7 +234,7 @@ class GenaiTelemetry {
         conversationId: op.options.conversationId,
       }),
     );
-    rec.setResult({ arguments: event.toolCall.input });
+    if (this.recordInputs(event)) rec.setResult({ arguments: event.toolCall.input });
     op.tools.set(event.toolCall.toolCallId, rec);
   }
 
@@ -230,7 +250,7 @@ class GenaiTelemetry {
     const out = event.toolOutput;
     if (out?.type === 'tool-error') {
       rec.setExecError(out.error);
-    } else if (out?.type === 'tool-result') {
+    } else if (out?.type === 'tool-result' && this.recordOutputs(event)) {
       rec.setResult({ result: out.output });
     }
     await end(rec);
@@ -409,11 +429,11 @@ class GenaiTelemetry {
             conversationId: op.options.conversationId,
           }),
         );
-        rec.setResult({ arguments: tc.input });
+        if (this.recordInputs(event)) rec.setResult({ arguments: tc.input });
       }
       if (toolErrors.has(tc.toolCallId)) {
         rec.setExecError(toolErrors.get(tc.toolCallId));
-      } else if (toolResults.has(tc.toolCallId)) {
+      } else if (toolResults.has(tc.toolCallId) && this.recordOutputs(event)) {
         rec.setResult({ result: toolResults.get(tc.toolCallId) });
       }
       step.closedToolCallIds.add(tc.toolCallId);

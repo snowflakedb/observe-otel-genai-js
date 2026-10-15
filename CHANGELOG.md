@@ -6,6 +6,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- License changed from MIT to Apache 2.0.
+
 ### Added
 - Core: opt-in `gen_ai.conversation.id` on metrics. Set
   `new Client({ metricAttributes: { conversationId: true } })` to add it to every
@@ -76,15 +79,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   messages. To capture content again, set `contentCaptureMode: 'no_tool_content'`
   (prompts and completions) or `'full'` (also tool arguments/results and
   retrieval content) on the `Client`, per call, or with `withContentCaptureMode`.
-- Content attributes are now capped at 1,048,576 characters each by default,
-  large enough that typical prompts and completions are never trimmed. Content
-  over the cap is trimmed with the existing `.truncated` /
-  `.original_size_bytes` markers. `DEFAULT_MAX_CONTENT_LENGTH` changes from
-  32,768 to this value and is now applied by default. Set
-  `contentCapture: { maxContentLength: 0 }` to turn the cap off, or another
-  value to change it.
-- `ClientConfig.contentCapture` accepts a partial object, so
-  `{ maxContentLength: 8192 }` is enough; unset fields keep their defaults.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
@@ -371,9 +365,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Docs
 - Corrected the metric count (4 to 5 histograms) and added the
   `gen_ai.client.tool_execution.duration` row across the README, blueprint, and
-  semconv-mapping docs. Removed private design-doc links and un-staled the
-  blueprint's framework-adapter scope. Added a contributor-agreement placeholder
-  to `CONTRIBUTING.md` (pending OSPO).
+  semconv-mapping docs. Updated the blueprint's framework-adapter scope. Added a
+  contributor-agreement section to `CONTRIBUTING.md`.
 
 ## [0.1.7] - 2026-06-25
 

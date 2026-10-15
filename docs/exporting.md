@@ -56,7 +56,7 @@ A row should appear within seconds.
 
 ## Things to verify on first integration
 
-- **Size limits:** the library caps each content attribute at 1,048,576 characters by default. The cap counts characters, not bytes, and applies to each attribute separately, so it does not keep a whole span under a backend's size limit. Many backends cap attributes lower (commonly in the 64–256 KB range); if yours does, set `Client({ contentCapture: { maxContentLength: <smaller> } })`.
+- **Per-attribute size limit:** backends cap attribute size (commonly in the 64–256 KB range). If your prompts exceed it, lower `Client({ contentCapture: { maxContentLength: <smaller> } })`.
 - **Bucket boundaries on histograms:** your backend should render the advisory boundaries correctly. If dashboards don't look right, see [`docs/semconv-mapping.md`](semconv-mapping.md) for the canonical bucket families.
 - **`service.name` routing:** most backends group data by service. Set `OTEL_SERVICE_NAME` per environment so dev/staging/prod stay separate.
 
@@ -82,20 +82,27 @@ control:
 ```ts
 import type { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 
+// Every attribute the library uses for content or user free text.
 const CONTENT_ATTRS = [
   'gen_ai.input.messages',
   'gen_ai.output.messages',
   'gen_ai.system_instructions',
+  'gen_ai.tool.definitions',
   'gen_ai.tool.call.arguments',
   'gen_ai.tool.call.result',
   'gen_ai.embeddings.input_texts',
+  'gen_ai.retrieval.query.text',
+  'gen_ai.retrieval.documents',
+  'gen_ai.request.stop_sequences',
+  'genai.conversation.title',
 ];
 
 /**
  * Scrubs content attributes in place before the batch exporter serializes them.
- * Content is JSON-encoded, so `redact` runs over the encoded string — good for
- * pattern-based scrubbing (emails, card numbers, tokens). Register this BEFORE
- * the exporting processor so the mutation is visible at export time.
+ * Most content is JSON-encoded, so `redact` runs over the encoded string — good
+ * for pattern-based scrubbing (emails, card numbers, tokens). Embedding input
+ * texts and stop sequences are string arrays, so each item is scrubbed. Register
+ * this BEFORE the exporting processor so the mutation is visible at export time.
  */
 class RedactingSpanProcessor implements SpanProcessor {
   constructor(private readonly redact: (value: string) => string) {}
@@ -103,7 +110,12 @@ class RedactingSpanProcessor implements SpanProcessor {
   onEnd(span: ReadableSpan): void {
     const attrs = span.attributes as Record<string, unknown>;
     for (const key of CONTENT_ATTRS) {
-      if (typeof attrs[key] === 'string') attrs[key] = this.redact(attrs[key] as string);
+      const value = attrs[key];
+      if (typeof value === 'string') {
+        attrs[key] = this.redact(value);
+      } else if (Array.isArray(value)) {
+        attrs[key] = value.map((item) => (typeof item === 'string' ? this.redact(item) : item));
+      }
     }
   }
   async forceFlush(): Promise<void> {}

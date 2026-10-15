@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import { trace } from '@opentelemetry/api';
 import { generateObject, generateText, registerTelemetry, streamText, tool } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
@@ -13,6 +30,9 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
+  ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_CALL_ARGUMENTS,
+  ATTR_TOOL_CALL_RESULT,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_GENERATE_CONTENT,
@@ -384,5 +404,60 @@ describe('genaiTelemetryIntegration', () => {
     );
     const agent = oneByName(h, 'invoke_agent');
     expect(agent?.status.code).toBe(2 /* ERROR */);
+  });
+});
+
+describe('genaiTelemetryIntegration recordInputs / recordOutputs', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const runToolLoop = (telemetry?: { recordInputs?: boolean; recordOutputs?: boolean }) =>
+    drain(
+      streamText({
+        model: toolLoopModel(),
+        system: 'be terse',
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => 'pong',
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+        telemetry,
+      }),
+    );
+
+  it('records the system prompt, tool arguments and tool result by default', async () => {
+    await runToolLoop();
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(oneByName(h, 'chat')?.attributes[ATTR_SYSTEM_INSTRUCTIONS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
+  });
+
+  it('omits the system prompt and tool arguments when recordInputs is false', async () => {
+    await runToolLoop({ recordInputs: false });
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(
+      byName(h, 'chat').every((c) => c.attributes[ATTR_SYSTEM_INSTRUCTIONS] === undefined),
+    ).toBe(true);
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeUndefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
+  });
+
+  it('omits the tool result when recordOutputs is false', async () => {
+    await runToolLoop({ recordOutputs: false });
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeUndefined();
   });
 });

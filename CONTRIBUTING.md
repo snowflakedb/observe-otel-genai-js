@@ -43,9 +43,8 @@ failure, so a lint or type error surfaces without waiting on the suite. Use
 
 ## Contributor agreement
 
-A contributor agreement mechanism (DCO sign-off or CLA) is pending and will be
-finalized before contributions are accepted. Until it is in place, external PRs
-may be held; check back here or ask a maintainer for the current status.
+Before we can merge your pull request, you need to agree to the Snowflake
+[contributor license agreement](https://github.com/Snowflake-Labs/CLA).
 
 ## Reporting issues
 

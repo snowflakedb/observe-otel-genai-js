@@ -52,7 +52,7 @@ instead.
 Only attributes whose key appears, exactly, on the list. There are no prefixes
 or wildcards. The list is exported from the package as `CONTENT_ALLOW_LIST`,
 and defined in
-[`src/content/allow-list.ts`](https://github.com/snowflake-eng/genai-otel/blob/main/src/content/allow-list.ts).
+[`src/content/allow-list.ts`](https://github.com/Snowflake-Labs/observe-otel-genai-js/blob/main/src/content/allow-list.ts).
 
 In short, the list covers:
 
@@ -94,7 +94,6 @@ active span is the filtered one.
 
 There is no environment variable and no way to add keys at runtime. Changing
 the list means editing `src/content/allow-list.ts`, and needs a privacy review.
-Observe's Python SDK applies the same list, so change both together.
 
 ## What it does not cover
 

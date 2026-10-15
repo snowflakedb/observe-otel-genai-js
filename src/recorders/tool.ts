@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `ToolExecutionRecorder` — wraps an `execute_tool` span.
  *
@@ -10,6 +27,7 @@ import type { Span } from '@opentelemetry/api';
 import { type ContentCaptureMode, applyContentAttribute } from '../content/capture.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
+  ATTR_CONVERSATION_TITLE,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
   ERR_TYPE_TOOL_EXECUTION,
@@ -81,6 +99,10 @@ export class ToolExecutionRecorder extends RecorderBase {
 
     // Apply tool attributes (final pass).
     applyToolAttributes(this.span, this.seed);
+    if (stripped) {
+      // The title is free text, so overwrite the value set at span start.
+      this.span.setAttribute(ATTR_CONVERSATION_TITLE, '');
+    }
 
     // Status + metrics.
     this.recordExceptionIfAny(this.callError, stripped);

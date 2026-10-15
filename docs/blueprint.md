@@ -8,13 +8,13 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 
 ## Decisions locked in v0.1.0
 
-- **Language**: TypeScript-first, ESM-only, Node 20+.
+- **Language**: TypeScript-first, published as both ESM and CommonJS, Node 22+.
 - **Sync/async story**: synchronous fluent recorder methods (`setResult`, `setCallError`, `setFirstTokenAt`); `Promise<void>` only on methods that can do I/O (`recorder.end()`, `client.flush()`, `client.shutdown()`). No separate `AsyncClient` class.
 - **Resource management**: `await using recorder = ...` via `Symbol.asyncDispose`. Manual `try/finally` works too.
 - **Distribution**: published as `@genai-otel/core` with a separate `@genai-otel/core/bootstrap` entry point so the core has zero `@opentelemetry/sdk-*` deps.
 - **Span context activation**: `tracer.startSpan(...)` for fluent recorders (does NOT activate). `tracer.startActiveSpan(...)` for `invokeAgent(seed, async () => {...})` callback variant so nested calls auto-parent.
 - **Multi-agent fan-in DAG**: OTel span links + fallback `genai.parent_generation_ids` attribute (the library maintains a bounded LRU + TTL map of generation_id → SpanContext for in-process resolution).
-- **Long prompt/response content**: emitted as structured span attributes (`gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`); capped at 1,048,576 characters per attribute by default (`maxContentLength`, `0` turns it off), trimmed at the string-leaf level so the JSON stays valid.
+- **Long prompt/response content**: emitted as structured span attributes (`gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`); unbounded by default, with an optional finite `maxContentLength` that trims at the string-leaf level while keeping valid JSON.
 - **Provider setup**: optional `bootstrapOtel(...)` helper in a separate submodule; core library has no `@opentelemetry/sdk-*` runtime dep.
 - **Export target**: any OTLP/HTTP backend (Tempo, Honeycomb, Jaeger, Datadog, Observe, ...), endpoint + auth via standard `OTEL_EXPORTER_OTLP_*` env vars. No vendor-specific code.
 - **Multi-turn correlation**: `gen_ai.conversation.id` attribute scoped via `withConversationId(...)` AsyncLocalStorage helper, plus first-class `turnIndex` / `turnRole` fields on `GenerationStart` emitted as `genai.conversation.turn_index` / `genai.conversation.turn_role` (library extensions; the spec only defines `gen_ai.conversation.id`).
@@ -86,7 +86,7 @@ Skip-on-zero rule: token-usage records skip emission when `value === 0` so `cach
 See [`docs/semconv-mapping.md`](semconv-mapping.md) for the exhaustive attribute list. Key behaviors:
 
 - Modes: `full`, `no_tool_content`, `metadata_only` (the default), and `allow_list`, plus `default`, which defers to the next level. Resolution order is per-call > context > client default; a `default` that reaches the client resolves to `metadata_only`, so no content goes on the wire unless explicitly opted in.
-- Truncation: applies once an attribute is longer than `maxContentLength` (1,048,576 characters by default). `middle` (default), `end`, `head_tail` for plain string attributes (tool arguments/results, retrieval query). Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
+- Truncation: `middle` (default), `end`, `head_tail` for plain string attributes. Structured message attributes are trimmed at the string-leaf level; when trimmed, `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
 
 ## Multi-turn conversations
 

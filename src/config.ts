@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import type { Meter, Tracer } from '@opentelemetry/api';
 import type { ContentCapture, ContentCaptureMode } from './content/capture.js';
 import { defaultContentCapture } from './content/capture.js';
@@ -75,8 +92,8 @@ export interface ClientConfig {
    * the caller opts in with `no_tool_content` or `full`.
    */
   contentCaptureMode?: ContentCaptureMode;
-  /** Content size cap and truncation. Fields left unset keep their defaults. */
-  contentCapture?: Partial<ContentCapture>;
+  /** Truncation / blob-store / use-events configuration. */
+  contentCapture?: ContentCapture;
 
   /** Custom error classifier (overrides the built-in HTTP-status sniffer). */
   errorClassifier?: ErrorClassifier;

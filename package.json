@@ -2,14 +2,14 @@
   "name": "@genai-otel/core",
   "version": "0.6.0",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Snowflake Inc.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/snowflake-eng/genai-otel.git"
+    "url": "git+https://github.com/Snowflake-Labs/observe-otel-genai-js.git"
   },
-  "homepage": "https://github.com/snowflake-eng/genai-otel#readme",
-  "bugs": "https://github.com/snowflake-eng/genai-otel/issues",
+  "homepage": "https://github.com/Snowflake-Labs/observe-otel-genai-js#readme",
+  "bugs": "https://github.com/Snowflake-Labs/observe-otel-genai-js/issues",
   "keywords": ["opentelemetry", "otel", "genai", "llm", "observability", "tracing", "ai-agents"],
   "type": "module",
   "main": "./dist/cjs/index.js",
