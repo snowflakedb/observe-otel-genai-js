@@ -135,7 +135,7 @@ By default a recorder reports a coarse category for its own kind of work. An int
 
 ## Content capture (structured attributes)
 
-Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`.
+Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`. The default mode is `metadata_only`, so content is off until you opt in with `no_tool_content` or `full`.
 
 | Attribute | Type | Where |
 |---|---|---|
@@ -156,6 +156,8 @@ Size policy: each content attribute is capped at `ContentCapture.maxContentLengt
 | `gen_ai.client.tool_execution.duration` | s | powers-of-2 (10ms → ~82s) — isolates `gen_ai.tool.name` cardinality |
 
 `gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_creation`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
+
+`gen_ai.conversation.id` is off by default on metrics because it adds one time series per conversation. Turn it on with `new Client({ metricAttributes: { conversationId: true } })`. It is then added to every data point whose operation has a conversation ID: chat, `invoke_agent`, `execute_tool`, and retrieval. Embedding and `create_agent` have no conversation ID, so their data points never carry it.
 
 ## Span kinds
 

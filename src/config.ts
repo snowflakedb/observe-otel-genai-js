@@ -36,6 +36,16 @@ export interface EmbeddingCaptureConfig {
 }
 
 /**
+ * Optional attributes added to every metric data point. All are off by default
+ * because each one is high-cardinality: turning on `conversationId` adds a new
+ * time series per conversation to every histogram.
+ */
+export interface MetricAttributesConfig {
+  /** Add `gen_ai.conversation.id` when the operation has one. */
+  conversationId: boolean;
+}
+
+/**
  * Client-wide configuration. All fields are optional; the library applies
  * sensible defaults when omitted via {@link resolveConfig}.
  */
@@ -61,8 +71,8 @@ export interface ClientConfig {
   /**
    * Default content-capture mode. Resolution order at recording time:
    *   per-call → context → this default.
-   * Note: `default` here falls through to `no_tool_content` so tool args /
-   * results are not emitted unless the caller explicitly opts in.
+   * Unset, or `default`, means `metadata_only`: no content is emitted unless
+   * the caller opts in with `no_tool_content` or `full`.
    */
   contentCaptureMode?: ContentCaptureMode;
   /** Content size cap and truncation. Fields left unset keep their defaults. */
@@ -76,6 +86,9 @@ export interface ClientConfig {
 
   /** Tunables for the in-memory parent-generation span map. */
   spanLinkMap?: SpanLinkMapConfig;
+
+  /** Opt-in metric attributes. */
+  metricAttributes?: Partial<MetricAttributesConfig>;
 }
 
 /**
@@ -101,6 +114,7 @@ export interface ResolvedClientConfig {
 
   embeddingCapture: EmbeddingCaptureConfig;
   spanLinkMap: SpanLinkMapConfig;
+  metricAttributes: MetricAttributesConfig;
 }
 
 const defaultLogger: Logger = {
@@ -118,7 +132,7 @@ export function defaultConfig(): ResolvedClientConfig {
     agentVersion: '',
     userId: '',
     tags: {},
-    contentCaptureMode: 'no_tool_content',
+    contentCaptureMode: 'metadata_only',
     contentCapture: defaultContentCapture(),
     embeddingCapture: {
       captureInput: false,
@@ -128,6 +142,9 @@ export function defaultConfig(): ResolvedClientConfig {
     spanLinkMap: {
       maxEntries: 10_000,
       ttlMs: 5 * 60 * 1000,
+    },
+    metricAttributes: {
+      conversationId: false,
     },
   };
 }
@@ -153,5 +170,6 @@ export function resolveConfig(input?: ClientConfig): ResolvedClientConfig {
     errorClassifier: input.errorClassifier,
     embeddingCapture: { ...base.embeddingCapture, ...(input.embeddingCapture ?? {}) },
     spanLinkMap: { ...base.spanLinkMap, ...(input.spanLinkMap ?? {}) },
+    metricAttributes: { ...base.metricAttributes, ...(input.metricAttributes ?? {}) },
   };
 }

@@ -104,13 +104,18 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
       }),
     });
 
-    await instrumentedChatCompletion(h.client, fake, {
-      model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: 'be terse' },
-        { role: 'user', content: 'hi' },
-      ],
-    });
+    await instrumentedChatCompletion(
+      h.client,
+      fake,
+      {
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'be terse' },
+          { role: 'user', content: 'hi' },
+        ],
+      },
+      { contentCapture: 'no_tool_content' },
+    );
 
     const [span] = h.spans.getFinishedSpans();
     const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);

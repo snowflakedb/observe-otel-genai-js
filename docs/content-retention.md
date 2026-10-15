@@ -4,12 +4,12 @@ Use the `allow_list` content mode when you have promised that prompts,
 completions, and other user content never leave your process, for example
 under a zero data retention agreement.
 
-`metadata_only` already stops the library from writing the content it knows
-about. `allow_list` goes one step further: every span the library creates keeps
-**only** the attributes on a fixed, reviewed list. Anything else is dropped,
-including attributes added later by a new library version, an adapter, or your
-own code. A new attribute stays off the wire until someone reviews it and adds
-it to the list.
+`metadata_only`, the default mode, already stops the library from writing the
+content it knows about. `allow_list` goes one step further: every span the
+library creates keeps **only** the attributes on a fixed, reviewed list.
+Anything else is dropped, including attributes added later by a new library
+version, an adapter, or your own code. A new attribute stays off the wire until
+someone reviews it and adds it to the list.
 
 ## Turning it on
 
@@ -75,7 +75,8 @@ In short, the list covers:
   class name, which is what OpenTelemetry records). The message and stack trace
   are dropped, because they can quote the input that caused the error. The same
   applies to exceptions your own code records on the span. (`metadata_only`
-  records no exception event at all.)
+  records no exception event of its own, but leaves ones your code records
+  untouched.)
 - **Status message**: the status code (OK or ERROR) is kept, the message is
   dropped.
 - **Everything else not on the list.** Today that includes some metadata the

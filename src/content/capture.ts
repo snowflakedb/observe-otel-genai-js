@@ -16,6 +16,7 @@ import type { Span } from '@opentelemetry/api';
  *  - `no_tool_content` → include prompts and completions, but strip tool args/results
  *                        and retrieval query/documents.
  *  - `metadata_only`   → strip ALL content; only structured metadata remains.
+ *                        An unset or `default` client mode means this.
  *  - `allow_list`      → strip ALL content like `metadata_only`, and also drop every
  *                        span attribute whose key is not in `CONTENT_ALLOW_LIST`.
  */
@@ -165,7 +166,8 @@ export function applyContentAttribute(
 
 /**
  * Resolves the effective capture mode given a per-call override, an ambient
- * context value, and a client-level default. `default` falls through.
+ * context value, and a client-level default. `default` falls through, ending
+ * at `metadata_only`.
  */
 export function resolveContentCaptureMode(
   perCall: ContentCaptureMode | undefined,
@@ -174,6 +176,6 @@ export function resolveContentCaptureMode(
 ): ContentCaptureMode {
   if (perCall && perCall !== 'default') return perCall;
   if (context && context !== 'default') return context;
-  if (clientDefault === 'default') return 'no_tool_content';
+  if (clientDefault === 'default') return 'metadata_only';
   return clientDefault;
 }

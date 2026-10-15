@@ -43,6 +43,7 @@ import { bootstrapOtel } from '@genai-otel/core/bootstrap';
 // Set up OTel providers from OTEL_EXPORTER_OTLP_* env vars.
 const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
 
+// Records metadata only; see "Content capture and privacy" to export messages.
 await using client = new Client();
 
 await using rec = client.startGeneration({
@@ -86,21 +87,32 @@ For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/e
 
 ## Content capture and privacy
 
-Prompt and completion **content is captured by default** — the input/output
-messages are emitted as structured `gen_ai.input.messages` /
-`gen_ai.output.messages` span attributes (client default mode
-`no_tool_content`: prompts and completions on, tool args/results off). This
-keeps traces useful out of the box, but it means conversation content leaves
-your process on every span. Each content attribute is capped at 1,048,576
-characters (`DEFAULT_MAX_CONTENT_LENGTH`), large enough that typical prompts
-and completions are never trimmed.
+Prompt and completion **content is not captured by default.** The client
+default mode is `metadata_only`: every span keeps its structured metadata
+(model, token usage, timing, error type) but carries no prompts, completions,
+system instructions, tool definitions, tool arguments or results, conversation
+title, or retrieval and embedding text. The exception events the library
+records and raw error messages are left off too, since they can quote the
+input that caused them.
 
-To restrict what is captured:
+To capture content, opt in:
 
-- **Turn content off:** `new Client({ contentCaptureMode: 'metadata_only' })` —
-  strips content from every span type (generation, agent, tool, embedding).
-  Also settable per call (`contentCapture`) and ambiently
-  (`withContentCaptureMode`).
+- **Prompts and completions:** `new Client({ contentCaptureMode: 'no_tool_content' })` —
+  emits the input/output messages as structured `gen_ai.input.messages` /
+  `gen_ai.output.messages` span attributes, but keeps tool arguments/results and
+  retrieval query/documents off.
+- **Everything:** `new Client({ contentCaptureMode: 'full' })` — also emits tool
+  arguments/results, full tool definitions, and retrieval query/documents.
+
+Both are also settable per call (`contentCapture`) and ambiently
+(`withContentCaptureMode`). Embedding input texts stay off in every mode until
+you also set `embeddingCapture.captureInput: true`. Once content is on, it
+leaves your process on every span. Each content attribute is capped at
+1,048,576 characters (`DEFAULT_MAX_CONTENT_LENGTH`), large enough that typical
+prompts and completions are never trimmed.
+
+To restrict what is exported:
+
 - **Keep only reviewed attributes:** `contentCaptureMode: 'allow_list'` — no
   content, and every span keeps only attributes on a fixed allowlist, so a new
   or unknown attribute is dropped. See

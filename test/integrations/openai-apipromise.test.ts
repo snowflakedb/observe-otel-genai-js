@@ -143,7 +143,7 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     });
 
   beforeEach(() => {
-    h = createHarness();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
   });
   afterEach(async () => {
     await h.shutdown();

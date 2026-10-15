@@ -7,11 +7,16 @@
  *
  * Skip-on-zero rule: `recordTokenUsage` is a no-op when `value === 0` so
  * `cache_read=0` (etc.) never bloats time-series cardinality.
+ *
+ * `gen_ai.conversation.id` is added only when the client opts in through
+ * `metricAttributes.conversationId`.
  */
 
-import type { Histogram, Meter } from '@opentelemetry/api';
+import type { Attributes, Histogram, Meter } from '@opentelemetry/api';
+import type { MetricAttributesConfig } from '../config.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_CONVERSATION_ID,
   ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
@@ -34,6 +39,7 @@ export interface OperationLabels {
   providerName: string;
   requestModel: string;
   agentName: string;
+  conversationId?: string;
 }
 
 export interface DurationLabels extends OperationLabels {
@@ -46,6 +52,7 @@ export interface ToolDurationLabels {
   requestModel: string;
   toolName: string;
   agentName: string;
+  conversationId?: string;
   errorType: string;
   errorCategory: string;
 }
@@ -56,8 +63,10 @@ export class GenAIMetrics {
   readonly timeToFirstToken: Histogram;
   readonly toolCallsPerOperation: Histogram;
   readonly toolExecutionDuration: Histogram;
+  private readonly attributes: MetricAttributesConfig;
 
-  constructor(meter: Meter) {
+  constructor(meter: Meter, attributes: MetricAttributesConfig = { conversationId: false }) {
+    this.attributes = attributes;
     this.operationDuration = meter.createHistogram(METRIC_OPERATION_DURATION, {
       unit: 's',
       advice: { explicitBucketBoundaries: [...DURATION_BUCKETS_SECONDS] },
@@ -88,6 +97,7 @@ export class GenAIMetrics {
       [ATTR_AGENT_NAME]: labels.agentName,
       [ATTR_ERROR_TYPE]: labels.errorType,
       [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...this.optionalAttributes(labels),
     });
   }
 
@@ -105,6 +115,7 @@ export class GenAIMetrics {
       [ATTR_AGENT_NAME]: labels.agentName,
       [ATTR_ERROR_TYPE]: labels.errorType,
       [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...this.optionalAttributes(labels),
     });
   }
 
@@ -116,6 +127,7 @@ export class GenAIMetrics {
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_AGENT_NAME]: labels.agentName,
       [METRIC_ATTR_TOKEN_TYPE]: type,
+      ...this.optionalAttributes(labels),
     });
   }
 
@@ -126,6 +138,7 @@ export class GenAIMetrics {
       [ATTR_PROVIDER_NAME]: labels.providerName,
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_AGENT_NAME]: labels.agentName,
+      ...this.optionalAttributes(labels),
     });
   }
 
@@ -135,6 +148,14 @@ export class GenAIMetrics {
       [ATTR_PROVIDER_NAME]: labels.providerName,
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_AGENT_NAME]: labels.agentName,
+      ...this.optionalAttributes(labels),
     });
+  }
+
+  private optionalAttributes(labels: { conversationId?: string }): Attributes {
+    if (this.attributes.conversationId && labels.conversationId) {
+      return { [ATTR_CONVERSATION_ID]: labels.conversationId };
+    }
+    return {};
   }
 }

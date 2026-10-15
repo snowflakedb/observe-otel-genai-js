@@ -117,7 +117,10 @@ describe('LangChain adapter — LLM lifecycle', () => {
   });
 
   it('captures structured input + output via handleChatModelStart', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const handler = new GenAIOtelCallbackHandler({
+      client: h.client,
+      contentCapture: 'no_tool_content',
+    });
     const system = { _getType: () => 'system', content: 'be nice' };
     const human = { _getType: () => 'human', content: 'hi there' };
     await handler.handleChatModelStart!(llmSerialized as any, [[system, human] as any], 'run-chat');
@@ -761,11 +764,14 @@ describe('LangChain adapter — tool definitions', () => {
     ]);
   });
 
-  it('emits only the required type + name under no_tool_content (default) capture', async () => {
-    // Default capture resolves to no_tool_content: tool schemas carry business
-    // detail, so description/parameters must be withheld while type/name (the
-    // schema-required, non-sensitive fields) still advertise tool topology.
-    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+  it('emits only the required type + name under no_tool_content capture', async () => {
+    // Tool schemas carry business detail, so description/parameters must be
+    // withheld while type/name (the schema-required, non-sensitive fields)
+    // still advertise tool topology.
+    const handler = new GenAIOtelCallbackHandler({
+      client: h.client,
+      contentCapture: 'no_tool_content',
+    });
     const extraParams = {
       invocation_params: {
         model: 'claude-opus-4-8',
@@ -1353,10 +1359,12 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
   });
 
   it('applies handler contentCapture to the invoke_agent span', async () => {
-    // A default harness captures agent input/output messages, so a bare handler
-    // would emit them. `contentCapture: 'metadata_only'` on the handler must
-    // strip them from the invoke_agent span too — not just from generation and
-    // tool spans.
+    // A client that captures content makes a bare handler emit agent
+    // input/output messages. `contentCapture: 'metadata_only'` on the handler
+    // must strip them from the invoke_agent span too — not just from generation
+    // and tool spans.
+    await h.shutdown();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
     const bare = new GenAIOtelCallbackHandler({ client: h.client });
     await bare.handleChainStart!(
       chainSerialized as never,
@@ -1860,7 +1868,7 @@ describe('LangChain adapter — retriever lifecycle (retrieval span)', () => {
 describe('LangChain adapter — chain input messages on the agent span', () => {
   let h: Harness;
   beforeEach(() => {
-    h = createHarness();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
   });
   afterEach(async () => {
     await h.shutdown();
@@ -1996,7 +2004,7 @@ describe('LangChain adapter — external parent isolation under concurrency', ()
 describe('LangChain adapter — chain output messages on the agent span', () => {
   let h: Harness;
   beforeEach(() => {
-    h = createHarness();
+    h = createHarness({ contentCaptureMode: 'no_tool_content' });
   });
   afterEach(async () => {
     await h.shutdown();

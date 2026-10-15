@@ -53,8 +53,8 @@ describe('content capture mode resolution', () => {
   it('context wins over client default when per-call is default', () => {
     expect(resolveContentCaptureMode('default', 'full', 'no_tool_content')).toBe('full');
   });
-  it('default mode falls through to no_tool_content', () => {
-    expect(resolveContentCaptureMode('default', undefined, 'default')).toBe('no_tool_content');
+  it('default mode falls through to metadata_only', () => {
+    expect(resolveContentCaptureMode('default', undefined, 'default')).toBe('metadata_only');
   });
 });
 

@@ -229,7 +229,7 @@ function useHarness(config?: ClientConfig): () => Harness {
 // -----------------------------------------------------------------------------
 
 describe('Claude Agent SDK adapter: model calls', () => {
-  const harness = useHarness();
+  const harness = useHarness({ contentCaptureMode: 'no_tool_content' });
 
   it('emits one invoke_agent and one chat for a plain answer', async () => {
     const h = harness();
@@ -1149,8 +1149,8 @@ describe('Claude Agent SDK adapter: content capture', () => {
     result(),
   ];
 
-  describe('default mode (no tool content)', () => {
-    const harness = useHarness();
+  describe('no_tool_content', () => {
+    const harness = useHarness({ contentCaptureMode: 'no_tool_content' });
 
     it('leaves tool content, including the delegation prompt and report, off every span', async () => {
       const h = harness();
@@ -1182,7 +1182,7 @@ describe('Claude Agent SDK adapter: content capture', () => {
 });
 
 describe('Claude Agent SDK adapter: errors and lifecycle', () => {
-  const harness = useHarness();
+  const harness = useHarness({ contentCaptureMode: 'no_tool_content' });
 
   it('puts an API failure on the model call, and a later success leaves the run green', async () => {
     const h = harness();
