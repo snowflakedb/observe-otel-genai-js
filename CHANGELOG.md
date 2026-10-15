@@ -76,6 +76,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   messages. To capture content again, set `contentCaptureMode: 'no_tool_content'`
   (prompts and completions) or `'full'` (also tool arguments/results and
   retrieval content) on the `Client`, per call, or with `withContentCaptureMode`.
+- Content attributes are now capped at 1,048,576 characters each by default,
+  large enough that typical prompts and completions are never trimmed. Content
+  over the cap is trimmed with the existing `.truncated` /
+  `.original_size_bytes` markers. `DEFAULT_MAX_CONTENT_LENGTH` changes from
+  32,768 to this value and is now applied by default. Set
+  `contentCapture: { maxContentLength: 0 }` to turn the cap off, or another
+  value to change it.
+- `ClientConfig.contentCapture` accepts a partial object, so
+  `{ maxContentLength: 8192 }` is enough; unset fields keep their defaults.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

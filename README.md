@@ -107,7 +107,9 @@ To capture content, opt in:
 Both are also settable per call (`contentCapture`) and ambiently
 (`withContentCaptureMode`). Embedding input texts stay off in every mode until
 you also set `embeddingCapture.captureInput: true`. Once content is on, it
-leaves your process on every span.
+leaves your process on every span. Each content attribute is capped at
+1,048,576 characters (`DEFAULT_MAX_CONTENT_LENGTH`), large enough that typical
+prompts and completions are never trimmed.
 
 To restrict what is exported:
 
@@ -115,8 +117,15 @@ To restrict what is exported:
   content, and every span keeps only attributes on a fixed allowlist, so a new
   or unknown attribute is dropped. See
   [`docs/content-retention.md`](docs/content-retention.md).
-- **Cap size:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
-  trims long content while keeping the emitted JSON valid.
+- **Change the size cap:** `new Client({ contentCapture: { maxContentLength: 8192 } })`.
+  The cap applies to each content attribute on its own. Messages, system
+  instructions, tool definitions, and retrieval documents are trimmed so the
+  JSON stays valid; tool arguments/results and the retrieval query are cut as
+  plain text, so a trimmed one may no longer parse as JSON. A trimmed attribute
+  gets `.truncated` and `.original_size_bytes` markers. Set
+  `maxContentLength: 0` to turn the cap off. Embedding input texts are not
+  covered by this cap; they have their own limits in `embeddingCapture` (20
+  texts, 1,024 characters each, by default).
 - **Redact fields:** register a redacting `SpanProcessor` at bootstrap. Content
   is user-owned and redacted at the OTel layer — the library ships no in-SDK
   sanitizer. See the recipe in [`docs/exporting.md`](docs/exporting.md#redacting-content).

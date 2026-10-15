@@ -75,8 +75,8 @@ export interface ClientConfig {
    * the caller opts in with `no_tool_content` or `full`.
    */
   contentCaptureMode?: ContentCaptureMode;
-  /** Truncation / blob-store / use-events configuration. */
-  contentCapture?: ContentCapture;
+  /** Content size cap and truncation. Fields left unset keep their defaults. */
+  contentCapture?: Partial<ContentCapture>;
 
   /** Custom error classifier (overrides the built-in HTTP-status sniffer). */
   errorClassifier?: ErrorClassifier;

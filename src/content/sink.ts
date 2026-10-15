@@ -7,11 +7,11 @@
  * when the SDK does not support complex (nested) attribute values — which is
  * the case for OpenTelemetry JS today — so the values are JSON-encoded here.
  *
- * Size policy: by default there is no cap (matching OTel's own unbounded
- * attribute-value default). When a finite `maxContentLength` is configured, the
- * encoded value is trimmed to fit while staying valid JSON — long string leaves
- * (message text, tool arguments/results) are shortened in place so the message
- * structure is preserved and the attribute remains parseable.
+ * Size policy: when the encoded value is longer than `maxContentLength`
+ * (`DEFAULT_MAX_CONTENT_LENGTH` unless changed), it is trimmed to fit while
+ * staying valid JSON — long string leaves (message text, tool
+ * arguments/results) are shortened in place so the message structure is
+ * preserved and the attribute remains parseable.
  */
 
 import type { Span } from '@opentelemetry/api';
