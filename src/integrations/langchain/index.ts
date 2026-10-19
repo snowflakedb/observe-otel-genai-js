@@ -72,12 +72,6 @@ import { matchProvider } from '../_common/provider.js';
 
 export interface GenAIOtelCallbackHandlerOptions {
   client: Client;
-  /** Default agent name for all spans created by this handler. */
-  agentName?: string;
-  agentVersion?: string;
-  conversationId?: string;
-  conversationTitle?: string;
-  userId?: string;
   turnIndex?: number;
   turnRole?: string;
   contentCapture?: ContentCaptureMode;
@@ -177,12 +171,13 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     return anc ? anc.withActiveContext(start) : start();
   }
 
-  /** `gen_ai.conversation.id`: handler `conversationId`, else the run's
-   *  `thread_id` (from `configurable.thread_id` via a checkpointer). */
-  private conversationId(metadata?: Record<string, unknown>): string | undefined {
-    if (this.defaults.conversationId) return this.defaults.conversationId;
-    const t = metadata?.thread_id;
-    return typeof t === 'string' && t.length > 0 ? t : undefined;
+  /** The run's own identity: `thread_id` (from `configurable.thread_id` via a
+   *  checkpointer) and `user_id` from the run metadata. */
+  private runIdentity(metadata?: Record<string, unknown>) {
+    return {
+      conversationId: nonEmpty(metadata?.thread_id),
+      userId: nonEmpty(metadata?.user_id),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -251,11 +246,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     this.runParent.set(runId, parentRunId);
     const seed = {
       model,
-      agentName: this.defaults.agentName,
-      agentVersion: this.defaults.agentVersion,
-      conversationId: this.conversationId(metadata),
-      conversationTitle: this.defaults.conversationTitle,
-      userId: this.defaults.userId,
+      ...this.runIdentity(metadata),
       turnIndex: this.defaults.turnIndex,
       turnRole: this.defaults.turnRole,
       contentCapture: this.defaults.contentCapture,
@@ -324,9 +315,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       this.client.startToolExecution({
         // runName also covers failures (no ToolMessage); handleToolEnd overrides on success.
         toolName: nonEmpty(runName) ?? toolNameFromSerialized(tool),
-        agentName: this.defaults.agentName,
-        agentVersion: this.defaults.agentVersion,
-        conversationId: this.conversationId(metadata),
+        conversationId: this.runIdentity(metadata).conversationId,
         contentCapture: this.defaults.contentCapture,
       }),
     );
@@ -380,12 +369,9 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
 
     const rec = this.nested(parentRunId, () =>
       this.client.invokeAgent({
-        agentName:
-          this.defaults.agentName ?? runName ?? toolNameFromSerialized(chain) ?? 'langchain-chain',
-        agentVersion: this.defaults.agentVersion,
+        agentName: callerRunName(chain, runName),
         input: chainInputToMessages(inputs),
-        conversationId: this.conversationId(metadata),
-        userId: this.defaults.userId,
+        ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
@@ -431,9 +417,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         dataSourceId: dataSourceIdFromRetriever(retriever),
         topK: topKFromRetriever(retriever),
         queryText: typeof query === 'string' && query.length > 0 ? query : undefined,
-        agentName: this.defaults.agentName,
-        agentVersion: this.defaults.agentVersion,
-        conversationId: this.conversationId(metadata),
+        conversationId: this.runIdentity(metadata).conversationId,
         contentCapture: this.defaults.contentCapture,
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
@@ -722,7 +706,23 @@ function toolNameFromOutput(output: unknown): string | undefined {
   return typeof msg.name === 'string' && msg.name.length > 0 ? msg.name : undefined;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
+/** LangGraph's name for a graph compiled without one (`Pregel.lc_name()`). */
+const LANGGRAPH_DEFAULT_NAME = 'LangGraph';
+
+/**
+ * The chain's `runName` when the caller chose it. LangChain fills it in when the
+ * caller set none: with the runnable's class name (wrappers such as `withRetry()`
+ * or `RunnableWithMessageHistory` pass on a `Runnable*` class name of their own),
+ * or for a LangGraph graph with `LangGraph`. Those count as no name.
+ */
+function callerRunName(chain: Serialized, runName: string | undefined): string | undefined {
+  const id = (chain as { id?: string[] }).id ?? [];
+  if (!runName || runName === id[id.length - 1] || runName.startsWith('Runnable')) return undefined;
+  if (id[0] === 'langgraph' && runName === LANGGRAPH_DEFAULT_NAME) return undefined;
+  return runName;
+}
+
+function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 

@@ -529,18 +529,38 @@ import { Client } from '@genai-otel/core';
 import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
 
 const client = new Client();
-const handler = new GenAIOtelCallbackHandler({
-  client,
-  agentName: 'support-bot',
-  conversationId: 'conv-1',
-});
+const handler = new GenAIOtelCallbackHandler({ client });
 
 const llm = new ChatOpenAI({ model: 'gpt-4o' });
 const prompt = ChatPromptTemplate.fromTemplate('Answer: {q}');
-const chain = prompt.pipe(llm);
+const chain = prompt.pipe(llm).withConfig({ runName: 'support-bot' });
 
-await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
+await chain.invoke(
+  { q: 'what is otel?' },
+  { callbacks: [handler], metadata: { thread_id: 'conv-1', user_id: 'user-1' } },
+);
 ```
+
+### Identity
+
+The handler reads identity from the run itself:
+
+- **Agent name**: the top-level chain's `runName`, such as `withConfig({ runName })`,
+  `createAgent({ name })` or a compiled graph's name.
+  - The names LangChain fills in when you set none do not count: the runnable's
+    class name, any `Runnable*` name, and `LangGraph` for an unnamed graph.
+  - Without a name, the `invoke_agent` span takes the name of an enclosing
+    `withAgent(...)` scope or the `Client`'s `agentName`, and is named plain
+    `invoke_agent` when nothing names it.
+- **Conversation id**: the run's `thread_id`: `configurable.thread_id` on a
+  LangGraph graph, or `metadata.thread_id` on any run.
+- **User id**: the run's `metadata.user_id`.
+
+These are the run's own values, so they win over an enclosing `withX(...)` scope.
+LangChain has no setting for the agent version or the conversation title, so use
+`withAgent(name, version, ...)` or `withConversationTitle(...)` around the call.
+The version is used only when the scope names the same agent as the run, or the
+run has no name of its own. The handler takes no identity options.
 
 ### What gets recorded
 
@@ -554,7 +574,7 @@ await chain.invoke({ q: 'what is otel?' }, { callbacks: [handler] });
 | `handleToolStart` | `client.startToolExecution({ toolName })` (the run's `runName`, else the serialized class name); `recorder.setResult({ arguments })` |
 | `handleToolEnd` | `recorder.setToolName(...)` (the authoritative tool name from the `ToolMessage`, overriding `runName`), `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
-| `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` + input messages from `chainInputToMessages(inputs)` |
+| `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` (the `runName` you set, see Identity) + input messages from `chainInputToMessages(inputs)` |
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
 | `handleRetrieverStart` | `client.startRetrieval({ dataSourceId, topK?, queryText })` — the retrieval span becomes the active parent |
@@ -586,7 +606,7 @@ import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
 
 registerInstrumentations({
-  instrumentations: [new LangChainInstrumentation({ agentName: 'support-bot' })],
+  instrumentations: [new LangChainInstrumentation()],
 });
 ```
 
@@ -604,7 +624,7 @@ Patch manually. Call `manuallyInstrument(...)` once, before importing `@langchai
 import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
 import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
 
-const instrumentation = new LangChainInstrumentation({ agentName: 'support-bot' });
+const instrumentation = new LangChainInstrumentation();
 instrumentation.manuallyInstrument(CallbackManagerModule);
 ```
 
@@ -635,7 +655,7 @@ await graph.invoke(input, {
 
 The top-level graph invocation is the `invoke_agent` span, and the `chat` / `execute_tool` spans nest under it as one connected trace.
 
-With a checkpointer, the `thread_id` you pass in `configurable` is read from the run metadata and set as `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. Precedence: the handler `conversationId`, then the per-run `thread_id`.
+The `thread_id` you pass in `configurable` is read from the run metadata and set as `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. It wins over a `withConversationId(...)` scope around the call.
 
 ## Claude Agent SDK
 

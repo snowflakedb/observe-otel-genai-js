@@ -77,13 +77,12 @@ describe('LangChainInstrumentation — auto-injection', () => {
     // the test doesn't depend on module-load interception under vitest.
     const instr = new LangChainInstrumentation({
       client: h.client,
-      agentName: 'auto-agent',
       enabled: false,
     });
     const unpatch = patchLangChain(instr);
     try {
       const echo = RunnableLambda.from((x: unknown) => x);
-      await echo.invoke({ q: 'hello' });
+      await echo.withConfig({ runName: 'auto-agent' }).invoke({ q: 'hello' });
       await awaitAllCallbacks();
       await instr.handler.dispose();
 
@@ -141,7 +140,6 @@ describe('LangChainInstrumentation — auto-injection', () => {
   it('does not double-instrument when the same run nests', async () => {
     const instr = new LangChainInstrumentation({
       client: h.client,
-      agentName: 'auto-agent',
       captureNestedChains: false,
       enabled: false,
     });
@@ -195,13 +193,12 @@ describe('LangChainInstrumentation — manuallyInstrument (ESM entry point)', ()
   it('injects the handler via the public manuallyInstrument entry point', async () => {
     const instr = new LangChainInstrumentation({
       client: h.client,
-      agentName: 'manual-agent',
       enabled: false,
     });
     instr.manuallyInstrument({ CallbackManager });
     try {
       const echo = RunnableLambda.from((x: unknown) => x);
-      await echo.invoke({ q: 'hello' });
+      await echo.withConfig({ runName: 'manual-agent' }).invoke({ q: 'hello' });
       await awaitAllCallbacks();
       await instr.handler.dispose();
 

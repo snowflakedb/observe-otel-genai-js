@@ -10,6 +10,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- LangChain: the run's `metadata.user_id` is recorded as `user.id`.
 - OpenAI: `responses.create` records the request's own `conversation` as
   `gen_ai.conversation.id`, unless `withMetadata` sets one.
 - Core: opt-in `gen_ai.conversation.id` on metrics. Set
@@ -101,6 +102,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentVersion`, `conversationId`, `conversationTitle`, `userId`). They ranked a
   whole-process setting above the app's own `withX(...)` scope. Set identity with
   `withMetadata` on the call, a scope around it, or the `Client`.
+- **LangChain: the handler and `LangChainInstrumentation` no longer take identity
+  options** (`agentName`, `agentVersion`, `conversationId`, `conversationTitle`,
+  `userId`). The run's own `runName`, `thread_id` and `metadata.user_id` give the
+  identity, and an enclosing `withX(...)` scope or the `Client` fills in the rest.
+  The handler no longer makes up agent names: the runnable's class name, other
+  `Runnable*` names, `LangGraph` for an unnamed graph, and `langchain-chain` no
+  longer count, so an unnamed chain takes the name of an enclosing `withAgent(...)`
+  scope or the `Client`'s `agentName`, or gets a plain `invoke_agent` span.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

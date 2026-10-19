@@ -30,10 +30,11 @@ import { RunnableLambda } from '@langchain/core/runnables';
 import { context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { withConversationId } from '../../src/context.js';
+import { withAgent, withConversationId, withUserId } from '../../src/context.js';
 import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_AGENT_VERSION,
   ATTR_CONVERSATION_ID,
   ATTR_DATA_SOURCE_ID,
   ATTR_INPUT_MESSAGES,
@@ -55,6 +56,7 @@ import {
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USER_ID,
   OP_CHAT,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
@@ -74,6 +76,13 @@ const toolSerialized = {
   type: 'constructor',
   id: ['langchain', 'tools', 'search'],
   kwargs: {},
+};
+
+/** What a compiled LangGraph graph serializes to (`Pregel` keeps the `langgraph` namespace). */
+const graphSerialized = {
+  lc: 1,
+  type: 'not_implemented',
+  id: ['langgraph', 'pregel', 'CompiledStateGraph'],
 };
 
 const chainSerialized = {
@@ -110,7 +119,7 @@ describe('LangChain adapter — LLM lifecycle', () => {
   });
 
   it('emits a chat span with provider/model inferred from the Serialized id', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'lc-agent' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
 
     await handler.handleLLMStart!(llmSerialized as any, ['hello'], 'run-1');
     await handler.handleLLMEnd!(
@@ -127,7 +136,6 @@ describe('LangChain adapter — LLM lifecycle', () => {
     expect(span?.attributes[ATTR_OPERATION_NAME]).toBe(OP_CHAT);
     expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('openai');
     expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('gpt-4o');
-    expect(span?.attributes[ATTR_AGENT_NAME]).toBe('lc-agent');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
@@ -1428,7 +1436,7 @@ describe('LangChain adapter — span nesting', () => {
   }
 
   it('parents a chat span under the chain that started it', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'nest' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'c1');
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
@@ -1447,7 +1455,7 @@ describe('LangChain adapter — span nesting', () => {
 
   it('walks past suppressed intermediate chains to the nearest ancestor span', async () => {
     // LangGraph shape: root chain (span) → node chain (suppressed) → llm / tool.
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'root');
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'node', 'root');
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'node');
@@ -1528,28 +1536,27 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     }
   });
 
-  it('prefers an explicitly configured conversationId over thread_id', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, conversationId: 'explicit' });
+  it("records the run's user_id metadata as user.id", async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const withUser = { ...md, user_id: 'user-7' };
+    await handler.handleChainStart!(chainSerialized as never, {}, 'c1', undefined, [], withUser);
     await handler.handleChatModelStart!(
       llmSerialized as never,
       [[]] as never,
       'l1',
-      undefined,
+      'c1',
       {},
       [],
-      md,
+      withUser,
     );
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleChainEnd!({} as never, 'c1');
 
-    const span = h.spans.getFinishedSpans()[0]!;
-    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('explicit');
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.attributes[ATTR_USER_ID])).toEqual(['user-7', 'user-7']);
   });
 
-  it('ignores the withConversationId ambient context, using per-run thread_id', async () => {
-    // The handler must not read request-local AsyncLocalStorage inside a
-    // callback: LangChain runs callbacks on a shared, serialized background
-    // queue, so a reused handler would resolve the wrong run's ambient store
-    // under concurrency. Per-run `thread_id` is the source of truth.
+  it("prefers the run's thread_id over a withConversationId scope", async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await withConversationId('ambient', async () => {
       await handler.handleChatModelStart!(
@@ -1570,8 +1577,8 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
 
   it('keeps per-run thread_id isolated when handle* is driven concurrently', async () => {
     // Regression (direct-call form): a single handler shared across two
-    // concurrent runs under different ambient contexts must tag each span with
-    // its own run's thread_id, never the ambient value.
+    // concurrent runs under different scopes must tag each span with its own
+    // run's thread_id, which beats the scope.
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
 
     const runA = withConversationId('ambient-A', async () => {
@@ -1609,13 +1616,9 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
   });
 
   it('keeps conversation ids isolated across concurrent real RunnableLambda invokes', async () => {
-    // Regression (real callback-manager form): this is the scenario the review
-    // flagged. Driving through `RunnableLambda.invoke` runs the callbacks on
-    // LangChain's shared, serialized background queue — the exact place where an
-    // ambient AsyncLocalStorage read cross-contaminated concurrent runs (both
-    // spans previously received whichever run started queue processing). With
-    // the ambient read removed, each run's per-run `thread_id` is authoritative.
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'concurrent' });
+    // Driven through the real callback manager, so each span must get its own
+    // run's thread_id even with both runs in flight.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     const echo = RunnableLambda.from(async (input: { q: string }) => {
       await new Promise((r) => setTimeout(r, 5));
       return { answer: input.q };
@@ -1637,7 +1640,7 @@ describe('LangChain adapter — conversation id from LangGraph thread_id', () =>
     expect(ids).toEqual(['thread-A', 'thread-B']);
   });
 
-  it('omits conversation.id when neither is provided', async () => {
+  it('omits conversation.id when the run has no thread_id', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1');
     await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
@@ -1659,7 +1662,7 @@ describe('LangChain adapter — retriever lifecycle (retrieval span)', () => {
   it('emits a CLIENT retrieval span and nests an in-retriever chat under it', async () => {
     // MultiQueryRetriever shape: chain → retriever (rewrites query with an LLM)
     // → chat. The desired tree is invoke_agent → retrieval → chat.
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'c1');
     await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'r1');
@@ -1684,7 +1687,6 @@ describe('LangChain adapter — retriever lifecycle (retrieval span)', () => {
   it('records the query text, top_k, and returned documents', async () => {
     const handler = new GenAIOtelCallbackHandler({
       client: h.client,
-      agentName: 'rag',
       contentCapture: 'full',
     });
     const retrieverWithK = {
@@ -1738,7 +1740,7 @@ describe('LangChain adapter — retriever lifecycle (retrieval span)', () => {
   });
 
   it('nests a retrieval span under a suppressed intermediate chain', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'rag' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'root');
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'node', 'root');
     await handler.handleRetrieverStart!(retrieverSerialized as never, 'q', 'r1', 'node');
@@ -1899,7 +1901,7 @@ describe('LangChain adapter — chain input messages on the agent span', () => {
   }
 
   it('maps a LangGraph `messages` channel through the BaseMessage mapping', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     const inputs = {
       messages: [
         { _getType: () => 'system', content: 'be brief' },
@@ -1984,7 +1986,7 @@ describe('LangChain adapter — external parent isolation under concurrency', ()
     // request started queue processing. Running callbacks inline (awaitHandlers)
     // keeps each run's active context authoritative, so each agent span nests
     // under its own external parent and lands on its own trace.
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'concurrent' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     const tracer = h.tracerProvider.getTracer('test');
     const echo = RunnableLambda.from(async (input: { q: string }) => {
       await new Promise((r) => setTimeout(r, 5));
@@ -2035,7 +2037,7 @@ describe('LangChain adapter — chain output messages on the agent span', () => 
   }
 
   it('maps a LangGraph `messages` channel to the final assistant message', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     // Final graph state carries the whole conversation; only the last message
     // is the agent's answer — the human turn is already captured as input.
     const output = {
@@ -2053,7 +2055,7 @@ describe('LangChain adapter — chain output messages on the agent span', () => 
   });
 
   it('does not JSON-encode graph state when messages is empty', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleChainEnd!({ messages: [], privateState: 'secret' } as never, 'c1');
 
@@ -2061,7 +2063,7 @@ describe('LangChain adapter — chain output messages on the agent span', () => 
   });
 
   it('does not JSON-encode graph state when the final message is unrenderable', async () => {
-    const handler = new GenAIOtelCallbackHandler({ client: h.client, agentName: 'graph' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(chainSerialized as never, {} as never, 'c1');
     await handler.handleChainEnd!(
       {
@@ -2104,5 +2106,110 @@ describe('LangChain adapter — chain output messages on the agent span', () => 
     await handler.handleChainEnd!({} as never, 'c1');
 
     expect(agentOutput()).toBeUndefined();
+  });
+});
+
+describe('LangChain adapter — identity', () => {
+  let h: Harness;
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function chainAndChat(handler: GenAIOtelCallbackHandler, runName?: string) {
+    await handler.handleChainStart!(
+      chainSerialized as never,
+      {} as never,
+      'c1',
+      undefined,
+      [],
+      {},
+      undefined,
+      runName,
+    );
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'c1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleChainEnd!({} as never, 'c1');
+    const spans = h.spans.getFinishedSpans();
+    return {
+      agent: spans.find((s) => s.name.startsWith('invoke_agent'))!,
+      chat: spans.find((s) => s.name.startsWith('chat'))!,
+    };
+  }
+
+  async function graph(runName: string) {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {} as never,
+      'g1',
+      undefined,
+      [],
+      {},
+      undefined,
+      runName,
+    );
+    await handler.handleChainEnd!({} as never, 'g1');
+    return h.spans.getFinishedSpans()[0]!;
+  }
+
+  it("gives an unnamed chain the client's agent name, not the class name", async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    const { agent, chat } = await chainAndChat(new GenAIOtelCallbackHandler({ client: h.client }));
+    expect(agent.attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
+  });
+
+  it("treats LangChain's default runName as no name", async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const echo = RunnableLambda.from((x: unknown) => x);
+    await echo.invoke({ q: 'hi' }, { callbacks: [handler] });
+    await echo.withRetry().invoke({ q: 'hi' }, { callbacks: [handler] });
+    const agents = h.spans.getFinishedSpans().filter((s) => s.name.startsWith('invoke_agent'));
+    expect(agents.map((s) => s.attributes[ATTR_AGENT_NAME])).toEqual(['shop-bot', 'shop-bot']);
+  });
+
+  it('gives a chain nothing names the bare span name and no agent name', async () => {
+    h = createHarness();
+    const { agent } = await chainAndChat(
+      new GenAIOtelCallbackHandler({ client: h.client }),
+      'RetrievalQA',
+    );
+    expect(agent.name).toBe('invoke_agent');
+    expect(agent.attributes[ATTR_AGENT_NAME]).toBeUndefined();
+  });
+
+  it("treats LangGraph's default graph name as no name, and keeps a graph's own", async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    expect((await graph('LangGraph')).attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
+    await h.shutdown();
+
+    h = createHarness({ agentName: 'shop-bot' });
+    expect((await graph('support-graph')).name).toBe('invoke_agent support-graph');
+  });
+
+  it("lets the run's own name beat the enclosing scope", async () => {
+    h = createHarness();
+    const { agent } = await withAgent('scoped-agent', '1.0', () =>
+      chainAndChat(new GenAIOtelCallbackHandler({ client: h.client }), 'checkout'),
+    );
+    expect(agent.attributes[ATTR_AGENT_NAME]).toBe('checkout');
+    expect(agent.attributes[ATTR_AGENT_VERSION]).toBeUndefined();
+  });
+
+  it('takes identity the run does not set from the enclosing scope', async () => {
+    h = createHarness();
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const { agent, chat } = await withAgent('scoped-agent', '2', () =>
+      withConversationId('scoped-conv', () =>
+        withUserId('scoped-user', () => chainAndChat(handler)),
+      ),
+    );
+    for (const span of [agent, chat]) {
+      expect(span.attributes[ATTR_AGENT_NAME]).toBe('scoped-agent');
+      expect(span.attributes[ATTR_AGENT_VERSION]).toBe('2');
+      expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('scoped-conv');
+      expect(span.attributes[ATTR_USER_ID]).toBe('scoped-user');
+    }
   });
 });

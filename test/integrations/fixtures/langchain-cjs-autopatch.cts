@@ -41,7 +41,7 @@ provider.register();
 
 // Register BEFORE @langchain/core is required, so the hook can intercept it.
 registerInstrumentations({
-  instrumentations: [new LangChainInstrumentation({ agentName: 'cjs-auto' })],
+  instrumentations: [new LangChainInstrumentation()],
 });
 
 // Only now pull in @langchain/core. This require is what the hook patches.
@@ -50,7 +50,7 @@ const { awaitAllCallbacks } = require('@langchain/core/callbacks/promises');
 
 async function main() {
   const echo = RunnableLambda.from((x: unknown) => x);
-  await echo.invoke({ q: 'hello' });
+  await echo.withConfig({ runName: 'cjs-auto' }).invoke({ q: 'hello' });
   await awaitAllCallbacks();
 
   const spans = exporter
