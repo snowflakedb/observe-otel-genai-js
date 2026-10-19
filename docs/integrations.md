@@ -41,10 +41,45 @@ Messages and tool definitions appear only once content capture is on.
 | request params (`temperature`, `top_p`, …) | yes | yes | — | yes | — | partial (system prompt, effort, thinking) |
 | separate `execute_tool` spans | yes | no (tool calls ride on messages) | yes | no (tool calls ride on messages) | yes | yes |
 | TTFT on streaming | yes | yes | yes (AI SDK model path) | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
-| per-call metadata | hooks / options | `withMetadata` | `Trace.metadata` / `groupId` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
+| per-call tags and metadata (identity: see [Identity](#identity)) | hooks / options | `withMetadata` | `Trace.metadata` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
 | `invoke_agent` spans | via hooks | — | yes | — | via chains | yes |
 | nested `invoke_agent` for subagents | — | — | yes (agents used as tools) | — | — | yes |
 | OTel auto-instrumentation | — | yes | yes | — | yes | yes |
+
+## Identity
+
+Spans carry an agent name and version, a conversation id and a user id; chat and
+tool spans also carry a conversation title. Each takes the first value set by:
+
+1. **The span's own value**: what the framework says about this call (a LangChain
+   `runName`, an OpenAI Agents `Agent.name`), or what you pass for this one call
+   (`withMetadata`, the Vercel wrapper options, `wrapQuery`, `deriveOptions`, or the
+   start call in manual instrumentation).
+2. **The enclosing scope**: `withAgent`, `withConversationId`,
+   `withConversationTitle`, `withUserId` or `withContext` around the call, or the
+   agent span the call runs under.
+3. **The `Client` config**: `agentName`, `agentVersion`, `userId`.
+
+The agent version goes with the agent name: it is used only from a place that also
+sets that same name. Integrations never make up a name, so an agent nothing names
+gets a plain `invoke_agent` span. Instrumentations take no identity options; use one
+of the places above. The full rules are in
+[Identity resolution](semconv-mapping.md#identity-resolution).
+
+Where each integration reads the span's own value. A `withX(...)` scope and the
+`Client` work everywhere, and are the only way to set a field marked "–". The one
+exception is the OpenAI Agents run container span, which takes only the run's
+`conversationId` or `groupId`.
+
+| Integration | Agent name | Agent version | Conversation id | Conversation title | User id |
+|---|---|---|---|---|---|
+| LangChain / LangGraph | `runName`, `createAgent({ name })`, a compiled graph's name | – | `thread_id` | – | `metadata.user_id` |
+| OpenAI Agents | `Agent.name` | – | `conversationId` passed to `run()`, else `groupId` | – | – |
+| Vercel AI SDK telemetry | `deriveOptions` (by default `functionId`, then `runtimeContext.agent`) | `deriveOptions` | `deriveOptions` (by default `runtimeContext.conversationId`) | `deriveOptions` | `deriveOptions` (by default `runtimeContext.userId`) |
+| Vercel AI SDK wrappers | wrapper options | wrapper options | wrapper options | wrapper options | wrapper options |
+| Claude Agent SDK | `wrapQuery` options; subagents: `subagent_type` | `wrapQuery` options | `wrapQuery` options; the CLI session id as a last fallback | `wrapQuery` options | `wrapQuery` options |
+| OpenAI | `withMetadata` | `withMetadata` | `withMetadata`, then the Responses request's `conversation` | `withMetadata` | `withMetadata` |
+| Anthropic | `withMetadata` | `withMetadata` | `withMetadata` | `withMetadata` | `withMetadata` |
 
 ## Vercel AI SDK
 
@@ -349,8 +384,8 @@ const runner = new Runner({
 
 The conversation id and the agent name are also passed down to model calls, so the
 `chat` span from `OpenAIInstrumentation` carries the same `gen_ai.conversation.id`
-and the right `gen_ai.agent.name`. Both are the run's own values, so they take
-precedence over a `withConversationId(...)` or `withAgent(...)` scope around the run.
+and the right `gen_ai.agent.name`. Both are the run's own values, so they win over
+a `withConversationId(...)` or `withAgent(...)` scope around the run.
 
 ### Errors
 

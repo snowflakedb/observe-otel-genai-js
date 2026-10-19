@@ -147,7 +147,7 @@ import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk
 import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
 ```
 
-See [`docs/integrations.md`](docs/integrations.md) for the per-adapter usage guide, mapping tables, and streaming notes.
+See [`docs/integrations.md`](docs/integrations.md) for the per-adapter usage guide, mapping tables, streaming notes, and where each adapter takes the agent name, conversation id and user id from.
 
 ### Notes
 
