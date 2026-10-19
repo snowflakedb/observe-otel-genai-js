@@ -79,11 +79,29 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   messages. To capture content again, set `contentCaptureMode: 'no_tool_content'`
   (prompts and completions) or `'full'` (also tool arguments/results and
   retrieval content) on the `Client`, per call, or with `withContentCaptureMode`.
+- **Core: agent name, agent version, conversation id, conversation title and user
+  id now resolve in one order**: the span's own value (passed to
+  `startGeneration`, `invokeAgent` and the like), the enclosing `withX(...)`
+  scope, then the `Client` config. Empty strings count as unset. See "Identity
+  resolution" in `docs/semconv-mapping.md`.
+  - An agent version is used only from a place that also sets the agent name,
+    and only if that is the name the span ends up with. So `Client({ agentVersion })`
+    without `agentName`, or `startGeneration({ agentVersion })` without
+    `agentName`, no longer produces a version, and a span whose agent name is
+    `checkout` no longer takes the version of a `Client` that names another agent.
+  - `invoke_agent` spans take the agent name from the scope or the `Client` when
+    none is passed, so `AgentInvocationStart.agentName` is now optional.
+- **`withAgentName` and `withAgentVersion` are replaced by `withAgent(name,
+  version?)`.** A scope that names an agent drops the outer scope's version, so
+  `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version.
+  An empty value in a scope keeps the outer scope's value.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Embedding spans no longer drop `gen_ai.agent.name` under `metadata_only`. The
+  agent name is metadata, and the other span types already keep it.
 - OpenAI Agents integration: the run container span read its content-capture mode
   from the processor option alone, falling back to the client default only when
   unset. So a processor set to `default`, or a `metadata_only` scope opened with

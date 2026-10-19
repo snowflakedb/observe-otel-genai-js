@@ -74,12 +74,6 @@ export class EmbeddingRecorder extends RecorderBase {
 
     applyEmbeddingEndAttributes(this.span, result, capturedTexts);
 
-    if (stripped) {
-      // Re-strip identity attributes that may have been written at start so
-      // metadata_only matches generation/tool recorder behavior.
-      this.span.setAttribute('gen_ai.agent.name', '');
-    }
-
     // Privacy-gated exception recording.
     this.recordExceptionIfAny(this.callError, stripped);
 

@@ -51,7 +51,7 @@ export function toolSpanName(toolName: string) {
   return `${OP_EXECUTE_TOOL} ${name}`;
 }
 
-export function agentSpanName(agentName: string) {
+export function agentSpanName(agentName = '') {
   const name = agentName.trim();
   if (name === '') return OP_INVOKE_AGENT;
   return `${OP_INVOKE_AGENT} ${name}`;

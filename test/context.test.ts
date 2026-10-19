@@ -20,7 +20,7 @@ import {
   agentNameFromContext,
   conversationIdFromContext,
   userIdFromContext,
-  withAgentName,
+  withAgent,
   withContext,
   withConversationId,
   withUserId,
@@ -74,7 +74,7 @@ describe('Client picks up context values when start fields are empty', () => {
   it('inherits conversationId / userId / agentName from ambient context', async () => {
     await withConversationId('conv-ctx', async () => {
       await withUserId('user-ctx', async () => {
-        await withAgentName('agent-ctx', async () => {
+        await withAgent('agent-ctx', async () => {
           const rec = h.client.startGeneration({
             model: { provider: 'p', name: 'm' },
           });

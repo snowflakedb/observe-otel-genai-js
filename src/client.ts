@@ -21,7 +21,7 @@
  * Constructs once per service/process. Resolves config, looks up the OTel
  * tracer + meter, creates histograms, instantiates the span-link map. After
  * that, each `startX` call:
- *   1. resolves identity (per-call > context > config),
+ *   1. resolves identity (see `resolveIdentity` in ./context.ts),
  *   2. opens a span via `tracer.startSpan(...)` with optional links,
  *   3. registers the span in the in-memory map (for downstream parent linkage),
  *   4. applies the initial attribute set,
@@ -60,14 +60,7 @@ import {
 } from './config.js';
 import { AllowListSpan, allowListSpanOptions } from './content/allow-list.js';
 import { type ContentCaptureMode, resolveContentCaptureMode } from './content/capture.js';
-import {
-  agentNameFromContext,
-  agentVersionFromContext,
-  contentCaptureModeFromContext,
-  conversationIdFromContext,
-  conversationTitleFromContext,
-  userIdFromContext,
-} from './context.js';
+import { contentCaptureModeFromContext, resolveIdentity } from './context.js';
 import { ClientShutdownError, FlushTimeoutError } from './errors.js';
 import { GenAIMetrics } from './metrics/histograms.js';
 import type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
@@ -469,50 +462,41 @@ export class Client implements RecorderHostContext {
     input: GenerationStart,
     defaultMode: 'SYNC' | 'STREAM',
   ): GenerationStart {
-    const seed: GenerationStart = { ...input };
+    const seed: GenerationStart = { ...input, ...resolveIdentity(input, this.config) };
     if (!seed.mode) seed.mode = defaultMode;
     if (!seed.operationName) seed.operationName = OP_CHAT;
     seed.id ??= generateId('gen');
-    seed.conversationId ??= conversationIdFromContext() ?? '';
-    seed.conversationTitle ??= conversationTitleFromContext() ?? '';
-    seed.userId ||= userIdFromContext() ?? this.config.userId;
-    seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
-    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
     seed.tags = { ...(this.config.tags ?? {}), ...(seed.tags ?? {}) };
     return seed;
   }
 
   private normalizeEmbeddingSeed(input: EmbeddingStart): EmbeddingStart {
-    const seed: EmbeddingStart = { ...input };
-    seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
-    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
-    return seed;
+    const { agentName, agentVersion } = resolveIdentity(input, this.config);
+    return { ...input, agentName, agentVersion };
   }
 
   private normalizeToolSeed(input: ToolExecutionStart): ToolExecutionStart {
-    const seed: ToolExecutionStart = { ...input };
-    seed.conversationId ||= conversationIdFromContext() ?? '';
-    seed.conversationTitle ||= conversationTitleFromContext() ?? '';
-    seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
-    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
-    return seed;
+    const { agentName, agentVersion, conversationId, conversationTitle } = resolveIdentity(
+      input,
+      this.config,
+    );
+    return { ...input, agentName, agentVersion, conversationId, conversationTitle };
   }
 
   private normalizeRetrievalSeed(input: RetrievalStart): RetrievalStart {
-    const seed: RetrievalStart = { ...input };
-    seed.conversationId ||= conversationIdFromContext() ?? '';
-    seed.agentName ||= agentNameFromContext() ?? this.config.agentName;
-    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
-    seed.tags = { ...(this.config.tags ?? {}), ...(seed.tags ?? {}) };
-    return seed;
+    const { agentName, agentVersion, conversationId } = resolveIdentity(input, this.config);
+    return {
+      ...input,
+      agentName,
+      agentVersion,
+      conversationId,
+      tags: { ...(this.config.tags ?? {}), ...(input.tags ?? {}) },
+    };
   }
 
   private normalizeAgentSeed(input: AgentInvocationStart): AgentInvocationStart {
-    const seed: AgentInvocationStart = { ...input };
-    seed.conversationId ||= conversationIdFromContext() ?? '';
-    seed.userId ||= userIdFromContext() ?? this.config.userId;
-    seed.agentVersion ||= agentVersionFromContext() ?? this.config.agentVersion;
-    return seed;
+    const { agentName, agentVersion, conversationId, userId } = resolveIdentity(input, this.config);
+    return { ...input, agentName, agentVersion, conversationId, userId };
   }
 
   private assertOpen() {

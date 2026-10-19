@@ -17,6 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  ATTR_AGENT_NAME,
   ATTR_EMBEDDING_DIMENSION_COUNT,
   ATTR_EMBEDDING_INPUT_COUNT,
   ATTR_EMBEDDING_INPUT_TEXTS,
@@ -54,6 +55,7 @@ describe('EmbeddingRecorder', () => {
     expect(span?.attributes[ATTR_OPERATION_NAME]).toBe(OP_EMBEDDINGS);
     expect(span?.attributes[ATTR_PROVIDER_NAME]).toBe('openai');
     expect(span?.attributes[ATTR_REQUEST_MODEL]).toBe('text-embedding-3-large');
+    expect(span?.attributes[ATTR_AGENT_NAME]).toBe('rag');
     expect(span?.attributes[ATTR_EMBEDDING_INPUT_COUNT]).toBe(5);
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(12);
     expect(span?.attributes[ATTR_EMBEDDING_DIMENSION_COUNT]).toBe(3072);

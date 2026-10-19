@@ -30,21 +30,24 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ContentCaptureMode } from './content/capture.js';
+import type { IdentityFields } from './models/identity.js';
 
-interface ContextValues {
-  conversationId?: string;
-  conversationTitle?: string;
-  userId?: string;
-  agentName?: string;
-  agentVersion?: string;
+interface ContextValues extends IdentityFields {
   contentCaptureMode?: ContentCaptureMode;
 }
 
 const storage = new AsyncLocalStorage<ContextValues>();
 
+/**
+ * Opens a scope over the current one. Empty values keep the outer value. An agent
+ * version is kept only with the agent name set in the same call, so naming an
+ * agent drops the outer agent's version.
+ */
 function runWith<T>(patch: ContextValues, fn: () => T): T {
-  const current = storage.getStore() ?? {};
-  return storage.run({ ...current, ...patch }, fn);
+  const { agentVersion, ...rest } = patch;
+  const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v)) as ContextValues;
+  if (set.agentName) set.agentVersion = agentVersion || undefined;
+  return storage.run({ ...storage.getStore(), ...set }, fn);
 }
 
 // -----------------------------------------------------------------------------
@@ -63,12 +66,15 @@ export function withUserId<T>(id: string, fn: () => T): T {
   return runWith({ userId: id }, fn);
 }
 
-export function withAgentName<T>(name: string, fn: () => T): T {
-  return runWith({ agentName: name }, fn);
-}
-
-export function withAgentVersion<T>(version: string, fn: () => T): T {
-  return runWith({ agentVersion: version }, fn);
+/** Names the agent for spans started in `fn`, with its version if given. */
+export function withAgent<T>(name: string, fn: () => T): T;
+export function withAgent<T>(name: string, version: string | undefined, fn: () => T): T;
+export function withAgent<T>(
+  name: string,
+  ...args: [fn: () => T] | [version: string | undefined, fn: () => T]
+): T {
+  const [agentVersion, fn] = args.length === 1 ? [undefined, args[0]] : args;
+  return runWith({ agentName: name, agentVersion }, fn);
 }
 
 export function withContentCaptureMode<T>(mode: ContentCaptureMode, fn: () => T): T {
@@ -76,7 +82,8 @@ export function withContentCaptureMode<T>(mode: ContentCaptureMode, fn: () => T)
 }
 
 /**
- * Sets multiple ambient values at once.
+ * Sets multiple ambient values at once. `agentVersion` is used only together with
+ * `agentName`; setting `agentName` alone drops the outer agent's version.
  */
 export function withContext<T>(values: ContextValues, fn: () => T): T {
   return runWith(values, fn);
@@ -111,15 +118,22 @@ export function contentCaptureModeFromContext(): ContentCaptureMode | undefined 
 }
 
 /**
- * Resolution order helper: explicit > contextvar > clientDefault > empty.
- * Returns the first non-empty value among the three.
+ * Resolves a span's identity from its own values (`own`), the enclosing scope,
+ * then the client config. Each field takes the first non-empty value. The agent
+ * version comes from the first source that gives the chosen agent name together
+ * with a version, so one agent's version never lands on another.
  */
-export function resolveIdentity(
-  explicit: string | undefined,
-  fromContext: string | undefined,
-  clientDefault: string,
-): string {
-  if (explicit && explicit.length > 0) return explicit;
-  if (fromContext && fromContext.length > 0) return fromContext;
-  return clientDefault;
+export function resolveIdentity(own: IdentityFields, clientConfig: IdentityFields): IdentityFields {
+  const sources = [own, storage.getStore(), clientConfig];
+  const pick = (key: keyof IdentityFields) => sources.find((s) => s?.[key])?.[key];
+  const agentName = pick('agentName');
+  return {
+    agentName,
+    agentVersion: agentName
+      ? sources.find((s) => s?.agentName === agentName && s.agentVersion)?.agentVersion
+      : undefined,
+    conversationId: pick('conversationId'),
+    conversationTitle: pick('conversationTitle'),
+    userId: pick('userId'),
+  };
 }

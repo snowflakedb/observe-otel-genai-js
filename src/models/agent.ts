@@ -25,7 +25,8 @@ import type { Message } from './message.js';
  * context.
  */
 export interface AgentInvocationStart {
-  agentName: string;
+  /** When unset, taken from the enclosing scope or the client config. */
+  agentName?: string;
   agentId?: string;
   agentVersion?: string;
   agentDescription?: string;

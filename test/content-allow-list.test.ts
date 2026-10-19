@@ -31,7 +31,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
 import { AllowListSpan, CONTENT_ALLOW_LIST } from '../src/content/allow-list.js';
-import { withAgentName, withContentCaptureMode } from '../src/context.js';
+import { withAgent, withContentCaptureMode } from '../src/context.js';
 import {
   assistantTextMessage,
   textPart,
@@ -291,9 +291,9 @@ describe('allow_list content mode', () => {
     expect(spanNamed('invoke_agent planner').links).toHaveLength(1);
   });
 
-  it('keeps allowlisted metadata that metadata_only clears', async () => {
+  it('keeps the agent name on embedding spans', async () => {
     useHarness({ contentCaptureMode: 'allow_list' });
-    await withAgentName('planner', () =>
+    await withAgent('planner', () =>
       h.client.startEmbedding({ model: { provider: 'openai', name: 'embed-3' } }).end(),
     );
 
