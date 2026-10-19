@@ -451,6 +451,47 @@ describe('genaiTelemetryIntegration identity', () => {
     expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent query-card');
   });
 
+  it("hands the operation's identity to its tool spans and to a nested generateText", async () => {
+    h = createHarness();
+    const deriveOptions = (e: DeriveOptionsEvent) =>
+      e.functionId === 'outer-agent'
+        ? { agentName: e.functionId, conversationId: 'conv-1', userId: 'u-1' }
+        : {};
+    registerTelemetry(genaiTelemetryIntegration(h.client, { deriveOptions }));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        telemetry: { functionId: 'outer-agent' } as never,
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => {
+              await generateText({
+                model: textStreamModel('nested', 'mock', 'nested-gen'),
+                prompt: 'from tool',
+              });
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const nestedChat = h.spans
+      .getFinishedSpans()
+      .find(
+        (s) => s.attributes['gen_ai.request.model'] === 'nested-gen' && s.name.startsWith('chat'),
+      );
+    for (const span of [oneByName(h, 'execute_tool'), nestedChat]) {
+      expect(span?.attributes['gen_ai.agent.name']).toBe('outer-agent');
+      expect(span?.attributes['gen_ai.conversation.id']).toBe('conv-1');
+      expect(span?.attributes['user.id']).toBe('u-1');
+    }
+  });
+
   it("keeps the client's version when deriveOptions gives the client's agent name", async () => {
     h = createHarness({ agentName: 'o11y', agentVersion: 'agent-v1' });
     registerTelemetry(

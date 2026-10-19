@@ -276,6 +276,8 @@ export async function wrapEmbed(
     model,
     agentName: options.agentName,
     agentVersion: options.agentVersion,
+    conversationId: options.conversationId,
+    userId: options.userId,
     tags: options.tags,
     metadata: options.metadata,
   });
@@ -307,6 +309,8 @@ export async function wrapEmbedMany(
     model,
     agentName: options.agentName,
     agentVersion: options.agentVersion,
+    conversationId: options.conversationId,
+    userId: options.userId,
     tags: options.tags,
     metadata: options.metadata,
   });

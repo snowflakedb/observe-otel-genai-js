@@ -52,6 +52,7 @@ export interface RetrievalStart {
   agentName?: string;
   agentVersion?: string;
   conversationId?: string;
+  userId?: string;
   /** Per-call content-capture override (see `GenerationStart.contentCapture`). */
   contentCapture?: ContentCaptureMode;
   tags?: Record<string, string>;

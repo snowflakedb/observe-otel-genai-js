@@ -315,7 +315,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       this.client.startToolExecution({
         // runName also covers failures (no ToolMessage); handleToolEnd overrides on success.
         toolName: nonEmpty(runName) ?? toolNameFromSerialized(tool),
-        conversationId: this.runIdentity(metadata).conversationId,
+        ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
       }),
     );
@@ -417,7 +417,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         dataSourceId: dataSourceIdFromRetriever(retriever),
         topK: topKFromRetriever(retriever),
         queryText: typeof query === 'string' && query.length > 0 ? query : undefined,
-        conversationId: this.runIdentity(metadata).conversationId,
+        ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,

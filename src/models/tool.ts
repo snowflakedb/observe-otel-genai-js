@@ -30,6 +30,7 @@ export interface ToolExecutionStart {
   conversationTitle?: string;
   agentName?: string;
   agentVersion?: string;
+  userId?: string;
   /** Provider/model that requested this tool (carried through for filters). */
   requestModel?: string;
   requestProvider?: string;

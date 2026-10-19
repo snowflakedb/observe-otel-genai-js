@@ -37,10 +37,11 @@ import {
   type ContentCaptureMode,
   resolveContentCaptureMode,
 } from '../content/capture.js';
-import { contentCaptureModeFromContext } from '../context.js';
+import { contentCaptureModeFromContext, withContext } from '../context.js';
 import type { ErrorClassifier } from '../errors/classify.js';
 import { classifyError } from '../errors/classify.js';
 import type { GenAIMetrics } from '../metrics/histograms.js';
+import type { IdentityFields } from '../models/identity.js';
 import {
   ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
@@ -73,6 +74,8 @@ export abstract class RecorderBase {
   protected readonly span: Span;
   protected readonly startedAtMs: number;
   protected readonly perCallContentCapture: ContentCaptureMode;
+  /** The identity spans started inside {@link withActiveContext} inherit. */
+  private readonly handedDown: IdentityFields;
 
   // Mutable state
   protected callError: unknown | undefined;
@@ -90,11 +93,13 @@ export abstract class RecorderBase {
     span: Span,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown: IdentityFields = {},
   ) {
     this.host = host;
     this.span = span;
     this.startedAtMs = startedAtMs;
     this.perCallContentCapture = perCallContentCapture;
+    this.handedDown = handedDown;
   }
 
   /** Idempotent: subsequent calls are no-ops. */
@@ -190,9 +195,16 @@ export abstract class RecorderBase {
    * nest under an agent span, then call `end()` from the stream's onFinish.
    * The span only needs to be active at the synchronous call site that starts
    * the work (the AI SDK captures its parent there), not for the whole stream.
+   *
+   * Recorders started inside `fn` also take this recorder's agent name and
+   * version, conversation id and title, and user id as their enclosing scope,
+   * unless this recorder got them only from the client config (see "Identity
+   * resolution" in `docs/semconv-mapping.md`).
    */
   withActiveContext<T>(fn: () => T): T {
-    return context.with(trace.setSpan(context.active(), this.span), fn);
+    return context.with(trace.setSpan(context.active(), this.span), () =>
+      withContext(this.handedDown, fn),
+    );
   }
 
   // ---------------------------------------------------------------------------

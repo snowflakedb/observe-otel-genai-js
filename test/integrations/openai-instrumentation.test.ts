@@ -328,6 +328,26 @@ describe('OpenAIInstrumentation', () => {
     expect(names).toEqual(['scoped', 'per-call']);
   });
 
+  it('gives chat spans inside client.invokeAgent the agent identity', async () => {
+    const client = await setup(() => chatCompletion());
+    await withAgent('outer-agent', '3', () =>
+      h.client.invokeAgent(
+        { agentName: 'support-agent', conversationId: 'conv-1', userId: 'user-1' },
+        () =>
+          client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+      ),
+    );
+
+    const span = onlyChatSpan(h);
+    expect(span.attributes[ATTR_AGENT_NAME]).toBe('support-agent');
+    expect(span.attributes['gen_ai.agent.version']).toBeUndefined();
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('conv-1');
+    expect(span.attributes['user.id']).toBe('user-1');
+  });
+
   it("reads the Responses request's conversation as the conversation id", async () => {
     const client = await setup(() => responsesMessage());
 

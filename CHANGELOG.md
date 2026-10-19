@@ -10,6 +10,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Tool, retrieval and embedding spans now carry `user.id`, and embedding spans
+  `gen_ai.conversation.id`. `startToolExecution`, `startRetrieval` and
+  `startEmbedding` accept `userId`; `startEmbedding` also accepts `conversationId`.
 - LangChain: the run's `metadata.user_id` is recorded as `user.id`.
 - OpenAI: `responses.create` records the request's own `conversation` as
   `gen_ai.conversation.id`, unless `withMetadata` sets one.
@@ -126,6 +129,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Core: spans started inside `client.invokeAgent(seed, fn)` or a recorder's
+  `withActiveContext(fn)` now take that recorder's agent name and version,
+  conversation id and title, and user id as their enclosing scope, unless they
+  set their own, on the span and its metrics. Only the recorder's own and
+  inherited values are handed down, never the `Client` config. `create_agent`
+  hands nothing down.
 - OpenAI Agents: the `conversationId` passed to `run()`, or kept in a resumed run's
   state, becomes the run's `gen_ai.conversation.id`, ahead of `groupId`. The SDK
   sends it as the Responses `conversation`, which the chat spans record, so before

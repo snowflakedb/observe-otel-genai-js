@@ -122,9 +122,23 @@ export function contentCaptureModeFromContext(): ContentCaptureMode | undefined 
  * then the client config. Each field takes the first non-empty value. The agent
  * version comes from the first source that gives the chosen agent name together
  * with a version, so one agent's version never lands on another.
+ *
+ * `handedDown` is the same without the client config: what spans started inside
+ * this one inherit (see `RecorderBase.withActiveContext`). They fall back to the
+ * client config themselves.
  */
-export function resolveIdentity(own: IdentityFields, clientConfig: IdentityFields): IdentityFields {
-  const sources = [own, storage.getStore(), clientConfig];
+export function resolveIdentity(
+  own: IdentityFields,
+  clientConfig: IdentityFields,
+): { identity: IdentityFields; handedDown: IdentityFields } {
+  const scope = storage.getStore();
+  return {
+    identity: firstSet([own, scope, clientConfig]),
+    handedDown: firstSet([own, scope]),
+  };
+}
+
+function firstSet(sources: (IdentityFields | undefined)[]): IdentityFields {
   const pick = (key: keyof IdentityFields) => sources.find((s) => s?.[key])?.[key];
   const agentName = pick('agentName');
   return {

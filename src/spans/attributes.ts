@@ -223,6 +223,8 @@ export function applyEmbeddingStartAttributes(span: Span, start: EmbeddingStart)
   setStr(span, ATTR_REQUEST_MODEL, start.model.name);
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
+  setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
   setNum(span, ATTR_EMBEDDING_DIMENSION_COUNT, start.dimensions);
   if (start.encodingFormat && start.encodingFormat.trim() !== '') {
     span.setAttribute(ATTR_REQUEST_ENCODING_FORMATS, [start.encodingFormat.trim()]);
@@ -259,6 +261,7 @@ export function applyToolAttributes(span: Span, start: ToolExecutionStart) {
   setStr(span, ATTR_CONVERSATION_TITLE, start.conversationTitle);
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
+  setStr(span, ATTR_USER_ID, start.userId);
   setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
   setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
 }
@@ -318,6 +321,7 @@ export function applyRetrievalAttributes(span: Span, start: RetrievalStart) {
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
   setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
   setNum(span, ATTR_RETRIEVAL_TOP_K, start.topK);
 }
 

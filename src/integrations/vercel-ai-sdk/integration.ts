@@ -23,14 +23,13 @@
  * in the process emits genai-otel spans — no per-call-site wiring.
  *
  * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) →
- * `execute_tool` (per tool). Parenting is achieved without a library-owned
- * AsyncLocalStorage: the operation span is opened in `onStart`, and every child
- * span's *creation* is wrapped in the parent recorder's `withActiveContext`,
- * which installs the parent as the active OTel span for the synchronous
- * `startSpan` call. Separately, `executeTool` re-activates the `execute_tool`
- * span for the duration of `tool.execute` so auto-instrumented work inside the
- * tool (HTTP/undici, nested `generateText`, …) parents under that span rather
- * than an ambient ancestor.
+ * `execute_tool` (per tool). The operation span is opened in `onStart`, and every
+ * child span's *creation* is wrapped in the parent recorder's `withActiveContext`,
+ * which installs the parent as the active OTel span, and its identity as the
+ * enclosing scope, for the synchronous `startSpan` call. Separately,
+ * `executeTool` re-activates the `execute_tool` span for the duration of
+ * `tool.execute` so auto-instrumented work inside the tool (HTTP/undici, nested
+ * `generateText`, …) parents under that span rather than an ambient ancestor.
  *
  * Correlation: every lifecycle event carries a `callId`; per-operation state is
  * keyed on it, so concurrent operations stay isolated.
@@ -229,9 +228,6 @@ class GenaiTelemetry {
       this.client.startToolExecution({
         toolName: event.toolCall.toolName,
         toolCallId: event.toolCall.toolCallId,
-        agentName: op.options.agentName,
-        agentVersion: op.options.agentVersion,
-        conversationId: op.options.conversationId,
       }),
     );
     if (this.recordInputs(event)) rec.setResult({ arguments: event.toolCall.input });
@@ -424,9 +420,6 @@ class GenaiTelemetry {
             requestProvider: event.model?.provider
               ? normalizeAiSdkProviderName(event.model.provider)
               : undefined,
-            agentName: op.options.agentName,
-            agentVersion: op.options.agentVersion,
-            conversationId: op.options.conversationId,
           }),
         );
         if (this.recordInputs(event)) rec.setResult({ arguments: tc.input });

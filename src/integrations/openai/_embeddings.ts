@@ -89,6 +89,8 @@ function buildEmbeddingSeed(params: EmbeddingCreateParams, options: OpenAIAdapte
     model: { provider: 'openai', name: params.model },
     agentName: options.agentName,
     agentVersion: options.agentVersion,
+    conversationId: options.conversationId,
+    userId: options.userId,
     dimensions: params.dimensions,
     encodingFormat: params.encoding_format,
     contentCapture: options.contentCapture,

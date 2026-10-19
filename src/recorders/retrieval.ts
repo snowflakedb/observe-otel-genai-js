@@ -25,6 +25,7 @@
 import type { Span } from '@opentelemetry/api';
 import type { ContentCaptureMode } from '../content/capture.js';
 import { emitRetrievalContent } from '../content/sink.js';
+import type { IdentityFields } from '../models/identity.js';
 import type { RetrievalDocument, RetrievalResult, RetrievalStart } from '../models/retrieval.js';
 import { ERR_TYPE_PROVIDER_CALL, OP_RETRIEVAL } from '../semconv.js';
 import { applyRetrievalAttributes } from '../spans/attributes.js';
@@ -41,8 +42,9 @@ export class RetrievalRecorder extends RecorderBase {
     seed: RetrievalStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: IdentityFields,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 

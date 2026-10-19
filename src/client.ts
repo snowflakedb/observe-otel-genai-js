@@ -29,7 +29,7 @@
  *
  * `invokeAgent` has a callback variant that uses `tracer.startActiveSpan` so
  * nested spans (other `startX` calls inside) parent under the agent
- * automatically via OTel context.
+ * automatically via OTel context and inherit its identity.
  *
  * Under the `allow_list` content mode every span is wrapped in an
  * `AllowListSpan` before anything is written to it (see `startSpan`).
@@ -66,6 +66,7 @@ import { GenAIMetrics } from './metrics/histograms.js';
 import type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
 import type { EmbeddingStart } from './models/embedding.js';
 import type { GenerationStart } from './models/generation.js';
+import type { IdentityFields } from './models/identity.js';
 import type { RetrievalStart } from './models/retrieval.js';
 import type { ToolExecutionStart } from './models/tool.js';
 import { AgentCreationRecorder, AgentInvocationRecorder } from './recorders/agent.js';
@@ -146,7 +147,8 @@ export class Client implements RecorderHostContext {
     defaultMode: 'SYNC' | 'STREAM',
   ): GenerationRecorder {
     this.assertOpen();
-    const seed = this.normalizeGenerationSeed(input, defaultMode);
+    const { identity, handedDown } = resolveIdentity(input, this.config);
+    const seed = this.normalizeGenerationSeed(input, identity, defaultMode);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -168,7 +170,14 @@ export class Client implements RecorderHostContext {
       model: { provider: seed.model.provider, name: seed.model.name },
     });
 
-    return new GenerationRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
+    return new GenerationRecorder(
+      this,
+      span,
+      seed,
+      startedAtMs,
+      seed.contentCapture ?? 'default',
+      handedDown,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -177,7 +186,8 @@ export class Client implements RecorderHostContext {
 
   startEmbedding(start: EmbeddingStart): EmbeddingRecorder {
     this.assertOpen();
-    const seed = this.normalizeEmbeddingSeed(start);
+    const { identity, handedDown } = resolveIdentity(start, this.config);
+    const seed = this.normalizeEmbeddingSeed(start, identity);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -188,7 +198,14 @@ export class Client implements RecorderHostContext {
     );
     applyEmbeddingStartAttributes(span, seed);
 
-    return new EmbeddingRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
+    return new EmbeddingRecorder(
+      this,
+      span,
+      seed,
+      startedAtMs,
+      seed.contentCapture ?? 'default',
+      handedDown,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -197,7 +214,8 @@ export class Client implements RecorderHostContext {
 
   startToolExecution(start: ToolExecutionStart): ToolExecutionRecorder {
     this.assertOpen();
-    const seed = this.normalizeToolSeed(start);
+    const { identity, handedDown } = resolveIdentity(start, this.config);
+    const seed = this.normalizeToolSeed(start, identity);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -214,6 +232,7 @@ export class Client implements RecorderHostContext {
       seed,
       startedAtMs,
       seed.contentCapture ?? 'default',
+      handedDown,
     );
   }
 
@@ -223,7 +242,8 @@ export class Client implements RecorderHostContext {
 
   startRetrieval(start: RetrievalStart): RetrievalRecorder {
     this.assertOpen();
-    const seed = this.normalizeRetrievalSeed(start);
+    const { identity, handedDown } = resolveIdentity(start, this.config);
+    const seed = this.normalizeRetrievalSeed(start, identity);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -234,7 +254,14 @@ export class Client implements RecorderHostContext {
     );
     applyRetrievalAttributes(span, seed);
 
-    return new RetrievalRecorder(this, span, seed, startedAtMs, seed.contentCapture ?? 'default');
+    return new RetrievalRecorder(
+      this,
+      span,
+      seed,
+      startedAtMs,
+      seed.contentCapture ?? 'default',
+      handedDown,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -252,7 +279,8 @@ export class Client implements RecorderHostContext {
   /**
    * Callback variant — installs the agent's span as the active span for the
    * duration of `fn`. Nested generations / tool calls inherit it as their
-   * parent via OTel context. Returns the awaited result of `fn`.
+   * parent via OTel context, and its identity unless they set their own.
+   * Returns the awaited result of `fn`.
    */
   invokeAgent<T>(
     start: AgentInvocationStart,
@@ -264,7 +292,8 @@ export class Client implements RecorderHostContext {
     fn?: (recorder: AgentInvocationRecorder) => Promise<T> | T,
   ): AgentInvocationRecorder | Promise<T> {
     this.assertOpen();
-    const seed = this.normalizeAgentSeed(start);
+    const { identity, handedDown } = resolveIdentity(start, this.config);
+    const seed = this.normalizeAgentSeed(start, identity);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -283,10 +312,11 @@ export class Client implements RecorderHostContext {
         seed,
         startedAtMs,
         seed.contentCapture ?? 'default',
+        handedDown,
       );
     }
 
-    // Callback variant: use startActiveSpan so children parent correctly.
+    // Callback variant: the span is active, and its identity the enclosing scope, for `fn`.
     return new Promise<T>((resolve, reject) => {
       try {
         this.startActiveSpan(
@@ -301,9 +331,10 @@ export class Client implements RecorderHostContext {
               seed,
               startedAtMs,
               seed.contentCapture ?? 'default',
+              handedDown,
             );
             try {
-              const out = await fn(recorder);
+              const out = await recorder.withActiveContext(() => fn(recorder));
               await recorder.end();
               resolve(out);
             } catch (err) {
@@ -460,9 +491,10 @@ export class Client implements RecorderHostContext {
 
   private normalizeGenerationSeed(
     input: GenerationStart,
+    identity: IdentityFields,
     defaultMode: 'SYNC' | 'STREAM',
   ): GenerationStart {
-    const seed: GenerationStart = { ...input, ...resolveIdentity(input, this.config) };
+    const seed: GenerationStart = { ...input, ...identity };
     if (!seed.mode) seed.mode = defaultMode;
     if (!seed.operationName) seed.operationName = OP_CHAT;
     seed.id ??= generateId('gen');
@@ -470,32 +502,35 @@ export class Client implements RecorderHostContext {
     return seed;
   }
 
-  private normalizeEmbeddingSeed(input: EmbeddingStart): EmbeddingStart {
-    const { agentName, agentVersion } = resolveIdentity(input, this.config);
-    return { ...input, agentName, agentVersion };
+  private normalizeEmbeddingSeed(input: EmbeddingStart, identity: IdentityFields): EmbeddingStart {
+    const { agentName, agentVersion, conversationId, userId } = identity;
+    return { ...input, agentName, agentVersion, conversationId, userId };
   }
 
-  private normalizeToolSeed(input: ToolExecutionStart): ToolExecutionStart {
-    const { agentName, agentVersion, conversationId, conversationTitle } = resolveIdentity(
-      input,
-      this.config,
-    );
-    return { ...input, agentName, agentVersion, conversationId, conversationTitle };
+  private normalizeToolSeed(
+    input: ToolExecutionStart,
+    identity: IdentityFields,
+  ): ToolExecutionStart {
+    return { ...input, ...identity };
   }
 
-  private normalizeRetrievalSeed(input: RetrievalStart): RetrievalStart {
-    const { agentName, agentVersion, conversationId } = resolveIdentity(input, this.config);
+  private normalizeRetrievalSeed(input: RetrievalStart, identity: IdentityFields): RetrievalStart {
+    const { agentName, agentVersion, conversationId, userId } = identity;
     return {
       ...input,
       agentName,
       agentVersion,
       conversationId,
+      userId,
       tags: { ...(this.config.tags ?? {}), ...(input.tags ?? {}) },
     };
   }
 
-  private normalizeAgentSeed(input: AgentInvocationStart): AgentInvocationStart {
-    const { agentName, agentVersion, conversationId, userId } = resolveIdentity(input, this.config);
+  private normalizeAgentSeed(
+    input: AgentInvocationStart,
+    identity: IdentityFields,
+  ): AgentInvocationStart {
+    const { agentName, agentVersion, conversationId, userId } = identity;
     return { ...input, agentName, agentVersion, conversationId, userId };
   }
 

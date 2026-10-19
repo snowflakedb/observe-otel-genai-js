@@ -25,6 +25,8 @@ export interface EmbeddingStart {
   model: ModelRef;
   agentName?: string;
   agentVersion?: string;
+  conversationId?: string;
+  userId?: string;
   dimensions?: number;
   /** e.g. `"float"`, `"base64"`. */
   encodingFormat?: string;

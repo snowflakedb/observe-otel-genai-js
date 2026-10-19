@@ -27,6 +27,7 @@ import type { Span } from '@opentelemetry/api';
 import type { ContentCaptureMode } from '../content/capture.js';
 import { ValidationError } from '../errors.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
+import type { IdentityFields } from '../models/identity.js';
 import {
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -47,8 +48,9 @@ export class EmbeddingRecorder extends RecorderBase {
     seed: EmbeddingStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: IdentityFields,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -93,6 +95,7 @@ export class EmbeddingRecorder extends RecorderBase {
       providerName: this.seed.model.provider,
       requestModel: this.seed.model.name,
       agentName: this.seed.agentName ?? '',
+      conversationId: this.seed.conversationId,
     };
     const durationSeconds = Math.max(0, (completedAtMs - this.startedAtMs) / 1000);
     this.host.metrics.recordOperationDuration(durationSeconds, {

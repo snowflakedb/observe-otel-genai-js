@@ -35,6 +35,7 @@ import type { ContentCaptureMode } from '../content/capture.js';
 import { emitGenerationContent } from '../content/sink.js';
 import { ValidationError } from '../errors.js';
 import type { Generation, GenerationStart, ModelRef } from '../models/generation.js';
+import type { IdentityFields } from '../models/identity.js';
 import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
 import {
@@ -69,8 +70,9 @@ export class GenerationRecorder extends RecorderBase {
     seed: GenerationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: IdentityFields,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 

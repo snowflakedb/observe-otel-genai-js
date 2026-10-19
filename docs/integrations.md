@@ -564,7 +564,8 @@ These are the run's own values, so they win over an enclosing `withX(...)` scope
 LangChain has no setting for the agent version or the conversation title, so use
 `withAgent(name, version, ...)` or `withConversationTitle(...)` around the call.
 The version is used only when the scope names the same agent as the run, or the
-run has no name of its own. The handler takes no identity options.
+run has no name of its own. The handler takes no identity options. Chat, tool and
+retriever spans under a chain carry the chain's identity.
 
 ### What gets recorded
 

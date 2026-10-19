@@ -9,7 +9,7 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | Attribute | Type | Where |
 |---|---|---|
 | `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `create_agent`, `retrieval` |
-| `gen_ai.conversation.id` | string | when `conversationId` is set (see Identity resolution) |
+| `gen_ai.conversation.id` | string | every span except `create_agent`, when set (see Identity resolution) |
 | `genai.conversation.title` | string | when `conversationTitle` is set (see Identity resolution) |
 | `genai.conversation.turn_index` | int | when `turnIndex` is set on the start |
 | `genai.conversation.turn_role` | string | when `turnRole` is set on the start |
@@ -17,7 +17,7 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.agent.version` | string | with the agent name it belongs to (see Identity resolution) |
 | `gen_ai.agent.id` | string | on `invoke_agent` and `create_agent` spans |
 | `gen_ai.agent.description` | string | on `invoke_agent` and `create_agent` spans |
-| `user.id` | string | when `userId` is set (see Identity resolution) |
+| `user.id` | string | every span except `create_agent`, when set (see Identity resolution) |
 | `genai.sdk.name` | string | always `"genai-otel-ts"` |
 | `genai.generation.id` | string | unique generation id, auto-generated if not supplied |
 | `genai.parent_generation_ids` | string[] | fallback for multi-agent DAGs; native span links are also emitted |
@@ -27,10 +27,10 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 `gen_ai.agent.name`, `gen_ai.conversation.id`, `genai.conversation.title` and `user.id` each take the first value set by these sources, in order. Empty strings count as unset.
 
 1. **The span's own value**: a field passed to `startGeneration`, `invokeAgent` and the like, or what an integration reads for this one call, such as `withMetadata`.
-2. **The enclosing scope**: `withAgent`, `withConversationId`, `withConversationTitle`, `withUserId` or `withContext`. The innermost scope that sets a value wins.
+2. **The enclosing scope**: `withAgent`, `withConversationId`, `withConversationTitle`, `withUserId` or `withContext`, or the span this one is started under (inside the `client.invokeAgent(seed, fn)` callback or a recorder's `withActiveContext(fn)`). The innermost scope that sets a value wins. That span passes down only its own and inherited values, not the `Client` config; the span under it falls back to the `Client` on its own. `create_agent` hands nothing down.
 3. **The `Client` config**: `agentName`, `agentVersion`, `userId`.
 
-`gen_ai.agent.version` is used only from a place that also sets the agent name, and only if that is the name the span ends up with. So with `new Client({ agentName: 'shop-bot', agentVersion: '2' })`, a span whose agent name is `shop-bot` gets version `2`, and one whose agent name is `checkout` gets none. A scope that names an agent drops the outer scope's version, so `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version.
+`gen_ai.agent.version` is used only from a place that also sets the agent name, and only if that is the name the span ends up with. So with `new Client({ agentName: 'shop-bot', agentVersion: '2' })`, a span whose agent name is `shop-bot` gets version `2`, and one whose agent name is `checkout` gets none. A scope that names an agent drops the outer scope's version, so `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version. The same goes for a span that hands down an agent name: a sub-agent named `helper` inside agent `checkout` version `1` has no version, and the spans under it are `helper` with no version.
 
 ### Model
 

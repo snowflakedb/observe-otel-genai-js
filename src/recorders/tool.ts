@@ -25,6 +25,7 @@
 
 import type { Span } from '@opentelemetry/api';
 import { type ContentCaptureMode, applyContentAttribute } from '../content/capture.js';
+import type { IdentityFields } from '../models/identity.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
   ATTR_CONVERSATION_TITLE,
@@ -46,8 +47,9 @@ export class ToolExecutionRecorder extends RecorderBase {
     seed: ToolExecutionStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: IdentityFields,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 

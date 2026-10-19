@@ -143,6 +143,9 @@ describe('conversation id on metrics', () => {
     await h.client.startToolExecution({ toolName: 'search', conversationId }).end();
     await h.client.invokeAgent({ agentName: 'planner', conversationId }).end();
     await h.client.startRetrieval({ dataSourceId: 'docs', conversationId }).end();
+    await h.client
+      .startEmbedding({ model: { provider: 'openai', name: 'embed-3' }, conversationId })
+      .end();
 
     const metrics = await h.collectMetrics();
     return metrics[0]!.scopeMetrics.flatMap((sm) => sm.metrics);

@@ -2188,6 +2188,39 @@ describe('LangChain adapter — identity', () => {
     expect((await graph('support-graph')).name).toBe('invoke_agent support-graph');
   });
 
+  it("gives chat and tool spans under a chain the chain's identity", async () => {
+    h = createHarness();
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const md = { thread_id: 'thread-1', user_id: 'user-1' };
+    await withAgent('outer-agent', '1.0', async () => {
+      await handler.handleChainStart!(
+        chainSerialized as never,
+        {} as never,
+        'c1',
+        undefined,
+        [],
+        md,
+        undefined,
+        'checkout',
+      );
+      await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'c1');
+      await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+      await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'c1');
+      await handler.handleToolEnd!('done', 't1');
+      await handler.handleChainEnd!({} as never, 'c1');
+    });
+
+    for (const op of [OP_CHAT, OP_EXECUTE_TOOL]) {
+      const span = h.spans
+        .getFinishedSpans()
+        .find((s) => s.attributes[ATTR_OPERATION_NAME] === op)!;
+      expect(span.attributes[ATTR_AGENT_NAME], op).toBe('checkout');
+      expect(span.attributes[ATTR_AGENT_VERSION], op).toBeUndefined();
+      expect(span.attributes[ATTR_CONVERSATION_ID], op).toBe('thread-1');
+      expect(span.attributes[ATTR_USER_ID], op).toBe('user-1');
+    }
+  });
+
   it("lets the run's own name beat the enclosing scope", async () => {
     h = createHarness();
     const { agent } = await withAgent('scoped-agent', '1.0', () =>
