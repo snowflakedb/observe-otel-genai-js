@@ -160,7 +160,7 @@ class GenaiTelemetry {
     if (wantAgent) {
       const input = this.recordInputs(event) ? mapModelMessages(event.messages ?? []) : undefined;
       agent = this.client.invokeAgent({
-        agentName: options.agentName ?? 'agent',
+        agentName: options.agentName,
         agentVersion: options.agentVersion,
         conversationId: options.conversationId,
         userId: options.userId,

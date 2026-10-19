@@ -84,7 +84,7 @@ registerTelemetry(
   genaiTelemetryIntegration(client, {
     deriveOptions: (event) => {
       const rc = (event.runtimeContext ?? {}) as Record<string, unknown>;
-      return { agentName: event.functionId ?? 'agent', userId: rc.userId as string | undefined };
+      return { agentName: event.functionId, userId: rc.userId as string | undefined };
     },
   }),
 );
@@ -92,6 +92,10 @@ registerTelemetry(
 // Thereafter, plain calls are instrumented:
 await generateObject({ model: openai('gpt-4o'), schema, system, messages, telemetry: { functionId: 'query-card' } });
 ```
+
+If `deriveOptions` gives no agent name, the `invoke_agent` span takes the name of an
+enclosing `withAgent(...)` scope or the `Client`'s `agentName`, or is named plain
+`invoke_agent`.
 
 `options.emitOperationSpan` (`boolean | (event) => boolean`, default `true`) controls whether the `invoke_agent` operation span wraps the steps. Correlation across concurrent calls uses the AI SDK `callId` on every lifecycle event; span parenting composes `RecorderBase.withActiveContext`. Model-call failures are attributed to the owning operation via `executeLanguageModelCall` (the only error signal carrying a `callId`). Tool bodies run under the matching `execute_tool` span via `executeTool`, so auto-instrumented HTTP (and nested `generateText`) inside a tool parent under that span rather than an ambient ancestor.
 

@@ -110,6 +110,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Runnable*` names, `LangGraph` for an unnamed graph, and `langchain-chain` no
   longer count, so an unnamed chain takes the name of an enclosing `withAgent(...)`
   scope or the `Client`'s `agentName`, or gets a plain `invoke_agent` span.
+- Vercel AI SDK telemetry: a call whose `deriveOptions` returns no agent name (by
+  default: no `functionId` and no `runtimeContext.agent`) is no longer named
+  `agent`. Its `invoke_agent` span takes the name from an enclosing
+  `withAgent(...)` scope or the `Client`'s `agentName`, and is named plain
+  `invoke_agent` when nothing names it.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

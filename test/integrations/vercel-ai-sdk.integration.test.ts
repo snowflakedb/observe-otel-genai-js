@@ -21,6 +21,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { withAgent } from '../../src/context.js';
 import {
   type DeriveOptionsEvent,
   genaiTelemetryIntegration,
@@ -404,6 +405,62 @@ describe('genaiTelemetryIntegration', () => {
     );
     const agent = oneByName(h, 'invoke_agent');
     expect(agent?.status.code).toBe(2 /* ERROR */);
+  });
+});
+
+describe('genaiTelemetryIntegration identity', () => {
+  let h: Harness;
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const run = (telemetry?: Record<string, unknown>) =>
+    drain(
+      streamText({ model: textStreamModel('hi'), prompt: 'hi', telemetry: telemetry as never }),
+    );
+
+  it("names a call with no functionId after the client's agent", async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await run();
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent shop-bot');
+    expect(oneByName(h, 'chat')?.attributes['gen_ai.agent.name']).toBe('shop-bot');
+  });
+
+  it('takes the name of an enclosing scope when deriveOptions gives none', async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await withAgent('scoped', () => run());
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent scoped');
+  });
+
+  it('gives an unnamed call a plain invoke_agent span and no agent name', async () => {
+    h = createHarness();
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await run();
+    const agent = oneByName(h, 'invoke_agent');
+    expect(agent?.name).toBe('invoke_agent');
+    expect(agent?.attributes['gen_ai.agent.name']).toBeUndefined();
+  });
+
+  it('lets functionId beat the enclosing scope and the client', async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await withAgent('scoped', () => run({ functionId: 'query-card' }));
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent query-card');
+  });
+
+  it("keeps the client's version when deriveOptions gives the client's agent name", async () => {
+    h = createHarness({ agentName: 'o11y', agentVersion: 'agent-v1' });
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, { deriveOptions: () => ({ agentName: 'o11y' }) }),
+    );
+    await run({ functionId: 'o11y-agent' });
+    for (const name of ['invoke_agent', 'chat']) {
+      expect(oneByName(h, name)?.attributes['gen_ai.agent.name']).toBe('o11y');
+      expect(oneByName(h, name)?.attributes['gen_ai.agent.version']).toBe('agent-v1');
+    }
   });
 });
 
