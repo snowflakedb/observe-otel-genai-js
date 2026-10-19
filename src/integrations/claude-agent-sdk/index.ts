@@ -895,7 +895,7 @@ function toTokenUsage(usage: AgentUsage): TokenUsage {
     inputTokens: (usage.input_tokens ?? 0) + read + write,
     outputTokens: usage.output_tokens ?? 0,
     cacheReadInputTokens: read,
-    cacheCreationInputTokens: write,
+    cacheWriteInputTokens: write,
     reasoningTokens: usage.output_tokens_details?.thinking_tokens || undefined,
   };
 }
@@ -915,7 +915,7 @@ function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
     inputTokens: sum('inputTokens'),
     outputTokens: sum('outputTokens'),
     cacheReadInputTokens: sum('cacheReadInputTokens'),
-    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+    cacheWriteInputTokens: sum('cacheWriteInputTokens'),
     reasoningTokens: sum('reasoningTokens') || undefined,
   };
 }

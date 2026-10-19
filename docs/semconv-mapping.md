@@ -70,8 +70,7 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.usage.input_tokens` | int | suppressed when zero |
 | `gen_ai.usage.output_tokens` | int | suppressed when zero |
 | `gen_ai.usage.cache_read.input_tokens` | int | |
-| `gen_ai.usage.cache_creation.input_tokens` | int | AI SDK `cacheWrite` and Anthropic `cache_creation` both map here |
-| `gen_ai.usage.cache_write.input_tokens` | int | same value as `cache_creation`, under its current name |
+| `gen_ai.usage.cache_write.input_tokens` | int | AI SDK `cacheWrite` and Anthropic `cache_creation` both map here |
 | `gen_ai.usage.reasoning.output_tokens` | int | |
 | `gen_ai.response.time_to_first_chunk` | double (s) | streaming only; same value as the `gen_ai.client.time_to_first_token` metric |
 | `gen_ai.request.reasoning.level` | string | Claude Agent SDK: the `effort` option |
@@ -165,7 +164,7 @@ Size policy: unbounded by default — matching OpenTelemetry's own default and d
 | `gen_ai.client.tool_calls_per_operation` | count | default OTel buckets |
 | `gen_ai.client.tool_execution.duration` | s | powers-of-2 (10ms → ~82s) — isolates `gen_ai.tool.name` cardinality |
 
-`gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_creation`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
+`gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_write`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
 
 `gen_ai.conversation.id` is off by default on metrics because it adds one time series per conversation. Turn it on with `new Client({ metricAttributes: { conversationId: true } })`. It is then added to every data point whose operation has a conversation ID: chat, `invoke_agent`, `execute_tool`, and retrieval. Embedding and `create_agent` have no conversation ID, so their data points never carry it.
 

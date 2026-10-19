@@ -363,7 +363,6 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(130); // 100 + 20 read + 10 write
     expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
     expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(10);
-    expect(attr(root, 'gen_ai.usage.cache_creation.input_tokens')).toBe(10);
     expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0123);
   });
 

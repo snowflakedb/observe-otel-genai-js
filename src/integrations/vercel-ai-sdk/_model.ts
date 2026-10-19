@@ -96,7 +96,7 @@ export function mapAiUsage(usage: unknown):
       outputTokens?: number;
       totalTokens?: number;
       cacheReadInputTokens?: number;
-      cacheCreationInputTokens?: number;
+      cacheWriteInputTokens?: number;
       reasoningTokens?: number;
     }
   | undefined {
@@ -107,7 +107,7 @@ export function mapAiUsage(usage: unknown):
     outputTokens: u.completionTokens ?? u.outputTokens,
     totalTokens: u.totalTokens,
     cacheReadInputTokens: u.cacheReadInputTokens,
-    cacheCreationInputTokens: u.cacheCreationInputTokens,
+    cacheWriteInputTokens: u.cacheCreationInputTokens,
     reasoningTokens: u.reasoningTokens,
   };
 }

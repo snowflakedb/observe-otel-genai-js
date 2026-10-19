@@ -45,8 +45,8 @@ import {
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
   OP_CHAT,
-  TOKEN_TYPE_CACHE_CREATION,
   TOKEN_TYPE_CACHE_READ,
+  TOKEN_TYPE_CACHE_WRITE,
   TOKEN_TYPE_INPUT,
   TOKEN_TYPE_OUTPUT,
   TOKEN_TYPE_REASONING,
@@ -295,8 +295,8 @@ export class GenerationRecorder extends RecorderBase {
       labels,
     );
     this.host.metrics.recordTokenUsage(
-      usage.cacheCreationInputTokens ?? 0,
-      TOKEN_TYPE_CACHE_CREATION,
+      usage.cacheWriteInputTokens ?? 0,
+      TOKEN_TYPE_CACHE_WRITE,
       labels,
     );
     this.host.metrics.recordTokenUsage(usage.reasoningTokens ?? 0, TOKEN_TYPE_REASONING, labels);

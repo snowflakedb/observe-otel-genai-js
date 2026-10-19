@@ -252,7 +252,7 @@ function mapResponsesUsage(usage: ResponsesUsageShape | undefined | null): Token
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
     cacheReadInputTokens: usage.input_tokens_details?.cached_tokens,
-    cacheCreationInputTokens: usage.input_tokens_details?.cache_write_tokens,
+    cacheWriteInputTokens: usage.input_tokens_details?.cache_write_tokens,
     reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
   };
 }

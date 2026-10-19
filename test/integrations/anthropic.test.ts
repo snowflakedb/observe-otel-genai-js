@@ -35,8 +35,8 @@ import {
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
-  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
 } from '../../src/semconv.js';
@@ -88,7 +88,7 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('msg_01abc');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(10);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(4);
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(100);
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(100);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(50);
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
   });

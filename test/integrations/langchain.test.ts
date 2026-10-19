@@ -52,8 +52,8 @@ import {
   ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_DEFINITIONS,
   ATTR_TOOL_NAME,
-  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USER_ID,
@@ -587,7 +587,7 @@ describe('LangChain adapter — cache token counts', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(420);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(300);
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(40);
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(40);
   });
 
   it('takes cache counts from the message when input counts tie (real ChatOpenAI)', async () => {
@@ -673,7 +673,7 @@ describe('LangChain adapter — cache token counts', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBeUndefined();
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBeUndefined();
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBeUndefined();
   });
@@ -700,7 +700,7 @@ describe('LangChain adapter — cache token counts', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBeUndefined();
   });
 
   it('emits only the non-zero cache count', async () => {
@@ -724,7 +724,7 @@ describe('LangChain adapter — cache token counts', () => {
     });
 
     const [span] = h.spans.getFinishedSpans();
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(7);
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(7);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
   });
 });

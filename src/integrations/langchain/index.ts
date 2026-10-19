@@ -746,7 +746,7 @@ const OUTPUT_TOKEN_KEYS: readonly string[] = [
 ];
 const RESPONSE_MODEL_KEYS: readonly string[] = ['model', 'model_name'];
 const CACHE_READ_KEYS: readonly string[] = ['cache_read_input_tokens', 'cacheReadInputTokens'];
-const CACHE_CREATION_KEYS: readonly string[] = [
+const CACHE_WRITE_KEYS: readonly string[] = [
   'cache_creation_input_tokens',
   'cacheCreationInputTokens',
   // Bedrock's spelling.
@@ -922,7 +922,7 @@ interface MappedUsage {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 /**
@@ -954,9 +954,9 @@ function mergeCacheCounts(primary: MappedUsage, secondary: MappedUsage): MappedU
       primary.cacheReadInputTokens,
       secondary.cacheReadInputTokens,
     ),
-    cacheCreationInputTokens: preferPositive(
-      primary.cacheCreationInputTokens,
-      secondary.cacheCreationInputTokens,
+    cacheWriteInputTokens: preferPositive(
+      primary.cacheWriteInputTokens,
+      secondary.cacheWriteInputTokens,
     ),
   };
 }
@@ -990,14 +990,14 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
   // keys instead, so read the nested shape first and fall back to those.
   const details = readObject(u, 'input_token_details') ?? readObject(u, 'inputTokenDetails');
   const cacheReadInputTokens = numField(details, 'cache_read') ?? firstNum(u, CACHE_READ_KEYS);
-  const cacheCreationInputTokens =
-    numField(details, 'cache_creation') ?? firstNum(u, CACHE_CREATION_KEYS);
+  const cacheWriteInputTokens =
+    numField(details, 'cache_creation') ?? firstNum(u, CACHE_WRITE_KEYS);
 
   if (
     inputTokens == null &&
     outputTokens == null &&
     cacheReadInputTokens == null &&
-    cacheCreationInputTokens == null
+    cacheWriteInputTokens == null
   ) {
     return undefined;
   }
@@ -1005,7 +1005,7 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
     inputTokens,
     outputTokens,
     cacheReadInputTokens,
-    cacheCreationInputTokens,
+    cacheWriteInputTokens,
   };
 }
 

@@ -77,6 +77,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/content-retention.md`.
 
 ### Changed
+- **Cache-write tokens use only the `cache_write` name.** `chat` spans no longer
+  carry `gen_ai.usage.cache_creation.input_tokens`; read
+  `gen_ai.usage.cache_write.input_tokens` instead, which `allow_list` mode now keeps.
+  On `gen_ai.client.token.usage`, the `gen_ai.token.type` value `cache_creation` is
+  now `cache_write`.
+- **`TokenUsage.cacheCreationInputTokens` is renamed to `cacheWriteInputTokens`.**
+  Code that records generations by hand and passes cache-write counts in
+  `setResult({ usage })` must use the new name; the old one is ignored.
 - **`metadata_only` is now the default content-capture mode.** A `Client` with no
   `contentCaptureMode`, and the `default` mode's fallthrough, no longer capture
   prompts and completions: spans keep their metadata but carry no messages,

@@ -518,7 +518,7 @@ Without the instrumentation:
 
 Same shape as the OpenAI adapter, with mappings for Anthropic-specific fields:
 
-- `usage.cache_creation_input_tokens` → `gen_ai.usage.cache_creation.input_tokens`
+- `usage.cache_creation_input_tokens` → `gen_ai.usage.cache_write.input_tokens`
 - `usage.cache_read_input_tokens` → `gen_ai.usage.cache_read.input_tokens`
 - `stop_reason` → `gen_ai.response.finish_reasons`
 - `content[*]` blocks (text/thinking/tool_use/tool_result) → structured `gen_ai.input.messages` / `gen_ai.output.messages` attributes
@@ -633,7 +633,7 @@ The `invoke_agent` span carries the chain's input as `gen_ai.input.messages`: a 
 
 `gen_ai.response.model` is the model that served the call — ask for `gpt-4o`, get `gpt-4o-2024-11-20`. `gen_ai.request.model` keeps the requested name.
 
-Token usage covers `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and the prompt-cache counts `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`.
+Token usage covers `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and the prompt-cache counts `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_write.input_tokens`.
 
 Options: `captureChains: false` skips chain instrumentation (LLM + tool spans only); `captureNestedChains: true` turns each nested chain / LangGraph node into its own `invoke_agent` span (off by default so the trace stays focused on the outermost graph invocation); `contentCapture`, `turnIndex`, and `turnRole` mirror the other adapters. When a single handler instance is reused across many requests, call `await handler.dispose()` on shutdown to end any runs whose end/error callback never fired (abandoned streams, runner exceptions) — this prevents leaked spans and unbounded internal map growth.
 

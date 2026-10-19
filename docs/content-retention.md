@@ -81,7 +81,7 @@ In short, the list covers:
   dropped.
 - **Everything else not on the list.** Today that includes some metadata the
   library emits but that has not been through privacy review yet, for example
-  time to first chunk, cache-write token counts, and cost.
+  time to first chunk and cost.
 
 The filter applies to span attributes, event attributes, and link attributes,
 on every span type: `chat`, `embeddings`, `execute_tool`, `retrieval`,

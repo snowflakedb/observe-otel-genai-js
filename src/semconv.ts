@@ -99,8 +99,6 @@ export const ATTR_FINISH_REASONS = 'gen_ai.response.finish_reasons';
 export const ATTR_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 export const ATTR_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
 export const ATTR_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens';
-export const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS = 'gen_ai.usage.cache_creation.input_tokens';
-/** Current semconv name for cache-write tokens; `cache_creation` above is the older one. */
 export const ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_write.input_tokens';
 export const ATTR_USAGE_REASONING_TOKENS = 'gen_ai.usage.reasoning.output_tokens';
 
@@ -179,14 +177,14 @@ export const METRIC_ATTR_TOKEN_TYPE = 'gen_ai.token.type';
 export const TOKEN_TYPE_INPUT = 'input';
 export const TOKEN_TYPE_OUTPUT = 'output';
 export const TOKEN_TYPE_CACHE_READ = 'cache_read';
-export const TOKEN_TYPE_CACHE_CREATION = 'cache_creation';
+export const TOKEN_TYPE_CACHE_WRITE = 'cache_write';
 export const TOKEN_TYPE_REASONING = 'reasoning';
 
 export type TokenType =
   | typeof TOKEN_TYPE_INPUT
   | typeof TOKEN_TYPE_OUTPUT
   | typeof TOKEN_TYPE_CACHE_READ
-  | typeof TOKEN_TYPE_CACHE_CREATION
+  | typeof TOKEN_TYPE_CACHE_WRITE
   | typeof TOKEN_TYPE_REASONING;
 
 /**

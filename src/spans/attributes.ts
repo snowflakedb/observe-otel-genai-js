@@ -75,7 +75,6 @@ import {
   ATTR_TOOL_DESCRIPTION,
   ATTR_TOOL_NAME,
   ATTR_TOOL_TYPE,
-  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
@@ -194,8 +193,7 @@ export function applyGenerationAttributes(span: Span, view: GenerationAttributeV
 }
 
 /**
- * Token usage as span attributes, skipping zeros. Cache-write tokens go under both
- * the older `cache_creation` name and the current `cache_write` one.
+ * Token usage as span attributes, skipping zeros.
  */
 export function usageAttributes(usage: TokenUsage): Attributes {
   const attrs: Attributes = {};
@@ -204,9 +202,8 @@ export function usageAttributes(usage: TokenUsage): Attributes {
   if (usage.cacheReadInputTokens) {
     attrs[ATTR_USAGE_CACHE_READ_INPUT_TOKENS] = usage.cacheReadInputTokens;
   }
-  if (usage.cacheCreationInputTokens) {
-    attrs[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS] = usage.cacheCreationInputTokens;
-    attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cacheCreationInputTokens;
+  if (usage.cacheWriteInputTokens) {
+    attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cacheWriteInputTokens;
   }
   if (usage.reasoningTokens) attrs[ATTR_USAGE_REASONING_TOKENS] = usage.reasoningTokens;
   return attrs;

@@ -68,7 +68,7 @@ export function mapGenerationUsage(usage: SdkGenerationUsage | undefined): Token
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     cacheReadInputTokens: usage.input_tokens_details?.cached_tokens,
-    cacheCreationInputTokens: usage.input_tokens_details?.cache_write_tokens,
+    cacheWriteInputTokens: usage.input_tokens_details?.cache_write_tokens,
     reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
   };
 }
