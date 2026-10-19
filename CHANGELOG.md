@@ -106,6 +106,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- OpenAI Agents: the `conversationId` passed to `run()`, or kept in a resumed run's
+  state, becomes the run's `gen_ai.conversation.id`, ahead of `groupId`. The SDK
+  sends it as the Responses `conversation`, which the chat spans record, so before
+  this the agent spans and the chat spans under them could carry different ids.
 - Embedding spans no longer drop `gen_ai.agent.name` under `metadata_only`. The
   agent name is metadata, and the other span types already keep it.
 - OpenAI Agents integration: the run container span read its content-capture mode

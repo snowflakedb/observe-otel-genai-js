@@ -270,8 +270,14 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     this.wrapOwn(prototype, 'run', (original: Fn) => {
       return function run(this: unknown, ...args: unknown[]) {
         const processor = instrumentation.processor;
-        const [, , options] = args as [unknown, unknown, { stream?: boolean } | undefined];
-        const token = processor.beginRun(options?.stream === true);
+        const [, input, options] = args as [
+          unknown,
+          { _conversationId?: string } | undefined,
+          { stream?: boolean; conversationId?: string } | undefined,
+        ];
+        // A resumed run takes its conversation id from the saved RunState, as the SDK does.
+        const conversationId = options?.conversationId ?? input?._conversationId;
+        const token = processor.beginRun(options?.stream === true, conversationId);
         const ctx = otelContext.active().setValue(RUN_TOKEN_KEY, token);
         const result = otelContext.with(ctx, () => original.apply(this, args)) as Promise<unknown>;
         return result.catch((err: unknown) => {

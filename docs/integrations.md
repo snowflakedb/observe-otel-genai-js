@@ -329,22 +329,24 @@ With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or
 `turn` spans, so a turn's error is not copied to its agent span, and a resumed run's
 container stays open until the trace cap or shutdown ends it.
 
-The container carries `gen_ai.conversation.id` from `Trace.groupId` and
-`Trace.metadata` as `genai.metadata.*`. Set them on the `Runner`, since the options
-passed to `run()` do not carry them:
+The container carries `gen_ai.conversation.id` and `Trace.metadata` as
+`genai.metadata.*`. The conversation id is the `conversationId` passed to `run()`
+(or kept in a resumed run's state) when there is one, since the SDK sends it as the
+Responses `conversation`, and `Trace.groupId` otherwise. Set the group id and the metadata on the `Runner`, since
+the options passed to `run()` do not carry them:
 
 ```ts
 const runner = new Runner({
   workflowName: 'triage-workflow',   // becomes the container span's name
-  groupId: 'chat-thread-1',          // becomes gen_ai.conversation.id
+  groupId: 'chat-thread-1',          // gen_ai.conversation.id, unless run() gets a conversationId
   traceMetadata: { tenant: 'acme' }, // becomes genai.metadata.tenant
 });
 ```
 
 The conversation id and the agent name are also passed down to model calls, so the
 `chat` span from `OpenAIInstrumentation` carries the same `gen_ai.conversation.id`
-and the right `gen_ai.agent.name`. When `groupId` is set it takes precedence over an
-id set with `withConversationId(...)`.
+and the right `gen_ai.agent.name`. Both are the run's own values, so they take
+precedence over a `withConversationId(...)` or `withAgent(...)` scope around the run.
 
 ### Errors
 

@@ -171,6 +171,8 @@ interface ClosedTrace {
 
 interface RunState {
   readonly streaming: boolean;
+  /** The `conversationId` passed to `run()`, which the SDK sends as the Responses `conversation`. */
+  readonly conversationId?: string;
   readonly traceIds: Set<string>;
 }
 
@@ -240,12 +242,13 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
         : this.tracer.startSpan(trace.name, options);
     span.setAttribute(ATTR_OPERATION_NAME, OP_INVOKE_AGENT);
     span.setAttribute(ATTR_SDK_NAME, SDK_NAME);
-    if (trace.groupId) span.setAttribute(ATTR_CONVERSATION_ID, trace.groupId);
+    const conversationId = this.activeRun()?.conversationId || trace.groupId || undefined;
+    if (conversationId) span.setAttribute(ATTR_CONVERSATION_ID, conversationId);
     applyMetadataAttributes(span, trace.metadata);
 
     const record: TraceRecord = {
       sdkTrace: trace,
-      conversationId: trace.groupId ?? undefined,
+      conversationId,
       resumed,
       ownedByRun: this.activeRun() !== undefined,
       span,
@@ -351,9 +354,9 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
    * context under {@link RUN_TOKEN_KEY}, so traces the run opens can be closed if it
    * rejects, and chat spans know whether the run streams.
    */
-  beginRun(streaming: boolean): object {
+  beginRun(streaming: boolean, conversationId?: string): object {
     const token = {};
-    this.runs.set(token, { streaming, traceIds: new Set() });
+    this.runs.set(token, { streaming, conversationId, traceIds: new Set() });
     return token;
   }
 
@@ -389,7 +392,8 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
 
     const run = active.getValue(RUN_TOKEN_KEY);
     const identity: AgentsIdentity = {};
-    if (record.trace.conversationId) identity.conversationId = record.trace.conversationId;
+    const conversationId = this.conversationId(record.trace);
+    if (conversationId) identity.conversationId = conversationId;
     if (record.agent?.name) identity.agentName = record.agent.name;
     return {
       context: run ? record.otelContext.setValue(RUN_TOKEN_KEY, run) : record.otelContext,
@@ -413,10 +417,11 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     trace: TraceRecord,
     startedAt: number,
   ): void {
+    const conversationId = this.conversationId(trace);
     const recorder = this.startRecorder(record, () =>
       this.client.invokeAgent({
         agentName: data.name,
-        conversationId: trace.conversationId,
+        conversationId,
         startedAt,
         contentCapture: this.contentCapture,
       }),
@@ -430,12 +435,13 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     trace: TraceRecord,
     startedAt: number,
   ): void {
+    const conversationId = this.conversationId(trace);
     this.startRecorder(record, () =>
       this.client.startToolExecution({
         toolName: data.name,
         toolType: 'function',
         agentName: record.agent?.name,
-        conversationId: trace.conversationId,
+        conversationId,
         startedAt,
         contentCapture: this.contentCapture,
       }),
@@ -454,7 +460,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       model: aiSdkModelRef(data.model),
       operationName: OP_CHAT,
       agentName: record.agent?.name,
-      conversationId: record.trace.conversationId,
+      conversationId: this.conversationId(record.trace),
       startedAt: parseSdkTimestamp(record.sdkSpan.startedAt),
       contentCapture: this.contentCapture,
     };
@@ -655,6 +661,14 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
   private activeRun(): RunState | undefined {
     const token = this.activeRunToken();
     return token ? this.runs.get(token) : undefined;
+  }
+
+  /**
+   * The conversation id for a span starting now: the current run's, which a run
+   * inside a `withTrace` block or used as a tool only gets here, then the trace's.
+   */
+  private conversationId(trace: TraceRecord): string | undefined {
+    return this.activeRun()?.conversationId || trace.conversationId;
   }
 
   private safely<T>(where: string, fn: () => T): T | undefined {

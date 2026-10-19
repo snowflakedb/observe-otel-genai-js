@@ -49,10 +49,12 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { withAgent } from '../../src/context.js';
 import { OpenAIAgentsInstrumentation } from '../../src/integrations/openai-agents/instrumentation.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_AGENT_VERSION,
   ATTR_CONVERSATION_ID,
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
@@ -290,6 +292,29 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     // And the agent span agrees, so the two join.
     const agentSpan = only(agentSpans(), 'invoke_agent span');
     expect(agentSpan.attributes[ATTR_CONVERSATION_ID]).toBe('thread-99');
+  });
+
+  it("prefers the run's conversationId over groupId, on every span of the run", async () => {
+    // The SDK sends `conversationId` as the Responses `conversation`, which the chat
+    // span records as its own. The agent spans must use the same id, or one run would
+    // show up as two conversations.
+    const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
+    const agent = new A.Agent({ name: 'conv-agent', instructions: 'x', model: setupResult.model });
+    await new A.Runner({ groupId: 'thread-1' }).run(agent, 'hi', { conversationId: 'conv_1' });
+
+    const ids = h.spans.getFinishedSpans().map((s) => [s.name, s.attributes[ATTR_CONVERSATION_ID]]);
+    expect(ids.length).toBeGreaterThan(2);
+    for (const [name, id] of ids) expect(id, String(name)).toBe('conv_1');
+  });
+
+  it("keeps an outer agent's version off the chat spans of a run", async () => {
+    const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
+    const agent = new A.Agent({ name: 'inner-agent', instructions: 'x', model: setupResult.model });
+    await withAgent('outer-agent', '3', () => new A.Runner().run(agent, 'hi'));
+
+    const chat = only(spansNamed(OP_CHAT), 'chat span');
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('inner-agent');
+    expect(chat.attributes[ATTR_AGENT_VERSION]).toBeUndefined();
   });
 
   it('records trace metadata on the run container', async () => {
@@ -835,6 +860,54 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(agentSpans()).toHaveLength(2);
     const tool = only(spansNamed(OP_EXECUTE_TOOL), 'execute_tool span');
     expect(parentOf(tool)?.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+  });
+
+  it("keeps the run's conversationId on a run resumed from its state", async () => {
+    await setupAiSdk();
+    const danger = A.tool({
+      name: 'danger',
+      description: 'Needs approval',
+      parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      strict: true,
+      needsApproval: true,
+      execute: async () => 'done',
+    });
+    const agent = new A.Agent({
+      name: 'careful-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel({ toolCallFirst: 'danger' })),
+      tools: [danger],
+    });
+    const runner = new A.Runner({ groupId: 'thread-1' });
+    const first = await runner.run(agent, 'go', { conversationId: 'conv_1' });
+    for (const interruption of first.interruptions) first.state.approve(interruption);
+    await runner.run(agent, first.state);
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    const ids = h.spans.getFinishedSpans().map((s) => [s.name, s.attributes[ATTR_CONVERSATION_ID]]);
+    for (const [name, id] of ids) expect(id, String(name)).toBe('conv_1');
+  });
+
+  it("gives the spans of a run inside withTrace the run's conversationId", async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'traced-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await core.withTrace('block', () =>
+      new A.Runner().run(agent, 'hi', { conversationId: 'conv_1' }),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('conv_1');
+    }
   });
 
   it('emits AI SDK chat spans when this processor is the only one', async () => {
