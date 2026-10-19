@@ -115,6 +115,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agent`. Its `invoke_agent` span takes the name from an enclosing
   `withAgent(...)` scope or the `Client`'s `agentName`, and is named plain
   `invoke_agent` when nothing names it.
+- **Claude Agent SDK: `ClaudeAgentSdkInstrumentation` no longer takes identity
+  options.** Pass them to `wrapQuery`, or wrap the call in a `withX(...)` scope.
+  An unnamed run is no longer named `claude-agent-sdk`: it takes the `Client`'s
+  `agentName`, or is named plain `invoke_agent`. The CLI session id is now the
+  conversation id only when neither `wrapQuery` nor an enclosing scope sets one,
+  and subagent spans no longer carry the main agent's version.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

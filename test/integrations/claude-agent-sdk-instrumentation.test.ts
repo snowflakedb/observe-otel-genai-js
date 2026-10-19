@@ -25,6 +25,7 @@
 
 import { DiagLogLevel, diag } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withAgent } from '../../src/context.js';
 
 import { ClaudeAgentSdkInstrumentation } from '../../src/integrations/claude-agent-sdk/instrumentation.js';
 import type {
@@ -139,10 +140,10 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
   it('patches the query export and emits the full span tree with no call-site wiring', async () => {
     const mod = mutableModule();
-    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client, agentName: 'auto' });
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
     patchModule(instrumentation, mod);
 
-    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    await withAgent('auto', () => drain(mod.query({ prompt: 'hello', options: { model: MODEL } })));
 
     const names = h.spans.getFinishedSpans().map((s) => s.name);
     expect(names).toContain('invoke_agent auto');
@@ -153,7 +154,6 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     const mod = mutableModule();
     instrumentation = new ClaudeAgentSdkInstrumentation({
       client: h.client,
-      agentName: 'configured',
       contentCapture: 'metadata_only',
       enabled: true,
     });
@@ -161,7 +161,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
 
-    const turn = h.spans.getFinishedSpans().find((s) => s.name === 'invoke_agent configured');
+    const turn = h.spans.getFinishedSpans().find((s) => s.name === 'invoke_agent');
     expect(turn).toBeDefined();
     expect(turn?.attributes['gen_ai.input.messages']).toBeUndefined();
   });
@@ -315,10 +315,12 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
   it('creates its own client when none is supplied', async () => {
     const mod = mutableModule();
-    instrumentation = new ClaudeAgentSdkInstrumentation({ agentName: 'self-client' });
+    instrumentation = new ClaudeAgentSdkInstrumentation();
     patchModule(instrumentation, mod);
 
-    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    await withAgent('self-client', () =>
+      drain(mod.query({ prompt: 'hello', options: { model: MODEL } })),
+    );
 
     // The self-created client uses the globally-registered providers, which the
     // harness owns, so its spans land in the harness exporter.

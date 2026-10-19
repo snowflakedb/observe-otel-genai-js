@@ -29,6 +29,7 @@ import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ClientConfig } from '../../src/config.js';
+import { withAgent, withConversationId } from '../../src/context.js';
 import {
   type ClaudeAgentSdkOptions,
   wrapQuery,
@@ -43,7 +44,7 @@ import type {
 import { type Harness, createHarness } from '../_harness.js';
 
 const MODEL = 'claude-sonnet-4-5';
-const ROOT = 'invoke_agent claude-agent-sdk';
+const ROOT = 'invoke_agent';
 const CHAT = `chat ${MODEL}`;
 
 // -----------------------------------------------------------------------------
@@ -618,13 +619,14 @@ describe('Claude Agent SDK adapter: model calls', () => {
       ],
       {
         userId: 'user-7',
+        agentName: 'billing-bot',
         agentVersion: '2.0',
         conversationTitle: 'Billing question',
         parentGenerationIds: ['gen-parent'],
       },
     );
 
-    const root = findSpan(h, ROOT);
+    const root = findSpan(h, 'invoke_agent billing-bot');
     const mainChat = childrenOf(h, root, CHAT)[0]!;
     const tool = findSpan(h, 'execute_tool Read');
     expect(attr(root, 'user.id')).toBe('user-7');
@@ -635,6 +637,29 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, 'invoke_agent helper'), 'user.id')).toBe('user-7');
     expect(attr(tool, 'gen_ai.conversation.id')).toBe('sess-1');
     expect(attr(tool, 'gen_ai.agent.version')).toBe('2.0');
+    // The subagent is a different agent, so none of its spans take the main agent's version.
+    const subagent = findSpan(h, 'invoke_agent helper');
+    for (const span of [subagent, ...childrenOf(h, subagent, CHAT)]) {
+      expect(attr(span, 'gen_ai.agent.version')).toBeUndefined();
+    }
+  });
+
+  it('ranks the session id below the enclosing scope', async () => {
+    const h = harness();
+    await withConversationId('scoped', () =>
+      run(h, [init(), assistant('msg_1', [text('hi')]), result()]),
+    );
+    expect(attr(findSpan(h, ROOT), 'gen_ai.conversation.id')).toBe('scoped');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.conversation.id')).toBe('scoped');
+  });
+
+  it('takes the agent name from the scope when the options give none', async () => {
+    const h = harness();
+    await withAgent('scoped-agent', () =>
+      run(h, [init(), assistant('msg_1', [text('hi')]), result()]),
+    );
+    expect(findSpan(h, 'invoke_agent scoped-agent')).toBeDefined();
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('scoped-agent');
   });
 
   it('prefers the caller conversation id over the session id', async () => {
@@ -1749,5 +1774,16 @@ describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
     expect(childrenOf(h, findSpan(h, ROOT), CHAT)).toHaveLength(2);
+  });
+});
+
+describe('Claude Agent SDK adapter: identity from the client', () => {
+  const harness = useHarness({ agentName: 'svc', agentVersion: '9' });
+
+  it('names the run after the client when nothing else names it', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()]);
+    expect(attr(findSpan(h, 'invoke_agent svc'), 'gen_ai.agent.version')).toBe('9');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('svc');
   });
 });

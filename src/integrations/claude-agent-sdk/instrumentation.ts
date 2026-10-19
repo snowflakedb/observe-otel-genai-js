@@ -39,6 +39,7 @@ import {
 } from '@opentelemetry/instrumentation';
 
 import { Client } from '../../client.js';
+import type { IdentityFields } from '../../models/identity.js';
 import { VERSION } from '../../version.js';
 import { type ClaudeAgentSdkOptions, wrapQuery, wrapStartup } from './index.js';
 import { isTracedQuery } from './traced-queries.js';
@@ -55,9 +56,10 @@ interface ClaudeAgentSdkModuleExports {
   startup?: AgentStartupFn;
 }
 
+/** Identity is set per call with `wrapQuery` options or a `withX(...)` scope, not here. */
 export interface ClaudeAgentSdkInstrumentationConfig
   extends InstrumentationConfig,
-    ClaudeAgentSdkOptions {
+    Omit<ClaudeAgentSdkOptions, keyof IdentityFields> {
   /** Reuse an existing `Client`. When omitted, one is created from the global providers. */
   client?: Client;
 }
@@ -103,7 +105,7 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
   }
 
   /** The adapter options, with the instrumentation-level keys stripped. */
-  private adapterOptions(): ClaudeAgentSdkOptions {
+  private adapterOptions(): Omit<ClaudeAgentSdkOptions, keyof IdentityFields> {
     const { client: _client, enabled: _enabled, ...options } = this.getConfig();
     return options;
   }

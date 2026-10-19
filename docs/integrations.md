@@ -687,7 +687,7 @@ import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk
 register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 bootstrapOtel({ serviceName: 'my-agent' });
 registerInstrumentations({
-  instrumentations: [new ClaudeAgentSdkInstrumentation({ agentName: 'support-bot' })],
+  instrumentations: [new ClaudeAgentSdkInstrumentation()],
 });
 ```
 
@@ -695,9 +695,12 @@ registerInstrumentations({
 node --import ./preload.mjs app.mjs
 ```
 
-The config takes the usual metadata (`agentName`, `conversationId`, `userId`,
-`contentCapture`, …) plus an optional `client`; without one, a client is built from
-the registered providers.
+The config takes the same options as `wrapQuery` except identity
+(`contentCapture`, `tags`, …), plus an optional `client`; without one, a client is
+built from the registered providers. To name the agent or set the conversation or user, wrap the
+call in `withAgent(...)`, `withConversationId(...)` or `withUserId(...)`, or pass
+them to `wrapQuery` below. With no name from either, the `invoke_agent` span takes
+the `Client`'s `agentName`, or is named plain `invoke_agent`.
 
 Without the hook, or if the SDK was imported before the hook was registered, nothing
 is traced and nothing is logged. An app that loads the SDK with `require()` is not
@@ -736,8 +739,11 @@ timing, but none of the subagent's messages reach the stream, so there is no nes
 
 Each `query()` call gets one `invoke_agent` span, and everything else hangs off it.
 That span sits under whatever OpenTelemetry context you call from. Several user turns
-means several `query()` calls, linked by `gen_ai.conversation.id` (the CLI session id,
-unless you set `conversationId`).
+means several `query()` calls, linked by `gen_ai.conversation.id`: the
+`conversationId` you pass to `wrapQuery` or an enclosing `withConversationId(...)`
+scope, and the CLI session id when neither is set. A subagent's `invoke_agent` span
+is named after its `subagent_type` and carries no `gen_ai.agent.version`, since the
+version belongs to the main agent.
 
 ```
 invoke_agent <agentName>          one per query() call

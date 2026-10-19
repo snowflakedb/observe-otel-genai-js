@@ -40,7 +40,7 @@ import { type Context, context, diag } from '@opentelemetry/api';
 
 import type { Client } from '../../client.js';
 import { resolveContentCaptureMode } from '../../content/capture.js';
-import { contentCaptureModeFromContext } from '../../context.js';
+import { contentCaptureModeFromContext, conversationIdFromContext } from '../../context.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart } from '../../models/message.js';
@@ -69,8 +69,6 @@ import type {
   AgentUsage,
   AgentWarmQuery,
 } from './types.js';
-
-const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
 
 /** The model the CLI puts on the assistant message it makes up for a failed API call. */
 const SYNTHETIC_MODEL = '<synthetic>';
@@ -228,7 +226,8 @@ function logRecordingFailure(err: unknown): void {
 /** One agent's conversation: the main thread, or a subagent. */
 interface AgentThread {
   agent: AgentInvocationRecorder;
-  agentName: string;
+  /** Unset on the main thread, whose name comes from the caller. */
+  subagentName?: string;
   isMain: boolean;
   /** Replayed as each chat span's input messages. */
   history: Message[];
@@ -273,7 +272,6 @@ class AgentRun {
   private readonly queryOptions: AgentQueryOptions;
   private readonly prompt: unknown;
   private readonly provider: string;
-  private readonly agentName: string;
   private readonly startedAt = Date.now();
   /** Where `query()` was called. The root opens later, on the first message. */
   private readonly callerContext: Context = context.active();
@@ -309,7 +307,6 @@ class AgentRun {
     this.queryOptions = params.options ?? {};
     this.prompt = params.prompt;
     this.provider = resolveProvider(this.queryOptions);
-    this.agentName = config.agentName ?? DEFAULT_AGENT_NAME;
   }
 
   markStoppedByCaller(): void {
@@ -559,7 +556,7 @@ class AgentRun {
     if (this.root) return this.root;
     this.root = context.with(this.callerContext, () =>
       this.client.invokeAgent({
-        ...this.sharedSeed(this.agentName),
+        ...this.sharedSeed(),
         requestProvider: this.provider,
         requestModel: this.queryOptions.model ?? this.model,
         input: promptMessages(this.prompt),
@@ -574,7 +571,6 @@ class AgentRun {
   private mainThread(): AgentThread {
     this.main ??= {
       agent: this.openRoot(),
-      agentName: this.agentName,
       isMain: true,
       history: promptMessages(this.prompt),
       readyAt: this.startedAt,
@@ -614,7 +610,7 @@ class AgentRun {
     );
     return {
       agent,
-      agentName: name,
+      subagentName: name,
       isMain: false,
       history: [...input],
       readyAt: tool.startedAt,
@@ -645,7 +641,7 @@ class AgentRun {
     const now = Date.now();
     const resolvedModel = model ?? thread.lastModel ?? this.model ?? 'unknown';
     const seed: GenerationStart = {
-      ...this.sharedSeed(thread.agentName),
+      ...this.sharedSeed(thread.subagentName),
       ...(thread.isMain ? this.mainRequestSettings() : {}),
       model: { provider: this.provider, name: resolvedModel },
       conversationTitle: this.config.conversationTitle,
@@ -711,9 +707,7 @@ class AgentRun {
         toolType: name.startsWith('mcp__') ? 'extension' : 'function',
         requestProvider: this.provider,
         requestModel: thread.call?.model,
-        conversationId: this.conversationId,
-        agentName: thread.agentName,
-        agentVersion: this.config.agentVersion,
+        ...this.identity(thread.subagentName),
         contentCapture: this.config.contentCapture,
         startedAt,
       }),
@@ -780,17 +774,24 @@ class AgentRun {
 
   // --- helpers --------------------------------------------------------------
 
-  private get conversationId(): string | undefined {
-    return this.config.conversationId ?? this.sessionId;
+  /**
+   * Identity for a thread's spans. A subagent is its own agent, so it takes only
+   * its name. The CLI session id is the conversation id only when neither the
+   * options nor the enclosing scope give one.
+   */
+  private identity(subagentName?: string) {
+    const { agentName, agentVersion, userId, conversationId } = this.config;
+    return {
+      ...(subagentName === undefined ? { agentName, agentVersion } : { agentName: subagentName }),
+      userId,
+      conversationId: conversationId || conversationIdFromContext() || this.sessionId,
+    };
   }
 
-  /** Seed fields every agent and chat span in the run carries. */
-  private sharedSeed(agentName: string) {
+  /** Seed fields every agent and chat span in a thread carries. */
+  private sharedSeed(subagentName?: string) {
     return {
-      agentName,
-      agentVersion: this.config.agentVersion,
-      userId: this.config.userId,
-      conversationId: this.conversationId,
+      ...this.identity(subagentName),
       contentCapture: this.config.contentCapture,
       tags: this.config.tags,
       metadata: this.config.metadata,
