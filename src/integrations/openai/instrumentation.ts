@@ -65,6 +65,7 @@ import {
 } from '@opentelemetry/instrumentation';
 
 import { Client } from '../../client.js';
+import type { IdentityFields } from '../../models/identity.js';
 import { VERSION } from '../../version.js';
 import { isInstrumented, markInstrumented } from '../_common/instrumented.js';
 import {
@@ -121,11 +122,14 @@ interface OpenAIClientClass {
 
 /**
  * Config for {@link OpenAIInstrumentation}. Extends the OTel
- * `InstrumentationConfig` (e.g. `enabled`) and accepts the same per-call
- * metadata as the adapter. Values supplied here act as process-wide defaults; a
- * call can override them via `withMetadata(params, options)`.
+ * `InstrumentationConfig` (e.g. `enabled`) and accepts the per-call metadata of
+ * the adapter except identity. Values supplied here act as process-wide defaults;
+ * a call can override them via `withMetadata(params, options)`. Identity comes
+ * from `withMetadata`, the enclosing `withX(...)` scope, or the `Client`.
  */
-export interface OpenAIInstrumentationConfig extends InstrumentationConfig, OpenAIAdapterOptions {
+export interface OpenAIInstrumentationConfig
+  extends InstrumentationConfig,
+    Omit<OpenAIAdapterOptions, keyof IdentityFields> {
   /**
    * Reuse an existing `Client`. When omitted, the instrumentation builds one on
    * first use from its own tracer/meter (the globally-registered providers).
@@ -203,7 +207,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
   }
 
   /** The per-call metadata defaults from config, minus instrumentation-only keys. */
-  private adapterDefaults(): OpenAIAdapterOptions {
+  private adapterDefaults(): Omit<OpenAIAdapterOptions, keyof IdentityFields> {
     const { client: _client, enabled: _enabled, ...defaults } = this.getConfig();
     return defaults;
   }

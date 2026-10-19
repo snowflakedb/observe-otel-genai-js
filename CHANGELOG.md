@@ -10,6 +10,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- OpenAI: `responses.create` records the request's own `conversation` as
+  `gen_ai.conversation.id`, unless `withMetadata` sets one.
 - Core: opt-in `gen_ai.conversation.id` on metrics. Set
   `new Client({ metricAttributes: { conversationId: true } })` to add it to every
   histogram data point whose operation has a conversation ID. Off by default, since
@@ -95,6 +97,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   version?)`.** A scope that names an agent drops the outer scope's version, so
   `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version.
   An empty value in a scope keeps the outer scope's value.
+- **`OpenAIInstrumentation` no longer takes identity options** (`agentName`,
+  `agentVersion`, `conversationId`, `conversationTitle`, `userId`). They ranked a
+  whole-process setting above the app's own `withX(...)` scope. Set identity with
+  `withMetadata` on the call, a scope around it, or the `Client`.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

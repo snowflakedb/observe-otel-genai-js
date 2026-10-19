@@ -37,11 +37,14 @@ import { DiagLogLevel, diag } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { withAgent, withConversationId } from '../../src/context.js';
 import { isInstrumented } from '../../src/integrations/_common/instrumented.js';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_CONVERSATION_ID,
+  ATTR_CONVERSATION_TURN_ROLE,
   ATTR_OPERATION_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
@@ -295,7 +298,7 @@ describe('OpenAIInstrumentation', () => {
   });
 
   it('applies config metadata as a default and lets withMetadata override it', async () => {
-    const client = await setup(() => chatCompletion(), { agentName: 'config-default' });
+    const client = await setup(() => chatCompletion(), { turnRole: 'config-default' });
 
     await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -304,12 +307,48 @@ describe('OpenAIInstrumentation', () => {
     await client.chat.completions.create(
       withMetadata(
         { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
-        { agentName: 'per-call' },
+        { turnRole: 'per-call' },
       ),
     );
 
+    const roles = chatSpans(h).map((s) => s.attributes[ATTR_CONVERSATION_TURN_ROLE]);
+    expect(roles).toEqual(['config-default', 'per-call']);
+  });
+
+  it('takes identity from withMetadata over the enclosing scope', async () => {
+    const client = await setup(() => chatCompletion());
+    const params = { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] };
+
+    await withAgent('scoped', async () => {
+      await client.chat.completions.create({ ...params });
+      await client.chat.completions.create(withMetadata({ ...params }, { agentName: 'per-call' }));
+    });
+
     const names = chatSpans(h).map((s) => s.attributes[ATTR_AGENT_NAME]);
-    expect(names).toEqual(['config-default', 'per-call']);
+    expect(names).toEqual(['scoped', 'per-call']);
+  });
+
+  it("reads the Responses request's conversation as the conversation id", async () => {
+    const client = await setup(() => responsesMessage());
+
+    await client.responses.create({ model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_1' });
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      conversation: { id: 'conv_2' },
+    });
+    await withConversationId('scoped', () =>
+      client.responses.create({ model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_3' }),
+    );
+    await client.responses.create(
+      withMetadata(
+        { model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_4' },
+        { conversationId: 'per-call' },
+      ),
+    );
+
+    const ids = chatSpans(h).map((s) => s.attributes[ATTR_CONVERSATION_ID]);
+    expect(ids).toEqual(['conv_1', 'conv_2', 'conv_3', 'per-call']);
   });
 
   it('does not leak the metadata symbol into the request body', async () => {

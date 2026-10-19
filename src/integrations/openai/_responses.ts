@@ -106,6 +106,7 @@ function buildResponsesSeed(
     instructions?: string | null;
     tool_choice?: unknown;
     text?: { format?: { type?: string } };
+    conversation?: string | { id?: string } | null;
   };
   return {
     model: { provider: 'openai', name: typeof p.model === 'string' ? p.model : '' },
@@ -121,6 +122,10 @@ function buildResponsesSeed(
     outputType: p.text?.format?.type === 'json_schema' ? 'json' : undefined,
     tools: mapResponsesTools(p.tools),
     ...identityFieldsFromOptions(options),
+    // The request's own conversation, unless withMetadata names one.
+    conversationId:
+      options.conversationId ||
+      (typeof p.conversation === 'string' ? p.conversation : p.conversation?.id),
     contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,

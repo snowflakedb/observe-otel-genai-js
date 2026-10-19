@@ -149,12 +149,19 @@ import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
 
 registerInstrumentations({
-  instrumentations: [new OpenAIInstrumentation({ agentName: 'planner' })],
+  instrumentations: [new OpenAIInstrumentation()],
 });
 ```
 
-Config accepts every per-call metadata field the adapter does. Values you set here
-become process-wide defaults, and `withMetadata` still overrides them per call.
+Config accepts `contentCapture`, `tags`, `metadata`, `turnIndex`, `turnRole` and
+`parentGenerationIds`.
+Values you set here become process-wide defaults, and `withMetadata` still
+overrides them per call. Identity (agent name and version, conversation id and
+title, user id) is not part of the config: set it with `withMetadata` on the call,
+a `withX(...)` scope around it, or the `Client`. On `responses.create`, the
+request's own `conversation` becomes `gen_ai.conversation.id` unless
+`withMetadata` sets one.
+
 Covers `chat.completions.create`, `responses.create`, and `embeddings.create`.
 
 With this installed you no longer need `wrapOpenAI`. Leaving it in place is fine:
