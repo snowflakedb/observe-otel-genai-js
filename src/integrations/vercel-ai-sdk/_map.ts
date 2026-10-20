@@ -33,6 +33,7 @@ import type { ModelMessage } from 'ai';
 import {
   type Message,
   type Part,
+  type ToolResult,
   textPart,
   thinkingPart,
   toolCallPart,
@@ -292,7 +293,7 @@ export function mapContentParts(content: AiContentPart[]): Part[] {
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
-            contentJson: jsonString(c.output),
+            ...unwrapToolOutput(c.output),
           }),
         );
         break;
@@ -304,7 +305,8 @@ export function mapContentParts(content: AiContentPart[]): Part[] {
 /**
  * Converts `StepResult.content[]` to genai-otel output `Message[]`.
  * Assembles assistant parts (text + reasoning + tool-calls) and tool-role parts
- * (results + errors).
+ * (results + errors). A step's `tool-result.output` is what the tool returned,
+ * not the `{ type, value }` wrapper model messages use, so it is recorded as is.
  */
 export function mapStepContent(content: AiContentPart[]): Message[] {
   const assistantParts: Part[] = [];
@@ -412,7 +414,7 @@ export function mapProviderParts(content: AiProviderPart[]): Part[] {
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
-            contentJson: jsonString(c.output),
+            ...unwrapToolOutput(c.output),
           }),
         );
         break;
@@ -424,6 +426,31 @@ export function mapProviderParts(content: AiProviderPart[]): Part[] {
 export function normalizeRole(role: string): Message['role'] {
   if (role === 'user' || role === 'assistant' || role === 'tool' || role === 'system') return role;
   return 'user';
+}
+
+/**
+ * Model messages and prompts wrap a tool's output as `{ type, value }`. Records
+ * `value`, the output as the tool returned it. Anything else, such as a denied
+ * execution, is recorded as is.
+ */
+function unwrapToolOutput(
+  output: unknown,
+): Pick<ToolResult, 'content' | 'contentJson' | 'isError'> {
+  const { type, value } = (output ?? {}) as { type?: unknown; value?: unknown };
+  switch (type) {
+    case 'text':
+      return { content: jsonString(value) };
+    case 'error-text':
+      return { content: jsonString(value), isError: true };
+    // Always encoded, so a JSON string value stays a string rather than being parsed.
+    case 'json':
+    case 'content':
+      return { contentJson: JSON.stringify(value) };
+    case 'error-json':
+      return { contentJson: JSON.stringify(value), isError: true };
+    default:
+      return { contentJson: jsonString(output) };
+  }
 }
 
 export function jsonString(value: unknown): string | undefined {

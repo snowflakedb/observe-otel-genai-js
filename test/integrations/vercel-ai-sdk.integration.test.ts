@@ -883,6 +883,124 @@ describe('genaiTelemetryIntegration recordInputs / recordOutputs', () => {
       }),
     );
 
+  /** The response of each tool result in a span's input messages. */
+  const toolResponses = (span: { attributes: Record<string, unknown> } | undefined) =>
+    (
+      JSON.parse(String(span?.attributes[ATTR_INPUT_MESSAGES] ?? '[]')) as Array<{
+        parts: Array<{ type: string; response?: unknown }>;
+      }>
+    )
+      .flatMap((m) => m.parts)
+      .filter((p) => p.type === 'tool_call_response')
+      .map((p) => p.response);
+
+  it("records a tool's result in the next model call as the tool returned it", async () => {
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({ inputSchema: z.object({}), execute: async () => ({ answer: 42 }) }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [, secondChat] = byStart(byName(h, 'chat'));
+    expect(toolResponses(secondChat)).toEqual([{ answer: 42 }]);
+  });
+
+  it('records a tool result in the messages the caller passes as the tool returned it', async () => {
+    await drain(
+      streamText({
+        model: textStreamModel('ok'),
+        messages: [
+          { role: 'user', content: 'ping please' },
+          {
+            role: 'assistant',
+            content: [{ type: 'tool-call', toolCallId: 't0', toolName: 'ping', input: {} }],
+          },
+          {
+            role: 'tool',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 't0',
+                toolName: 'ping',
+                output: { type: 'text', value: 'pong' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(toolResponses(oneByName(h, 'invoke_agent'))).toEqual(['pong']);
+    expect(toolResponses(oneByName(h, 'chat'))).toEqual(['pong']);
+  });
+
+  it("records a failed tool's error in the next model call as plain text", async () => {
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            inputSchema: z.object({}),
+            execute: async (): Promise<string> => {
+              throw new Error('ping failed');
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [, secondChat] = byStart(byName(h, 'chat'));
+    expect(toolResponses(secondChat)).toEqual([expect.stringContaining('ping failed')]);
+  });
+
+  it('records a JSON tool result in a generateObject prompt as the tool returned it', async () => {
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-obj',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+    });
+
+    await generateObject({
+      model,
+      schema: z.object({ ok: z.boolean() }),
+      messages: [
+        { role: 'user', content: 'check' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool-call', toolCallId: 't0', toolName: 'lookup', input: {} }],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 't0',
+              toolName: 'lookup',
+              output: { type: 'json', value: '42' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const generateContent = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_GENERATE_CONTENT);
+    expect(toolResponses(generateContent)).toEqual(['42']);
+  });
+
   it('records the system prompt, tool arguments and tool result by default', async () => {
     await runToolLoop();
     const toolSpan = oneByName(h, 'execute_tool');
