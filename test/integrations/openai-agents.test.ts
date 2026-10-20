@@ -322,6 +322,29 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(chat.attributes[ATTR_AGENT_VERSION]).toBeUndefined();
   });
 
+  it('names an openai API error by its class on the workflow span', async () => {
+    // The openai package's error classes keep `name` as 'Error'.
+    const setupResult = await setup(() => ({
+      status: 401,
+      body: { error: { message: 'bad key' } },
+    }));
+    const agent = new A.Agent({
+      name: 'denied-agent',
+      instructions: 'x',
+      model: setupResult.model,
+    });
+    await expect(new A.Runner().run(agent, 'hi')).rejects.toThrow();
+
+    await vi.waitFor(() => expect(spansNamed(OP_INVOKE_WORKFLOW)).toHaveLength(1));
+    expect(only(spansNamed(OP_INVOKE_WORKFLOW), 'workflow span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'AuthenticationError',
+    );
+    // The agent span sees only the error's text, so it keeps its own category.
+    expect(only(agentSpans(), 'agent span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'provider_call_error',
+    );
+  });
+
   it('records trace metadata on the workflow span', async () => {
     const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
     const agent = new A.Agent({ name: 'meta-agent', instructions: 'x', model: setupResult.model });

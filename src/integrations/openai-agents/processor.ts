@@ -763,17 +763,19 @@ function applyError(recorder: Recorder, error: unknown): void {
  * fixed text such as `'Error in agent run'` in `message`.
  */
 function errorName(error: unknown): string | undefined {
-  let candidate: unknown;
   if (error instanceof Error) {
-    candidate = error.name;
-  } else {
-    const record = error as SdkSpanError;
-    const detail = record?.data?.error as string | { name?: string } | undefined;
-    candidate = typeof detail === 'string' ? detail : (detail?.name ?? record?.message);
+    // The openai package's error classes leave `name` as 'Error'.
+    const className = error.constructor.name;
+    const name = error.name === 'Error' && ERROR_NAME.test(className) ? className : error.name;
+    return ERROR_NAME.test(name) ? name : undefined;
   }
+  const record = error as SdkSpanError;
+  const detail = record?.data?.error as string | { name?: string } | undefined;
+  const candidate = typeof detail === 'string' ? detail : (detail?.name ?? record?.message);
   if (typeof candidate !== 'string') return undefined;
   const name = candidate.split(':')[0]?.trim() ?? '';
-  return ERROR_NAME.test(name) ? name : undefined;
+  // The SDK often records only the error's text, such as "Error: 401 bad key", which names no class.
+  return name !== 'Error' && ERROR_NAME.test(name) ? name : undefined;
 }
 
 function errorMessage(error: unknown): string {

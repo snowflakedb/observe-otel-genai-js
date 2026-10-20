@@ -815,7 +815,7 @@ describe('GenAIOtelTracingProcessor', () => {
     );
   });
 
-  it('accepts a plain Error as error.type', async () => {
+  it('keeps the span category when the SDK records only an error text naming no class', async () => {
     const trace = makeTrace();
     await processor.onTraceStart(trace);
     await runSpan(
@@ -828,7 +828,9 @@ describe('GenAIOtelTracingProcessor', () => {
     );
     await processor.onTraceEnd(trace);
 
-    expect(only(spansWithOp(OP_EXECUTE_TOOL)).attributes['error.type']).toBe('Error');
+    expect(only(spansWithOp(OP_EXECUTE_TOOL)).attributes['error.type']).toBe(
+      'tool_execution_error',
+    );
   });
 
   it('maps AI SDK provider ids to well-known provider names', async () => {

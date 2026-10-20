@@ -148,6 +148,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- OpenAI Agents: a run that fails with an `openai` API error now records its class
+  (`AuthenticationError`, `RateLimitError`, …) as `error.type` on the workflow span,
+  instead of `Error`. Those classes leave `name` as `Error`. Agent and tool spans,
+  which see only the error's text, record their own category instead of `Error`.
 - LangChain: a streamed call that returns only a tool call now records
   `gen_ai.request.stream`, and a ChatOpenAI call that LangChain streams inside
   `invoke()` records `gen_ai.response.model`, which it then reports only on the
