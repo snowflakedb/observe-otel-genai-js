@@ -23,7 +23,9 @@
  *
  * The returned Proxy forwards every property/method to the underlying stream
  * EXCEPT `[Symbol.asyncIterator]`, which is replaced with a wrapping iterator
- * that observes chunks and ends the recorder in `finally`.
+ * that observes chunks and ends the recorder in `finally`. A consumer that
+ * leaves its loop early (`break`, `return` or a throw) completes the call with
+ * what it read so far.
  *
  * A watchdog timer (default 10 minutes, .unref()'d so it doesn't keep the
  * event loop alive) ends the recorder with an error if the iterator is never
@@ -35,7 +37,7 @@ const DEFAULT_WATCHDOG_MS = 10 * 60 * 1000; // 10 minutes
 export interface StreamWrapOptions<TChunk> {
   /** Called for every chunk; first chunk should record TTFT. */
   onChunk?: (chunk: TChunk) => void;
-  /** Called once the iterator finishes successfully. */
+  /** Called once the iterator finishes successfully or the consumer stops early. */
   onComplete?: () => Promise<void> | void;
   /** Called when the iterator throws. */
   onError?: (err: unknown) => Promise<void> | void;
@@ -122,10 +124,8 @@ export function wrapProviderStream<S extends AsyncIterable<TChunk>, TChunk>(
                   await inner.return(value);
                 }
               } finally {
-                // Early termination (consumer `break`s out of the loop). Treat
-                // as abandonment, not a clean completion, when the caller
-                // distinguishes the two; fall back to onComplete otherwise.
-                await finishOnce(options.onAbandoned ?? options.onComplete);
+                // The consumer left its loop early: end with what was read.
+                await finishOnce(options.onComplete);
               }
               return { done: true, value: value as TChunk };
             },

@@ -33,7 +33,7 @@ import {
   toolCallPart,
   toolResultPart,
 } from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/metadata.js';
 import { outputTypeOf, serverOf } from '../_common/request.js';
@@ -90,7 +90,7 @@ export async function runChatCompletion(
       await rec.end();
       throw err;
     }
-    return wrapProviderStream<typeof stream, ChatChunk>(stream, chatStreamHandlers(rec));
+    return wrapProviderStream<typeof stream, ChatChunk>(stream, chatStreamHandlers(rec, params));
   }
 
   await using rec = client.startGeneration(seed);
@@ -125,7 +125,7 @@ export function instrumentChatCompletionApiPromise(
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
     rec.setResult({ input: mapOpenAIInput(params.messages) });
-    const handlers = chatStreamHandlers(rec);
+    const handlers = chatStreamHandlers(rec, params);
     return instrumentApiPromise(apiPromise, rec, (stream) =>
       wrapProviderStream<AsyncIterable<ChatChunk>, ChatChunk>(
         stream as AsyncIterable<ChatChunk>,
@@ -194,7 +194,10 @@ function recordChatResult(
  * chunks for TTFT, accumulated text/tool-calls, and final usage, then finalizes
  * the recorder on completion / error / abandonment.
  */
-function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
+function chatStreamHandlers(
+  rec: ChatRecorder,
+  params: ChatCompletionsCreateParams,
+): StreamWrapOptions<ChatChunk> {
   let firstTokenSeen = false;
   let finalUsage: ChatUsageShape | undefined;
   let finalModel: string | undefined;
@@ -237,6 +240,10 @@ function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
         usage: mapUsage(finalUsage),
         output: buildStreamOutputMessages(outputText, toolAcc),
       });
+      // Usage was asked for but the caller stopped reading before it arrived.
+      if (params.stream_options?.include_usage && !finalUsage) {
+        rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
+      }
       await rec.end();
     },
     onError: async (err) => {

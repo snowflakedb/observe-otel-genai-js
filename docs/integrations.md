@@ -273,6 +273,7 @@ If both stay on, the split can depend on versions: the other library may take yo
 - Request parameters, tool definitions, `server.address` (from the client's `baseURL`), usage including cached and reasoning tokens, finish reason, response id and model.
 - On `responses.create`, `instructions` becomes `gen_ai.system_instructions`, and the request's `conversation` becomes the conversation id unless `withMetadata` sets one.
 - With `stream: true`, the stream is returned unchanged. Time to first token comes from the first chunk (Chat Completions) or the first `*.delta` event (Responses). Final usage on Chat Completions streams needs `stream_options: { include_usage: true }`; without it the span has no token counts.
+- Breaking out of a stream early ends the span without an error, with the output read so far. If the final usage had not arrived yet, the span has no token counts and is marked `genai.usage.is_partial`. A stream nobody reads within 10 minutes is ended as a failed call.
 
 ## OpenAI Agents SDK
 
@@ -468,6 +469,7 @@ await anthropic.messages.create(
 - `system` becomes `gen_ai.system_instructions`; text, thinking, tool-use and tool-result blocks become input and output messages.
 - Usage, including `cache_read_input_tokens` and `cache_creation_input_tokens` as the cache-read and cache-write counts. `gen_ai.usage.input_tokens` is Anthropic's `input_tokens`, which leaves cached tokens out.
 - With `stream: true`, time to first token is taken at the first content block, and the final stop reason and output tokens from `message_delta`.
+- Breaking out of a stream before `message_delta` ends the span without an error, with the output read so far. The output token count is left out and the span is marked `genai.usage.is_partial`.
 
 ### Limits
 

@@ -37,6 +37,7 @@ import {
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_USAGE_INPUT_TOKENS,
+  ATTR_USAGE_IS_PARTIAL,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
@@ -267,6 +268,27 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(4);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-x');
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].parts[0].content).toBe('hi');
+  });
+
+  it('records a chat stream the caller breaks out of without an error', async () => {
+    nextResponse = () => sseResponse(CHAT_CHUNKS);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.chat.completions.create({
+      ...CHAT_PARAMS,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    for await (const _ of stream) break;
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBe(true);
     const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
     expect(output[0].parts[0].content).toBe('hi');
   });
@@ -609,7 +631,7 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
   });
 
-  it('still records a break before any final response as abandoned', async () => {
+  it('records a break before any final response without an error', async () => {
     nextResponse = () =>
       sseResponse([{ type: 'response.output_text.delta', delta: 'he', sequence_number: 1 }]);
     const openai = wrapOpenAI(h.client, makeClient());
@@ -617,6 +639,27 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
     for await (const _ of stream) break;
     await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBe(true);
+  });
+
+  it('records a Responses stream nobody reads as a failed call', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      nextResponse = () =>
+        sseResponse([
+          { type: 'response.completed', response: responsesMessage(), sequence_number: 1 },
+        ]);
+      const openai = wrapOpenAI(h.client, makeClient());
+
+      await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);

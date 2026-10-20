@@ -74,7 +74,7 @@ On generation spans, when the call sets them, unless noted.
 | `gen_ai.response.time_to_first_chunk` | double (s) | streaming generation spans; same value as the `gen_ai.client.time_to_first_token` metric |
 | `gen_ai.conversation.compacted` | bool | Claude Agent SDK: `true` on the `invoke_agent` span and later generation spans once the CLI compacts the conversation |
 | `genai.usage.cost_usd` | double | Claude Agent SDK: the run's total cost as the SDK reports it, on `invoke_agent`. Left out for resumed or continued sessions. |
-| `genai.usage.is_partial` | bool | Claude Agent SDK: `true` on a generation span whose usage is a mid-reply snapshot, not the final count |
+| `genai.usage.is_partial` | bool | `true` on a generation span without the final token count: a Claude Agent SDK call whose usage is a mid-reply snapshot, or an OpenAI or Anthropic stream the caller stopped reading before the count arrived. The output count is left out rather than reported low. |
 
 On generation spans, token counts of zero are left out. The Claude Agent SDK also puts the run's token totals on its `invoke_agent` span, except for resumed or continued sessions.
 

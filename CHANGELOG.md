@@ -164,6 +164,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returned from the scope rather than awaited in it. Before, the mode was read when
   the span ended, so that call recorded no content. A scope entered only around
   `end()` no longer applies.
+- OpenAI and Anthropic: a stream the caller stops reading early (`break`) now ends
+  its span without an error, keeping the output read so far. Before, it was marked
+  as a failed call ("stream was never consumed"), which counted toward error rates.
+  A stream stopped before its final usage arrives has no output token count and is
+  marked `genai.usage.is_partial`.
 - LangChain: a named LangGraph graph run inside another agent, called from a tool
   or added as a graph node, now gets its own `invoke_agent` span. Before, it was
   skipped as an inner step, and its model calls carried the outer agent's name.

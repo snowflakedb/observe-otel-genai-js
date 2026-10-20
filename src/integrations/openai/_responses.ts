@@ -43,7 +43,7 @@ import {
   toolResultPart,
 } from '../../models/message.js';
 import type { TokenUsage } from '../../models/usage.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
 import { identityFieldsFromOptions } from '../_common/metadata.js';
@@ -203,9 +203,11 @@ function responsesStreamHandlers(
     // `error` event, then a transport error.
     const cause = streamError ?? error;
     if (cause && !finalResponse?.error) rec.setCallError(cause);
-    // Leaving the loop after the final response or an error is not abandonment.
-    if (abandoned && !finalResponse && !streamError) {
+    if (abandoned) {
       rec.setCallError(new Error('openai responses stream was never consumed'));
+    } else if (!finalResponse && !cause) {
+      // The caller stopped reading before the final response, which carries the usage.
+      rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
     }
     await rec.end();
   };

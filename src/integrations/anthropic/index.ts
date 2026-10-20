@@ -34,7 +34,7 @@ import type { Client } from '../../client.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart, thinkingPart, toolCallPart } from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import {
   type AnthropicBlock as AntBlock,
   type AnthropicMessageParam as AntMessageParam,
@@ -102,6 +102,7 @@ async function runMessageCreate(
     rec.setResult({ input: mapAnthropicInput(params.messages) });
     let firstTokenSeen = false;
     let finalUsage: AnthropicUsageShape | undefined;
+    let hasFinalUsage = false;
     let finalModel: string | undefined;
     let finalStopReason: string | undefined;
     let finalId: string | undefined;
@@ -164,17 +165,27 @@ async function runMessageCreate(
           const delta = (event as { delta?: { stop_reason?: string } }).delta;
           if (delta?.stop_reason) finalStopReason = delta.stop_reason;
           const usage = (event as { usage?: AnthropicUsageShape }).usage;
-          if (usage) finalUsage = { ...finalUsage, ...usage };
+          if (usage) {
+            finalUsage = { ...finalUsage, ...usage };
+            hasFinalUsage = true;
+          }
         }
       },
       onComplete: async () => {
+        // A caller that stops before message_delta has only message_start's usage,
+        // whose output count is taken as the reply starts, so it is left out rather
+        // than reported low.
+        const partial = !hasFinalUsage;
+        const usage =
+          partial && finalUsage ? { ...finalUsage, output_tokens: undefined } : finalUsage;
         rec.setResult({
           responseId: finalId,
           responseModel: finalModel,
           stopReason: finalStopReason,
-          usage: mapAnthropicUsage(finalUsage),
+          usage: mapAnthropicUsage(usage),
           output: buildAnthropicStreamOutput(blockAcc),
         });
+        if (partial) rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
         await rec.end();
       },
       onError: async (err) => {

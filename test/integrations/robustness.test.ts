@@ -69,7 +69,7 @@ describe('wrapProviderStream — telemetry never breaks the consumer', () => {
     await expect(drain(wrapped)).rejects.toThrow('provider failure');
   });
 
-  it('routes an early break to onAbandoned, not onComplete', async () => {
+  it('routes an early break to onComplete, not onAbandoned', async () => {
     let abandoned = false;
     let completed = false;
     async function* gen() {
@@ -88,11 +88,11 @@ describe('wrapProviderStream — telemetry never breaks the consumer', () => {
     });
 
     for await (const _chunk of wrapped) {
-      break; // abandon after the first chunk
+      break; // stop after the first chunk
     }
 
-    expect(abandoned).toBe(true);
-    expect(completed).toBe(false);
+    expect(completed).toBe(true);
+    expect(abandoned).toBe(false);
   });
 
   it('calls onComplete (not onAbandoned) on a full drain', async () => {
