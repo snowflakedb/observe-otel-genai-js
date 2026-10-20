@@ -1,6 +1,8 @@
 # Semantic conventions mapping
 
-Exhaustive list of every attribute, event, and metric this library emits. Names follow the [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where applicable. Library-specific extensions live under the `genai.*` prefix to keep them visually separate from the standard `gen_ai.*` namespace.
+Every span attribute, event, and metric this library emits, and when each is set. Names follow the [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where they exist. Library-specific attributes use the `genai.*` prefix, kept apart from the standard `gen_ai.*` namespace.
+
+"Generation spans" below means `chat`, `text_completion`, and `generate_content` spans. Empty strings are never written, unless a row says otherwise.
 
 ## Span attributes
 
@@ -8,42 +10,38 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.operation.name` | string | every span — one of `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `invoke_workflow`, `create_agent`, `retrieval` |
-| `gen_ai.conversation.id` | string | every span except `create_agent`, when set (see Identity resolution) |
-| `genai.conversation.title` | string | when `conversationTitle` is set (see Identity resolution) |
-| `genai.conversation.turn_index` | int | when `turnIndex` is set on the start |
-| `genai.conversation.turn_role` | string | when `turnRole` is set on the start |
-| `gen_ai.agent.name` | string | when `agentName` is set (see Identity resolution) |
-| `gen_ai.agent.version` | string | with the agent name it belongs to (see Identity resolution) |
-| `gen_ai.agent.id` | string | on `invoke_agent` and `create_agent` spans |
-| `gen_ai.agent.description` | string | on `invoke_agent` and `create_agent` spans |
-| `user.id` | string | every span except `create_agent`, when set (see Identity resolution) |
-| `genai.sdk.name` | string | always `"genai-otel-ts"` |
-| `genai.generation.id` | string | unique generation id, auto-generated if not supplied |
-| `genai.parent_generation_ids` | string[] | fallback for multi-agent DAGs; native span links are also emitted |
+| `gen_ai.operation.name` | string | every span: `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `invoke_workflow`, `create_agent`, or `retrieval` |
+| `genai.sdk.name` | string | every span, always `"genai-otel-ts"` |
+| `gen_ai.conversation.id` | string | every span except `create_agent`, when set (see [Identity resolution](#identity-resolution)) |
+| `genai.conversation.title` | string | generation and `execute_tool` spans, when set. Under `metadata_only` it is written as an empty string. |
+| `genai.conversation.turn_index` | int | generation spans, when `turnIndex` is set |
+| `genai.conversation.turn_role` | string | generation spans, when `turnRole` is set |
+| `gen_ai.agent.name` | string | every span except `invoke_workflow`, when set |
+| `gen_ai.agent.version` | string | with the agent name it belongs to |
+| `gen_ai.agent.id` | string | `invoke_agent` and `create_agent` spans, when set |
+| `gen_ai.agent.description` | string | `invoke_agent` and `create_agent` spans, when set |
+| `user.id` | string | every span except `create_agent` and `invoke_workflow`, when set |
+| `genai.generation.id` | string | generation spans; generated when the caller does not supply one |
+| `genai.parent_generation_ids` | string[] | generation and `invoke_agent` spans, when `parentGenerationIds` is set. Span links are also added (see [Span links](#span-links)). |
 
 ### Identity resolution
 
-`gen_ai.agent.name`, `gen_ai.conversation.id`, `genai.conversation.title` and `user.id` each take the first value set by these sources, in order. Empty strings count as unset.
-
-1. **The span's own value**: a field passed to `startGeneration`, `invokeAgent` and the like, or what an integration reads for this one call, such as `withMetadata`.
-2. **The enclosing scope**: `withAgent`, `withConversationId`, `withConversationTitle`, `withUserId` or `withContext`, or the span this one is started under (inside the `client.invokeAgent(seed, fn)` callback or a recorder's `withActiveContext(fn)`). The innermost scope that sets a value wins. Scopes live in the OpenTelemetry context, next to the active span, so code that saves and later restores a context restores the scope too. That span passes down only its own and inherited values, not the `Client` config; the span under it falls back to the `Client` on its own. `create_agent` hands nothing down.
-3. **The `Client` config**: `agentName`, `agentVersion`, `userId`.
-
-`gen_ai.agent.version` is used only from a place that also sets the agent name, and only if that is the name the span ends up with. So with `new Client({ agentName: 'shop-bot', agentVersion: '2' })`, a span whose agent name is `shop-bot` gets version `2`, and one whose agent name is `checkout` gets none. A scope that names an agent drops the outer scope's version, so `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version. The same goes for a span that hands down an agent name: a sub-agent named `helper` inside agent `checkout` version `1` has no version, and the spans under it are `helper` with no version.
+The agent name, conversation id, conversation title, and user id each take the first value set by: the span's own value, then the enclosing scope (a `withX(...)` helper, or the span it runs under), then the `Client` config. The agent version comes only with the agent name it belongs to. The full rules, and where each integration reads these values, are in [Identity](integrations.md#identity).
 
 ### Model
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.provider.name` | string | generation, embedding, tool, and agent (`invoke_agent` / `create_agent`) spans, when `requestProvider` is set |
-| `gen_ai.request.model` | string | generation, embedding, and agent spans, when the model is known |
-| `gen_ai.response.model` | string | generation, embedding spans (when known after the provider call) |
-| `gen_ai.response.id` | string | generation spans (provider's response id) |
-| `server.address` | string | generation and embedding spans, when `serverAddress` is set (provider endpoint host; the OpenAI integration takes it from the client's `baseURL`) |
-| `server.port` | int | generation and embedding spans, when `serverPort` is set |
+| `gen_ai.provider.name` | string | generation, `embeddings`, `execute_tool`, `retrieval`, `invoke_agent`, and `create_agent` spans, when the provider is known |
+| `gen_ai.request.model` | string | the same spans, when the model is known |
+| `gen_ai.response.model` | string | generation and `embeddings` spans, when the provider reports it |
+| `gen_ai.response.id` | string | generation spans, when the provider reports it |
+| `server.address` | string | generation and `embeddings` spans, when `serverAddress` is set. The OpenAI integration (Chat Completions, Responses, embeddings) takes it from the client's `baseURL`. |
+| `server.port` | int | generation and `embeddings` spans, when `serverPort` is set. The OpenAI integration uses the `baseURL` port, else 443 for `https` and 80 for `http`. |
 
 ### Request controls
+
+On generation spans, when the call sets them, unless noted.
 
 | Attribute | Type | Notes |
 |---|---|---|
@@ -58,133 +56,174 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.request.tool_choice` | string | |
 | `gen_ai.request.thinking.enabled` | bool | |
 | `gen_ai.request.thinking.budget_tokens` | int | |
-| `gen_ai.request.encoding_formats` | string[] | embeddings only |
-| `gen_ai.request.stream` | bool | set `true` on streaming generations (derived from `mode === 'STREAM'`) |
-| `gen_ai.output.type` | string | requested output modality: `text`, `json`, `image`, `speech` |
+| `gen_ai.request.stream` | bool | `true` on streaming generations; not written otherwise |
+| `gen_ai.output.type` | string | requested output type: `text`, `json`, `image`, or `speech`. The OpenAI integration sets `json` or `text` from `response_format` (Chat Completions) or `text.format` (Responses). |
+| `gen_ai.request.encoding_formats` | string[] | `embeddings` spans only |
+| `gen_ai.request.reasoning.level` | string | Claude Agent SDK: the `effort` option, on `invoke_agent` and the main thread's generation spans |
 
 ### Response / usage
 
-| Attribute | Type | Notes |
+| Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.response.finish_reasons` | string[] | always a single-element list mirroring `Generation.stopReason` |
-| `gen_ai.usage.input_tokens` | int | suppressed when zero |
-| `gen_ai.usage.output_tokens` | int | suppressed when zero |
-| `gen_ai.usage.cache_read.input_tokens` | int | |
-| `gen_ai.usage.cache_write.input_tokens` | int | AI SDK `cacheWrite` and Anthropic `cache_creation` both map here |
-| `gen_ai.usage.reasoning.output_tokens` | int | |
-| `gen_ai.response.time_to_first_chunk` | double (s) | streaming only; same value as the `gen_ai.client.time_to_first_token` metric |
-| `gen_ai.request.reasoning.level` | string | Claude Agent SDK: the `effort` option |
-| `gen_ai.conversation.compacted` | boolean | Claude Agent SDK: set after the CLI compacts the conversation |
-| `genai.usage.cost_usd` | double | Claude Agent SDK: the run's estimated cost, on `invoke_agent` |
-| `genai.usage.is_partial` | boolean | Claude Agent SDK: the call's usage is a mid-reply snapshot, not its final count |
+| `gen_ai.response.finish_reasons` | string[] | generation spans; a one-item list holding the stop reason |
+| `gen_ai.usage.input_tokens` | int | generation and `embeddings` spans |
+| `gen_ai.usage.output_tokens` | int | generation spans |
+| `gen_ai.usage.cache_read.input_tokens` | int | generation spans |
+| `gen_ai.usage.cache_write.input_tokens` | int | generation spans. Anthropic `cache_creation_input_tokens`, AI SDK `cacheWrite`, and OpenAI `cache_write_tokens` all map here. |
+| `gen_ai.usage.reasoning.output_tokens` | int | generation spans |
+| `gen_ai.response.time_to_first_chunk` | double (s) | streaming generation spans; same value as the `gen_ai.client.time_to_first_token` metric |
+| `gen_ai.conversation.compacted` | bool | Claude Agent SDK: `true` on the `invoke_agent` span and later generation spans once the CLI compacts the conversation |
+| `genai.usage.cost_usd` | double | Claude Agent SDK: the run's total cost as the SDK reports it, on `invoke_agent`. Left out for resumed or continued sessions. |
+| `genai.usage.is_partial` | bool | Claude Agent SDK: `true` on a generation span whose usage is a mid-reply snapshot, not the final count |
+
+On generation spans, token counts of zero are left out. The Claude Agent SDK also puts the run's token totals on its `invoke_agent` span, except for resumed or continued sessions.
 
 ### Embedding-only
 
-| Attribute | Type |
-|---|---|
-| `gen_ai.embeddings.input_count` | int |
-| `gen_ai.embeddings.input_texts` | string[] (sampled + truncated per `EmbeddingCaptureConfig`) |
-| `gen_ai.embeddings.dimension.count` | int |
+| Attribute | Type | Where |
+|---|---|---|
+| `gen_ai.embeddings.input_count` | int | when the result reports it |
+| `gen_ai.embeddings.dimension.count` | int | when the request or result gives it |
+| `gen_ai.embeddings.input_texts` | string[] | only with `embeddingCapture.captureInput: true` and a mode other than `metadata_only`. Keeps the first `maxInputItems` texts (default 20), each cut to `maxTextLength` characters (default 1024). |
 
 ### Tool-execution-only
 
-| Attribute | Type |
-|---|---|
-| `gen_ai.tool.name` | string |
-| `gen_ai.tool.call.id` | string |
-| `gen_ai.tool.type` | string |
-| `gen_ai.tool.description` | string |
-| `gen_ai.tool.call.arguments` | string (JSON) |
-| `gen_ai.tool.call.result` | string (JSON) |
+| Attribute | Type | Where |
+|---|---|---|
+| `gen_ai.tool.name` | string | when known; the span name uses `unknown` otherwise |
+| `gen_ai.tool.call.id` | string | when known |
+| `gen_ai.tool.type` | string | when known |
+| `gen_ai.tool.description` | string | when known |
+| `gen_ai.tool.call.arguments` | string (JSON) | `full` mode only |
+| `gen_ai.tool.call.result` | string (JSON) | `full` mode only |
 
 ### Retrieval-only
 
-`retrieval` spans (span kind CLIENT) model a RAG context fetch from a vector database or search system. Span name is `retrieval {gen_ai.data_source.id}`.
+`retrieval` spans record a context fetch from a vector database or search system.
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.data_source.id` | string | the data source / index / collection being queried, when known |
+| `gen_ai.data_source.id` | string | the index or collection queried, when known |
 | `gen_ai.retrieval.top_k` | int | number of documents requested, when known |
-| `gen_ai.retrieval.query.text` | string | Opt-In query text — subject to the content-capture config, stripped under `metadata_only` and `no_tool_content` |
-| `gen_ai.retrieval.documents` | string (JSON, structured document array) | Opt-In retrieved documents (`{ id?, content?, score?, metadata? }`) — same size/truncation policy as `gen_ai.input.messages`, stripped under `metadata_only` and `no_tool_content` |
-
-`gen_ai.provider.name` / `gen_ai.request.model` are emitted when the caller supplies them.
+| `gen_ai.retrieval.query.text` | string | `full` mode only |
+| `gen_ai.retrieval.documents` | string (JSON) | `full` mode only. An array of `{ id?, content?, score?, metadata? }`. |
 
 ### Agent-invocation-only
 
-`invoke_agent` spans carry the agent input and output as the standard structured content attributes (subject to the content-capture config, same size/truncation policy as generations):
+`invoke_agent` spans carry the agent's input and output, under the same content rules as generation spans:
 
-| Attribute | Type |
-|---|---|
-| `gen_ai.input.messages` | string (JSON, structured message array — from `AgentInvocationStart.input` or `recorder.setInput(Message[])`) |
-| `gen_ai.output.messages` | string (JSON, structured message array — from `recorder.setOutput(Message[])`) |
-
-### OpenAI Agents workflow
-
-Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span, above the run's `invoke_agent <name>` spans. It has no `gen_ai.agent.name`.
-
-| Attribute | Type | Notes |
+| Attribute | Type | Source |
 |---|---|---|
-| `gen_ai.operation.name` | string | `invoke_workflow`, whether the run uses one agent or several |
-| `gen_ai.workflow.name` | string | The trace name (`RunConfig.workflowName`, or the `withTrace` name); for a run given none, the agent passed to `run()` |
-| `gen_ai.conversation.id` | string | The `conversationId` passed to `run()`, else the SDK's `Trace.groupId` |
-| `error.type` | string | When the run fails |
-| `genai.metadata.<key>` | string / number / boolean | Custom; one per scalar entry in the SDK's `Trace.metadata` |
+| `gen_ai.input.messages` | string (JSON) | `AgentInvocationStart.input`, or `recorder.setInput(...)` |
+| `gen_ai.output.messages` | string (JSON) | `recorder.setOutput(...)` |
 
 ### Agent-creation-only
 
-`create_agent` spans carry the agent-identity attributes (`gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.agent.version`, `gen_ai.agent.description`), `gen_ai.provider.name` / `gen_ai.request.model` when set, and `gen_ai.operation.name = "create_agent"`. They do NOT carry `gen_ai.conversation.id` / `user.id` / input/output messages — those are per-invocation, not per-agent.
+`create_agent` spans carry `gen_ai.operation.name`, `genai.sdk.name`, the agent name, id, version, and description, and the provider and model when set. They carry no conversation id, user id, or messages, since those belong to an invocation, not to the agent.
 
-### Errors
+### OpenAI Agents workflow
 
-| Attribute | Type | Values |
-|---|---|---|
-| `error.type` | string | `provider_call_error` / `mapping_error` / `tool_execution_error` / `validation_error`, or a framework-supplied error class name (see below) |
-| `error.category` | string | `timeout` / `rate_limit` / `auth_error` / `server_error` / `client_error` / `sdk_error` |
-
-By default a recorder reports a coarse category for its own kind of work. An integration holding a more precise name from the framework can override that through `recorder.setErrorType(...)`. The OpenAI Agents integration does, so an agent span reports the SDK's own error class (`InputGuardrailTripwireTriggered`, say) where it would otherwise report a flat `provider_call_error`. It overrides only with a class-like name ending in `Error`, `Exception`, or `TripwireTriggered`; otherwise the recorder's own category stands, so free-form error text can never become an unbounded metric label.
-
-## Content capture (structured attributes)
-
-Prompt/response content is emitted as structured span attributes following the OTel GenAI semconv 1.37+ message shape. Because OpenTelemetry JS does not support nested (complex) attribute values, the structured value is JSON-encoded into a string. Content is emitted whenever the resolved capture mode is not `metadata_only` or `allow_list`. The default mode is `metadata_only`, so content is off until you opt in with `no_tool_content` or `full`.
+Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its `invoke_agent` spans. It has no agent name, no user id, and no metric.
 
 | Attribute | Type | Where |
 |---|---|---|
-| `gen_ai.system_instructions` | string (JSON) | generation spans, when a system prompt is set |
-| `gen_ai.input.messages` | string (JSON) | generation and `invoke_agent` spans |
-| `gen_ai.output.messages` | string (JSON) | generation and `invoke_agent` spans |
+| `gen_ai.operation.name` | string | `invoke_workflow`, whether the run uses one agent or several |
+| `genai.sdk.name` | string | always |
+| `gen_ai.workflow.name` | string | the trace name (`RunConfig.workflowName`, or the `withTrace` name). For a run given none, the agent passed to `run()`. |
+| `gen_ai.conversation.id` | string | the `conversationId` passed to `run()`, else the SDK's `Trace.groupId` |
+| `error.type` | string | when the run fails: the SDK's error class name, else `_OTHER` |
+| `genai.metadata.<key>` | string / number / bool | one per string, number, or boolean entry in the SDK's `Trace.metadata` |
 
-Size policy: unbounded by default — matching OpenTelemetry's own default and deferring to `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend. When `ContentCapture.maxContentLength` is set to a finite value, the JSON is trimmed at the string-leaf level so it stays valid JSON (content-bearing keys only — `content` / `arguments` / `response` / `text`; structural keys like `role` / `type` / `id` are preserved), and `${attr}.truncated` / `${attr}.original_size_bytes` markers are added.
+### Errors
 
-## Metrics (histograms)
+Set only when the operation fails.
 
-| Name | Unit | Bucket family |
+| Attribute | Type | Values |
 |---|---|---|
-| `gen_ai.client.operation.duration` | s | powers-of-2 (10ms → ~82s) |
-| `gen_ai.client.token.usage` | token | powers-of-4 (1 → 67M) |
-| `gen_ai.client.time_to_first_token` | s | powers-of-2 (streaming only, from `setFirstTokenAt` or `setTimeToFirstToken`) |
-| `gen_ai.client.tool_calls_per_operation` | count | default OTel buckets |
-| `gen_ai.client.tool_execution.duration` | s | powers-of-2 (10ms → ~82s) — isolates `gen_ai.tool.name` cardinality |
+| `error.type` | string | see below |
+| `error.category` | string | `timeout`, `rate_limit`, `auth_error`, `server_error`, `client_error`, or `sdk_error` (when nothing more specific matches). Not set on `invoke_workflow`. |
 
-`gen_ai.token.type` attribute values: `input`, `output`, `cache_read`, `cache_write`, `reasoning`. Spec well-known values are `input` / `output`; the cache and reasoning values are library extensions (permitted custom values).
+Default `error.type` by span:
 
-`gen_ai.conversation.id` is off by default on metrics because it adds one time series per conversation. Turn it on with `new Client({ metricAttributes: { conversationId: true } })`. It is then added to every data point whose operation has a conversation ID: chat, embeddings, `invoke_agent`, `execute_tool`, and retrieval. `create_agent` has no conversation ID, so its data points never carry it.
-
-`user.id` is also off by default, since it adds one time series per user. Turn it on with `new Client({ metricAttributes: { userId: true } })`. It is then added to chat, embeddings, `invoke_agent`, `execute_tool`, and retrieval data points that have a user ID. `create_agent` has no user ID, so its data points never carry it.
-
-## Span kinds
-
-| Operation | SpanKind |
+| Span | `error.type` |
 |---|---|
-| Non-streaming chat | `CLIENT` |
-| Streaming chat | `CLIENT` |
-| Embeddings | `CLIENT` |
-| Retrieval | `CLIENT` |
-| Tool execution | `INTERNAL` |
-| Agent invocation | `INTERNAL` |
-| Agent creation | `INTERNAL` |
-| Workflow invocation (OpenAI Agents run) | `INTERNAL` |
+| generation | `provider_call_error`, `mapping_error` (the response could not be read), or `validation_error` |
+| `embeddings` | `provider_call_error` or `validation_error` |
+| `execute_tool` | `tool_execution_error` |
+| `invoke_agent`, `retrieval` | `provider_call_error` |
+| `create_agent` | `validation_error` |
+
+An integration can replace the default with a more precise name through `recorder.setErrorType(...)`. The OpenAI Agents integration does this with the SDK's own error class (for example `InputGuardrailTripwireTriggered`), but only for class-like names ending in `Error`, `Exception`, or `TripwireTriggered`. Free-form error text never becomes `error.type`, so it cannot blow up metric cardinality.
+
+A failed span also gets status `ERROR` and an `exception` event. Under `metadata_only`, a failed call records no exception event and the status message is just the error category.
+
+### Span links
+
+A generation or `invoke_agent` span with `parentGenerationIds` gets a link to each parent it can resolve, with link attribute `gen_ai.relationship = "depends_on"`. A parent given as a span context always resolves. A parent given as a generation id resolves only if that generation started in the same process recently (by default within 5 minutes, set by `spanLinkMap`). Ids that do not resolve still appear in `genai.parent_generation_ids`.
+
+## Content capture
+
+Content is written as span attributes in the OTel GenAI 1.37+ structured message shape. OpenTelemetry JS has no nested attribute values, so each structured value is a JSON string. The default mode is `metadata_only`, which writes none of the attributes below. `allow_list` drops them all as well; see [content-retention.md](content-retention.md). `contentCapture.enabled: false` turns all of them off in every mode, except embedding input texts, which follow `embeddingCapture.captureInput` instead.
+
+| Attribute | Spans | `no_tool_content` | `full` |
+|---|---|---|---|
+| `gen_ai.system_instructions` | generation | yes | yes |
+| `gen_ai.input.messages` | generation, `invoke_agent` | yes, with tool arguments and results removed | yes |
+| `gen_ai.output.messages` | generation, `invoke_agent` | yes, with tool arguments and results removed | yes |
+| `gen_ai.tool.definitions` | generation, when the request lists tools (OpenAI Chat Completions and Responses, LangChain) | `type` and `name` only | adds `description` and `parameters` |
+| `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | `execute_tool` | no | yes |
+| `gen_ai.retrieval.query.text`, `gen_ai.retrieval.documents` | `retrieval` | no | yes |
+| `gen_ai.embeddings.input_texts` | `embeddings` | yes, if `embeddingCapture.captureInput` is on | same |
+
+Size: no limit by default, so OpenTelemetry's `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and your backend decide. Set `contentCapture.maxContentLength` to cap each value:
+
+- Message, system instruction, and document attributes stay valid JSON. Text values (`content`, `arguments`, `response`, `text`) are shortened first, and structural fields such as `role`, `type`, and `id` are kept. If that is not enough, whole entries are dropped: the oldest messages, or the lowest-ranked documents.
+- Tool definitions drop `parameters`, then `description`, then whole entries from the end.
+- Plain string values (tool arguments and results, the retrieval query) are cut using `contentCapture.truncationStrategy` (`middle`, `end`, or `head_tail`).
+
+A cut value also gets `<attribute>.truncated = true` and `<attribute>.original_size_bytes`.
+
+## Metrics
+
+All five are histograms.
+
+| Name | Unit | Recorded for | Buckets |
+|---|---|---|---|
+| `gen_ai.client.operation.duration` | s | generation, `embeddings`, `invoke_agent`, `create_agent`, `retrieval` | powers of 2, 0.01 s to 81.92 s |
+| `gen_ai.client.token.usage` | token | generation (all token types), `embeddings` (`input` only); counts of zero are not recorded | powers of 4, 1 to 67,108,864 |
+| `gen_ai.client.time_to_first_token` | s | streaming generations, from `setFirstTokenAt` or `setTimeToFirstToken` | powers of 2, 0.01 s to 81.92 s |
+| `gen_ai.client.tool_calls_per_operation` | count | every generation, including zero | OTel SDK default |
+| `gen_ai.client.tool_execution.duration` | s | `execute_tool` (kept separate so `gen_ai.tool.name` does not multiply the other series) | powers of 2, 0.01 s to 81.92 s |
+
+Attributes on each data point:
+
+| Attribute | On |
+|---|---|
+| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.agent.name` | every metric |
+| `error.type`, `error.category` | `operation.duration` and `tool_execution.duration` |
+| `gen_ai.tool.name` | `tool_execution.duration` |
+| `gen_ai.token.type` | `token.usage`: `input`, `output`, `cache_read`, `cache_write`, or `reasoning` |
+| `gen_ai.conversation.id` | opt-in, see below |
+| `user.id` | opt-in, see below |
+
+The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
+
+`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `execute_tool`, and `retrieval`. `create_agent` data points never carry them.
+
+## Span kinds and names
+
+| Operation | SpanKind | Span name |
+|---|---|---|
+| Generation (streaming or not) | `CLIENT` | `{operation} {model}` |
+| Embeddings | `CLIENT` | `embeddings {model}` |
+| Retrieval | `CLIENT` | `retrieval {data source id}` |
+| Tool execution | `INTERNAL` | `execute_tool {tool name}` |
+| Agent invocation | `INTERNAL` | `invoke_agent {agent name}` |
+| Agent creation | `INTERNAL` | `create_agent {agent name}` |
+| Workflow (OpenAI Agents run) | `INTERNAL` | `invoke_workflow {workflow name}` |
+
+When the second part is empty, the name is the operation alone (tool spans use `execute_tool unknown`).
 
 ## Instrumentation scope
 
-Spans and metrics from a `Client` you create are emitted under the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai-agents`, unless you pass them a `client`.
+Spans and metrics from a `Client` you create use the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai-agents`, unless you pass them a `client`.

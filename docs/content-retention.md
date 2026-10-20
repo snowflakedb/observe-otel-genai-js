@@ -27,41 +27,43 @@ import { withContentCaptureMode } from '@genai-otel/core';
 await withContentCaptureMode('allow_list', () => handleRequest(req));
 ```
 
-`allow_list` follows the same order as the other modes: per call, then the
-ambient scope, then the client. So a call or scope that picks another mode
-overrides a client-level `allow_list`. Integrations pass their own
-`contentCapture` option per call, so leave it unset there.
+There is no environment variable for it.
 
-An integration's own `contentCapture` option covers only the spans that
-integration opens. With the OpenAI Agents SDK, the `chat` spans on the OpenAI
-model paths come from `OpenAIInstrumentation`, so setting `allow_list` only on
+`allow_list` follows the same order as the other modes: the call's own
+`contentCapture` option, then the scope, then the client. A call or scope that
+picks another mode overrides a client-level `allow_list`, so leave the
+integrations' `contentCapture` option unset.
+
+That option also covers only the spans its own integration opens. With the
+OpenAI Agents SDK, the `chat` spans on the OpenAI model paths come from
+`OpenAIInstrumentation`, so setting `allow_list` only on
 `OpenAIAgentsInstrumentation` leaves them unfiltered. Set it on the client.
 
-Only the mode in effect when a span starts counts. Open
-`withContentCaptureMode('allow_list', ...)` before the call that starts the
-span: a span that started inside the scope stays filtered even if it ends after
-the scope has exited, and a span that started before the scope is not filtered.
-
-A stream or async iterator, such as the Claude Agent SDK's `wrapQuery`, starts
-spans as its messages arrive, so keep the scope open until it is fully
-consumed. If you cannot, set `contentCaptureMode: 'allow_list'` on the client
-instead.
+The mode in effect when a span starts decides whether it is filtered. A span
+started inside `withContentCaptureMode('allow_list', ...)` stays filtered even
+if it ends after the scope exits; a span started before the scope is not
+filtered. So open the scope before the call that starts the span. The Claude
+Agent SDK's `wrapQuery` records every span in the context its `query()` was
+called in, so wrapping that call is enough, even if you read the stream later.
+If you cannot keep every span inside the scope, set the mode on the client.
 
 ## What is kept
 
 Only attributes whose key appears, exactly, on the list. There are no prefixes
-or wildcards. The list is exported from the package as `CONTENT_ALLOW_LIST`,
-and defined in
-[`src/content/allow-list.ts`](https://github.com/Snowflake-Labs/observe-otel-genai-js/blob/main/src/content/allow-list.ts).
+or wildcards. The list is exported from the package as `CONTENT_ALLOW_LIST`.
 
-In short, the list covers:
+In short, it covers:
 
-- which operation ran, on which provider and model, and the SDK name;
+- which operation ran, on which provider, model, and server, and the SDK name;
 - token counts;
-- request settings such as temperature, max tokens, seed, and tool choice;
+- request settings: temperature, top-p, max tokens, penalties, seed, choice
+  count, tool choice, thinking settings, streaming, output type, and embedding
+  encoding formats;
 - response id, response model, and finish reasons;
-- agent, tool, and conversation ids and names, and the user id;
-- error type and error category.
+- agent name, id, version, and description;
+- tool name, call id, type, and description;
+- conversation id, turn index and role, user id, and generation ids;
+- error type, error category, and exception type.
 
 ## What is dropped
 
@@ -72,38 +74,44 @@ In short, the list covers:
   sequences.
 - **Exception details**: a failed call still gets an exception event, but it
   keeps only `exception.type` (the error code if it has one, otherwise the error
-  class name, which is what OpenTelemetry records). The message and stack trace
-  are dropped, because they can quote the input that caused the error. The same
-  applies to exceptions your own code records on the span. (`metadata_only`
-  records no exception event of its own, but leaves ones your code records
-  untouched.)
+  class name, as OpenTelemetry records it). The message and stack trace are
+  dropped, because they can quote the input that caused the error. The same
+  applies to exceptions your own code records on the span.
 - **Status message**: the status code (OK or ERROR) is kept, the message is
   dropped.
 - **Everything else not on the list.** Today that includes some metadata the
-  library emits but that has not been through privacy review yet, for example
-  time to first chunk and cost.
+  library emits that has not been through privacy review yet: time to first
+  chunk, cost, partial-usage and compaction flags, reasoning level, embedding
+  input and dimension counts, retrieval data source and top-k, the OpenAI Agents
+  workflow name and `genai.metadata.*` entries, and the `gen_ai.relationship`
+  attribute on span links.
 
 The filter applies to span attributes, event attributes, and link attributes,
-on every span type: `chat`, `embeddings`, `execute_tool`, `retrieval`,
-`invoke_agent`, and `create_agent`. It also covers writes that do not come from
-the library: `rec.setAttributes(...)`, and `trace.getActiveSpan()` inside an
+on every span the library creates: `chat`, `embeddings`, `execute_tool`,
+`retrieval`, `invoke_agent`, `create_agent`, and the OpenAI Agents
+`invoke_workflow` span. It also covers writes that do not come from the
+library: `rec.setAttributes(...)`, and `trace.getActiveSpan()` inside an
 `invokeAgent` / `createAgent` callback or `rec.withActiveContext(...)`, where the
 active span is the filtered one.
 
 ## The list is fixed
 
-There is no environment variable and no way to add keys at runtime. Changing
-the list means editing `src/content/allow-list.ts`, and needs a privacy review.
+There is no way to add keys at runtime. Changing the list means editing
+[`src/content/allow-list.ts`](https://github.com/Snowflake-Labs/observe-otel-genai-js/blob/main/src/content/allow-list.ts),
+and needs a privacy review.
 
 ## What it does not cover
 
-- **Metrics.** Histogram labels are a fixed set (operation, provider, model,
-  agent name, tool name, token type, error type and category), all on the list,
-  so they are not filtered at runtime. A test fails if a label outside the list
-  is added.
-- **Span names.** Names such as `chat gpt-4o`, `execute_tool search`, or
-  `invoke_agent planner` are built from the operation, model, tool, and agent
-  names, and are not filtered. Do not put user content in tool or agent names.
+- **Metrics.** Metric attributes are a fixed set (operation, provider, model,
+  agent name, tool name, token type, error type and category, and the opt-in
+  conversation id and user id), all on the list, so they are not filtered at
+  runtime. A test fails if a metric attribute outside the list is added.
+- **Span names.** Names such as `chat gpt-4o`, `execute_tool search`,
+  `invoke_agent planner`, `retrieval docs-index`, or `invoke_workflow
+  support-flow` are built from the operation, model, tool, agent, data source,
+  and workflow names, and are not filtered. The data source and workflow names
+  stay in the span name even though their attributes are dropped. Do not put
+  user content in any of these names.
 - **Resource attributes** such as `service.name`. Your OpenTelemetry setup
   sets these, not this library.
 - **Spans from other libraries**: HTTP or database instrumentation, or a
