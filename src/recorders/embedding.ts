@@ -96,6 +96,7 @@ export class EmbeddingRecorder extends RecorderBase {
       requestModel: this.seed.model.name,
       agentName: this.seed.agentName ?? '',
       conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
     };
     const durationSeconds = Math.max(0, (completedAtMs - this.startedAtMs) / 1000);
     this.host.metrics.recordOperationDuration(durationSeconds, {

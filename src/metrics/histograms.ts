@@ -25,8 +25,8 @@
  * Skip-on-zero rule: `recordTokenUsage` is a no-op when `value === 0` so
  * `cache_read=0` (etc.) never bloats time-series cardinality.
  *
- * `gen_ai.conversation.id` is added only when the client opts in through
- * `metricAttributes.conversationId`.
+ * `gen_ai.conversation.id` and `user.id` are added only when the client opts in
+ * through `metricAttributes.conversationId` and `metricAttributes.userId`.
  */
 
 import type { Attributes, Histogram, Meter } from '@opentelemetry/api';
@@ -40,6 +40,7 @@ import {
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_TOOL_NAME,
+  ATTR_USER_ID,
   DURATION_BUCKETS_SECONDS,
   METRIC_ATTR_TOKEN_TYPE,
   METRIC_OPERATION_DURATION,
@@ -57,6 +58,7 @@ export interface OperationLabels {
   requestModel: string;
   agentName: string;
   conversationId?: string;
+  userId?: string;
 }
 
 export interface DurationLabels extends OperationLabels {
@@ -70,6 +72,7 @@ export interface ToolDurationLabels {
   toolName: string;
   agentName: string;
   conversationId?: string;
+  userId?: string;
   errorType: string;
   errorCategory: string;
 }
@@ -82,7 +85,10 @@ export class GenAIMetrics {
   readonly toolExecutionDuration: Histogram;
   private readonly attributes: MetricAttributesConfig;
 
-  constructor(meter: Meter, attributes: MetricAttributesConfig = { conversationId: false }) {
+  constructor(
+    meter: Meter,
+    attributes: MetricAttributesConfig = { conversationId: false, userId: false },
+  ) {
     this.attributes = attributes;
     this.operationDuration = meter.createHistogram(METRIC_OPERATION_DURATION, {
       unit: 's',
@@ -169,10 +175,14 @@ export class GenAIMetrics {
     });
   }
 
-  private optionalAttributes(labels: { conversationId?: string }): Attributes {
+  private optionalAttributes(labels: { conversationId?: string; userId?: string }): Attributes {
+    const attributes: Attributes = {};
     if (this.attributes.conversationId && labels.conversationId) {
-      return { [ATTR_CONVERSATION_ID]: labels.conversationId };
+      attributes[ATTR_CONVERSATION_ID] = labels.conversationId;
     }
-    return {};
+    if (this.attributes.userId && labels.userId) {
+      attributes[ATTR_USER_ID] = labels.userId;
+    }
+    return attributes;
   }
 }

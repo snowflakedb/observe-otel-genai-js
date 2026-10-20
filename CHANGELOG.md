@@ -10,6 +10,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Core: opt-in `user.id` on metrics. Set
+  `new Client({ metricAttributes: { userId: true } })` to add it to every histogram
+  data point whose operation has a user id. Off by default, since each user becomes
+  its own time series.
 - Tool, retrieval and embedding spans now carry `user.id`, and embedding spans
   `gen_ai.conversation.id`. `startToolExecution`, `startRetrieval` and
   `startEmbedding` accept `userId`; `startEmbedding` also accepts `conversationId`.

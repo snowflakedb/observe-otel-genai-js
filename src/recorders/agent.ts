@@ -133,6 +133,7 @@ export class AgentInvocationRecorder extends RecorderBase {
       requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName ?? '',
       conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

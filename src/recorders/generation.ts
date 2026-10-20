@@ -278,6 +278,7 @@ export class GenerationRecorder extends RecorderBase {
       requestModel: generation.model?.name ?? '',
       agentName: generation.agentName ?? '',
       conversationId: generation.conversationId,
+      userId: generation.userId,
     };
 
     this.host.metrics.recordOperationDuration(durationSeconds, {

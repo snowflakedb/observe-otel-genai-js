@@ -55,11 +55,13 @@ export interface EmbeddingCaptureConfig {
 /**
  * Optional attributes added to every metric data point. All are off by default
  * because each one is high-cardinality: turning on `conversationId` adds a new
- * time series per conversation to every histogram.
+ * time series per conversation to every histogram, and `userId` one per user.
  */
 export interface MetricAttributesConfig {
   /** Add `gen_ai.conversation.id` when the operation has one. */
   conversationId: boolean;
+  /** Add `user.id` when the operation has one. */
+  userId: boolean;
 }
 
 /**
@@ -162,6 +164,7 @@ export function defaultConfig(): ResolvedClientConfig {
     },
     metricAttributes: {
       conversationId: false,
+      userId: false,
     },
   };
 }

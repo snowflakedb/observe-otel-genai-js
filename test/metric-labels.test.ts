@@ -32,6 +32,7 @@ import {
 } from '@opentelemetry/sdk-metrics';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ClientConfig } from '../src/config.js';
+import { withUserId } from '../src/context.js';
 import { type Harness, createHarness } from './_harness.js';
 
 function findMetric(rm: ResourceMetrics, name: string): HistogramMetricData | undefined {
@@ -182,5 +183,84 @@ describe('conversation id on metrics', () => {
     for (const attrs of all.flatMap((m) => m.dataPoints.map((p) => p.attributes))) {
       expect(attrs).not.toHaveProperty('gen_ai.conversation.id');
     }
+  });
+});
+
+describe('user id on metrics', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.shutdown();
+    h = undefined;
+  });
+
+  async function recordOneOfEach(config?: ClientConfig, userId = 'user-1') {
+    h = createHarness(config);
+    const gen = h.client.startStreamingGeneration({
+      model: { provider: 'openai', name: 'gpt-4o' },
+      userId,
+    });
+    gen.setFirstTokenAt(Date.now() + 5);
+    gen.setResult({ usage: { inputTokens: 10, outputTokens: 5 } });
+    await gen.end();
+    await h.client.startToolExecution({ toolName: 'search', userId }).end();
+    await h.client.invokeAgent({ agentName: 'planner', userId }).end();
+    await h.client.startRetrieval({ dataSourceId: 'docs', userId }).end();
+    await h.client.startEmbedding({ model: { provider: 'openai', name: 'embed-3' }, userId }).end();
+
+    const metrics = await h.collectMetrics();
+    return metrics[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
+  }
+
+  const points = (all: Awaited<ReturnType<typeof recordOneOfEach>>) =>
+    all.flatMap((m) => m.dataPoints.map((p) => p.attributes));
+
+  it('is left off by default', async () => {
+    const all = await recordOneOfEach();
+    expect(points(all).length).toBeGreaterThan(0);
+    for (const attrs of points(all)) expect(attrs).not.toHaveProperty('user.id');
+  });
+
+  it('is added to every metric when the client opts in', async () => {
+    const all = await recordOneOfEach({ metricAttributes: { userId: true } });
+    expect(all.map((m) => m.descriptor.name).sort()).toEqual([
+      'gen_ai.client.operation.duration',
+      'gen_ai.client.time_to_first_token',
+      'gen_ai.client.token.usage',
+      'gen_ai.client.tool_calls_per_operation',
+      'gen_ai.client.tool_execution.duration',
+    ]);
+    for (const m of all) {
+      for (const p of m.dataPoints)
+        expect(p.attributes['user.id'], m.descriptor.name).toBe('user-1');
+    }
+  });
+
+  it('is omitted when the operation has no user id', async () => {
+    const all = await recordOneOfEach({ metricAttributes: { userId: true } }, '');
+    for (const attrs of points(all)) expect(attrs).not.toHaveProperty('user.id');
+  });
+
+  it('takes the user id from the scope, the agent above, or the client', async () => {
+    h = createHarness({ metricAttributes: { userId: true }, userId: 'client-user' });
+    await withUserId('scoped-user', () =>
+      h!.client.startToolExecution({ toolName: 'from-scope' }).end(),
+    );
+    await h.client.invokeAgent({ agentName: 'planner', userId: 'agent-user' }, () =>
+      h!.client.startToolExecution({ toolName: 'from-agent' }).end(),
+    );
+    await h.client.startToolExecution({ toolName: 'from-client' }).end();
+
+    const metrics = await h.collectMetrics();
+    const tool = metrics[0]!.scopeMetrics
+      .flatMap((sm) => sm.metrics)
+      .find((m) => m.descriptor.name === 'gen_ai.client.tool_execution.duration')!;
+    const byTool = Object.fromEntries(
+      tool.dataPoints.map((p) => [p.attributes['gen_ai.tool.name'], p.attributes['user.id']]),
+    );
+    expect(byTool).toEqual({
+      'from-scope': 'scoped-user',
+      'from-agent': 'agent-user',
+      'from-client': 'client-user',
+    });
   });
 });
