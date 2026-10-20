@@ -16,8 +16,16 @@
  */
 
 import { trace } from '@opentelemetry/api';
-import { generateObject, generateText, registerTelemetry, streamText, tool } from 'ai';
-import { MockLanguageModelV3 } from 'ai/test';
+import {
+  APICallError,
+  embed,
+  generateObject,
+  generateText,
+  registerTelemetry,
+  streamText,
+  tool,
+} from 'ai';
+import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -403,8 +411,131 @@ describe('genaiTelemetryIntegration', () => {
     await expect(generateText({ model, prompt: 'hi', maxRetries: 0 })).rejects.toThrow(
       'provider boom',
     );
+    expect(oneByName(h, 'invoke_agent')?.status.code).toBe(2 /* ERROR */);
+    expect(oneByName(h, 'chat')?.status.code).toBe(2 /* ERROR */);
+    expect(h.openSpanCount()).toBe(0);
+  });
+
+  it('does not mark a call as failed when its model call succeeds on retry', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    let attempts = 0;
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-retry',
+      doGenerate: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new APICallError({
+            message: 'rate limited',
+            url: 'https://example.test',
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { 'retry-after-ms': '0' },
+            isRetryable: true,
+          });
+        }
+        return {
+          content: [{ type: 'text', text: 'hello' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(3, 1),
+          warnings: [],
+        };
+      },
+    });
+
+    await generateText({ model, prompt: 'hi', maxRetries: 1 });
+
+    expect(attempts).toBe(2);
+    expect(oneByName(h, 'invoke_agent')?.status.code).not.toBe(2);
+    const chat = oneByName(h, 'chat');
+    expect(chat?.status.code).not.toBe(2);
+    expect(chat?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(1);
+  });
+
+  it('records the error of an operation that fails outside the model call', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await expect(
+      generateText({
+        model: textStreamModel('unused'),
+        prompt: 'hi',
+        prepareStep: () => {
+          throw new Error('prepare boom');
+        },
+      }),
+    ).rejects.toThrow('prepare boom');
+
     const agent = oneByName(h, 'invoke_agent');
     expect(agent?.status.code).toBe(2 /* ERROR */);
+    expect(agent?.status.message).toBe('prepare boom');
+  });
+
+  it('records the error on the call that failed while another call is running', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowModel = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-slow',
+      doGenerate: async () => {
+        await released;
+        return {
+          content: [{ type: 'text', text: 'fine' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        };
+      },
+    });
+    const ok = generateText({
+      model: slowModel,
+      prompt: 'a',
+      telemetry: { functionId: 'ok-agent' } as never,
+    });
+
+    await expect(
+      generateText({
+        model: textStreamModel('unused'),
+        prompt: 'b',
+        telemetry: { functionId: 'bad-agent' } as never,
+        prepareStep: () => {
+          throw new Error('prepare boom');
+        },
+      }),
+    ).rejects.toThrow('prepare boom');
+    release();
+    await ok;
+
+    const agents = byName(h, 'invoke_agent');
+    expect(agents.map((s) => s.name).sort()).toEqual([
+      'invoke_agent bad-agent',
+      'invoke_agent ok-agent',
+    ]);
+    const bad = agents.find((s) => s.name === 'invoke_agent bad-agent');
+    const good = agents.find((s) => s.name === 'invoke_agent ok-agent');
+    expect(bad?.status).toMatchObject({ code: 2, message: 'prepare boom' });
+    expect(good?.status.code).not.toBe(2);
+  });
+
+  it('leaves embed untraced, whether it succeeds or fails', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = (fail: boolean) =>
+      new MockEmbeddingModelV3({
+        provider: 'mock',
+        modelId: 'mock-embed',
+        doEmbed: async ({ values }: { values: string[] }) => {
+          if (fail) throw new Error('embed boom');
+          return { embeddings: values.map(() => [0.1]), usage: { tokens: 1 }, warnings: [] };
+        },
+      });
+
+    await embed({ model: model(false), value: 'hi' });
+    await expect(embed({ model: model(true), value: 'hi', maxRetries: 0 })).rejects.toThrow(
+      'embed boom',
+    );
+
+    expect(h.spans.getFinishedSpans()).toEqual([]);
   });
 });
 

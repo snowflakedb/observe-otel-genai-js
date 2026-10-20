@@ -144,7 +144,9 @@ export interface AiChunkEvent {
   chunk: { type: string; text?: string };
 }
 
+/** `onError` event (AI SDK v7). The SDK types it as `unknown` but passes `{ callId, error }`. */
 export interface AiErrorEvent {
+  callId: string;
   error: unknown;
 }
 

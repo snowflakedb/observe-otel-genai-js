@@ -151,10 +151,10 @@ What gets recorded:
 - One `invoke_agent` span per call, one `chat` span per step (`generate_content` for `generateObject`), and one `execute_tool` span per tool call.
 - Concurrent calls stay in separate trees.
 - Work inside a tool, such as HTTP calls or a nested `generateText`, nests under that tool's `execute_tool` span. A nested `generateText` gets its own `invoke_agent` span there.
-- A failed model call marks the `invoke_agent` span as an error.
+- A failed call marks the `invoke_agent` span as an error, whether the model call failed or something around it, such as `prepareStep`. A model call that fails and then succeeds on retry is not an error.
 - The AI SDK's `telemetry.recordInputs: false` and `recordOutputs: false` drop inputs and outputs, whatever the content capture mode.
 
-Limits: the integration records no request parameters (`temperature` and the like), no time to first token and no tool definitions, and does not trace `embed` or `embedMany`. Use the wrappers for those.
+Limits: the integration records no request parameters (`temperature` and the like), no time to first token and no tool definitions, and does not trace `embed`, `embedMany` or `rerank`. Use `wrapEmbed` and `wrapEmbedMany` to trace embeddings; `rerank` has no wrapper.
 
 ### Wrappers
 

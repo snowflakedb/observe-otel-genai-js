@@ -46,6 +46,7 @@ import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import { OP_CHAT, OP_GENERATE_CONTENT, type OperationName } from '../../semconv.js';
 import {
   type AiAbortEvent,
+  type AiErrorEvent,
   type AiObjectStepEndEvent,
   type AiObjectStepStartEvent,
   type AiOperationEndEvent,
@@ -68,6 +69,14 @@ import {
 
 type GenerationRec = ReturnType<Client['startStreamingGeneration']>;
 type ToolRec = ReturnType<Client['startToolExecution']>;
+
+/** AI SDK operations that get an `invoke_agent` span; `embed`, `embedMany` and `rerank` do not. */
+const TRACED_OPERATIONS = new Set([
+  'ai.generateText',
+  'ai.streamText',
+  'ai.generateObject',
+  'ai.streamObject',
+]);
 
 /** Event fields the {@link DeriveOptions} mapper reads to build per-turn identity. */
 export interface DeriveOptionsEvent {
@@ -142,6 +151,7 @@ class GenaiTelemetry {
   ) {}
 
   onStart(event: AiOperationStartEvent): void {
+    if (!event.operationId || !TRACED_OPERATIONS.has(event.operationId)) return;
     const deriveEvent: DeriveOptionsEvent = {
       functionId: (event as { functionId?: string }).functionId,
       runtimeContext: event.runtimeContext,
@@ -312,21 +322,6 @@ class GenaiTelemetry {
   }
 
   /**
-   * Runs the provider model call, attributing failures to the op that owns
-   * `callId` (the only error signal that carries a callId — `onError` does
-   * not). Rethrows so the SDK's own error flow is unaffected.
-   */
-  async executeLanguageModelCall<T>(callId: string, execute: () => PromiseLike<T>): Promise<T> {
-    try {
-      return await execute();
-    } catch (err) {
-      const op = this.ops.get(callId);
-      if (op) await this.closeOp(callId, op, err);
-      throw err;
-    }
-  }
-
-  /**
    * Runs `tool.execute` with the matching `execute_tool` span installed as the
    * active OTel span. The AI SDK calls this between `onToolExecutionStart` and
    * `onToolExecutionEnd`, so the recorder is already in `op.tools`. Without this,
@@ -347,17 +342,10 @@ class GenaiTelemetry {
     return await rec.withActiveContext(() => execute());
   }
 
-  /**
-   * Best-effort fallback for the untyped `onError` (no callId): if exactly one
-   * operation is open, attribute the error to it. With zero or multiple open
-   * operations the error cannot be safely attributed and is skipped (the
-   * per-call `executeLanguageModelCall` path already covers model failures).
-   */
-  async onError(error: unknown): Promise<void> {
-    if (this.ops.size !== 1) return;
-    const entry = [...this.ops][0];
-    if (!entry) return;
-    await this.closeOp(entry[0], entry[1], error);
+  async onError(event: AiErrorEvent): Promise<void> {
+    const op = this.get(event.callId);
+    if (!op) return;
+    await this.closeOp(event.callId, op, event.error);
   }
 
   // --- internals ---
@@ -508,9 +496,7 @@ export function genaiTelemetryIntegration(
     onObjectStepEnd: (e) => impl.onObjectStepEnd(e as unknown as AiObjectStepEndEvent),
     onEnd: (e) => impl.onEnd(e as unknown as AiOperationEndEvent),
     onAbort: (e) => impl.onAbort(e as unknown as AiAbortEvent),
-    onError: (e) => impl.onError(e),
-    executeLanguageModelCall: ({ callId, execute }) =>
-      impl.executeLanguageModelCall(callId, execute),
+    onError: (e) => impl.onError(e as AiErrorEvent),
     executeTool: ({ callId, toolCallId, execute }) => impl.executeTool(callId, toolCallId, execute),
   };
 }
