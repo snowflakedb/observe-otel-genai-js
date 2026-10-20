@@ -69,7 +69,7 @@ import {
   normalizeAiSdkProviderName,
 } from './_model.js';
 
-type GenerationRec = ReturnType<Client['startStreamingGeneration']>;
+type GenerationRec = ReturnType<Client['startGeneration']>;
 type ToolRec = ReturnType<Client['startToolExecution']>;
 
 /** AI SDK operations that get an `invoke_agent` span; `embed`, `embedMany` and `rerank` do not. */
@@ -79,6 +79,9 @@ const TRACED_OPERATIONS = new Set([
   'ai.generateObject',
   'ai.streamObject',
 ]);
+
+/** Operations whose steps are recorded as streamed (`gen_ai.request.stream: true`). */
+const STREAMED_OPERATIONS = new Set(['ai.streamText', 'ai.streamObject']);
 
 /** Event fields the {@link DeriveOptions} mapper reads to build per-turn identity. */
 export interface DeriveOptionsEvent {
@@ -134,6 +137,7 @@ interface StepState {
 interface OpState {
   agent?: AgentInvocationRecorder;
   options: VercelAdapterOptions;
+  streamed: boolean;
   steps: Map<number, StepState>;
   latestStep?: StepState;
   tools: Map<string, ToolRec>;
@@ -189,6 +193,7 @@ class GenaiTelemetry {
     this.ops.set(event.callId, {
       agent,
       options,
+      streamed: STREAMED_OPERATIONS.has(event.operationId),
       steps: new Map(),
       tools: new Map(),
       closed: false,
@@ -371,18 +376,19 @@ class GenaiTelemetry {
     model: { provider: string; modelId: string },
     extra: { operationName: OperationName; systemPrompt?: string; input: Message[] },
   ): void {
-    const create = () =>
-      this.client.startStreamingGeneration({
-        model: modelRefFromAi(model),
-        operationName: extra.operationName,
-        ...identityFields(op.options),
-        startedAt: this.client.now(),
-        systemPrompt: extra.systemPrompt,
-        tags: op.options.tags,
-        metadata: op.options.metadata,
-        parentGenerationIds: op.options.parentGenerationIds,
-      });
-    const rec = this.underAgent(op, create);
+    const seed = {
+      model: modelRefFromAi(model),
+      operationName: extra.operationName,
+      ...identityFields(op.options),
+      startedAt: this.client.now(),
+      systemPrompt: extra.systemPrompt,
+      tags: op.options.tags,
+      metadata: op.options.metadata,
+      parentGenerationIds: op.options.parentGenerationIds,
+    };
+    const rec = this.underAgent(op, () =>
+      op.streamed ? this.client.startStreamingGeneration(seed) : this.client.startGeneration(seed),
+    );
     if (extra.input.length > 0) rec.setResult({ input: extra.input });
     const step: StepState = { rec, closedToolCallIds: new Set() };
     op.steps.set(stepNumber, step);

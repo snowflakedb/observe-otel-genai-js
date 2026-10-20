@@ -22,6 +22,7 @@ import {
   generateObject,
   generateText,
   registerTelemetry,
+  streamObject,
   streamText,
   tool,
 } from 'ai';
@@ -39,6 +40,7 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
+  ATTR_REQUEST_STREAM,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
@@ -418,6 +420,59 @@ describe('genaiTelemetryIntegration', () => {
     expect(oneByName(h, 'execute_tool')?.parentSpanContext?.spanId).toBe(
       agent!.spanContext().spanId,
     );
+  });
+
+  it('marks steps as streamed only for streamText and streamObject', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-both',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+      doStream: textStreamModel('{"ok":true}').doStream,
+    });
+    const schema = z.object({ ok: z.boolean() });
+
+    await generateText({ model, prompt: 'a', telemetry: { functionId: 'gen-text' } as never });
+    await drain(
+      streamText({ model, prompt: 'b', telemetry: { functionId: 'stream-text' } as never }),
+    );
+    await generateObject({
+      model,
+      schema,
+      prompt: 'c',
+      telemetry: { functionId: 'gen-obj' } as never,
+    });
+    const streamed = streamObject({
+      model,
+      schema,
+      prompt: 'd',
+      telemetry: { functionId: 'stream-obj' } as never,
+    });
+    for await (const _ of streamed.partialObjectStream) {
+      /* drain */
+    }
+    await streamed.object;
+
+    const streamFlag = Object.fromEntries(
+      h.spans
+        .getFinishedSpans()
+        .filter((s) => !s.name.startsWith('invoke_agent'))
+        .map((s) => [
+          s.attributes['gen_ai.agent.name'],
+          s.attributes[ATTR_REQUEST_STREAM] === true,
+        ]),
+    );
+    expect(streamFlag).toEqual({
+      'gen-text': false,
+      'stream-text': true,
+      'gen-obj': false,
+      'stream-obj': true,
+    });
   });
 
   it('captures a generate_content span for generateObject', async () => {
