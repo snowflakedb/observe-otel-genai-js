@@ -1,32 +1,26 @@
 # @genai-otel/core
 
-A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) support. The core has no proprietary payloads, no library-owned network, and no background threads (the optional `bootstrap` submodule does run the standard OTel batch processors).
+OpenTelemetry tracing and metrics for AI agents, following the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
 
-> Design rationale and decisions: [`docs/blueprint.md`](docs/blueprint.md).
+The library records a span for each model call, embedding, tool call, retrieval, agent run and agent creation, plus five GenAI histograms (operation duration, token usage, time to first token, tool calls per operation, tool execution duration). It writes through the standard OpenTelemetry API, so the data goes wherever your app's exporter sends it: Observe, Tempo, Honeycomb, Jaeger, Datadog, or any other OTLP backend.
 
-## What it is
+The core entry point depends only on `@opentelemetry/api`. It does not register providers, open network connections, or start background work; your OpenTelemetry setup does that. If you have no setup yet, the optional `@genai-otel/core/bootstrap` helper creates one for you.
 
-A thin recorder/lifecycle layer that emits **6 span kinds + 5 histograms** with the GenAI semantic-conventions attribute set. Drop it into any app that already uses OpenTelemetry and ship the resulting telemetry to whichever backend the host app's OTLP exporter targets (Observe, Tempo, Honeycomb, Jaeger, Datadog, ...).
+## Install
 
-The library does **not**:
+Requires Node.js 22 or later. The package ships both ESM and CommonJS.
 
-- Import from `@opentelemetry/sdk-*` in its core entry point.
-- Own a transport, queue, batch thread, or proto.
-- Register tracer/meter providers (the host app does that).
-- Enforce policies, ship custom payloads, or send anything to a proprietary ingest server.
-
-## Quickstart
+If your app already sets up OpenTelemetry:
 
 ```bash
-pnpm add @genai-otel/core @opentelemetry/api @opentelemetry/context-async-hooks
+pnpm add @genai-otel/core @opentelemetry/api
 ```
 
-If you want the library to set up OTel providers for you (recommended for getting started):
+If you want the library to set up OpenTelemetry for you (easiest way to start), also add the SDK packages the bootstrap helper uses:
 
 ```bash
 pnpm add @genai-otel/core \
   @opentelemetry/api \
-  @opentelemetry/context-async-hooks \
   @opentelemetry/sdk-trace-base \
   @opentelemetry/sdk-trace-node \
   @opentelemetry/sdk-metrics \
@@ -36,131 +30,75 @@ pnpm add @genai-otel/core \
   @opentelemetry/semantic-conventions
 ```
 
+## Quickstart
+
+This traces OpenAI SDK calls (`pnpm add openai` first) and sends them over OTLP.
+
 ```ts
 import { Client } from '@genai-otel/core';
 import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { wrapOpenAI } from '@genai-otel/core/openai';
+import OpenAI from 'openai';
 
-// Set up OTel providers from OTEL_EXPORTER_OTLP_* env vars.
+// Sends traces and metrics to OTEL_EXPORTER_OTLP_ENDPOINT.
 const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
 
-// Records metadata only; see "Content capture and privacy" to export messages.
-await using client = new Client();
+const client = new Client();
+const openai = wrapOpenAI(client, new OpenAI());
 
-await using rec = client.startGeneration({
-  model: { provider: 'openai', name: 'gpt-4o' },
-  conversationId: 'conv-1',
-  agentName: 'planner',
-  maxTokens: 512,
-  temperature: 0.2,
+const resp = await openai.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{ role: 'user', content: 'What is OpenTelemetry?' }],
 });
+console.log(resp.choices[0]?.message.content);
 
-const resp = await openai.chat.completions.create({ /* ... */ });
-
-rec.setResult({
-  input: inputMessages,
-  output: outputMessages,
-  usage: {
-    inputTokens: resp.usage?.prompt_tokens ?? 0,
-    outputTokens: resp.usage?.completion_tokens ?? 0,
-  },
-  responseId: resp.id,
-  responseModel: resp.model,
-  stopReason: resp.choices[0]?.finish_reason ?? '',
-});
-
-// `await using` calls end() automatically on scope exit.
+// Export what is still buffered before the process exits.
+await tracerProvider.shutdown();
+await meterProvider.shutdown();
 ```
 
-## Environment
+Run it with `OTEL_EXPORTER_OTLP_ENDPOINT` set to your backend's OTLP/HTTP endpoint, and `OTEL_EXPORTER_OTLP_HEADERS` if the backend needs an auth header. Each call becomes a `chat gpt-4o-mini` span.
 
-Configured via standard OpenTelemetry env vars:
+- **Setup options and env vars:** [docs/bootstrap.md](docs/bootstrap.md).
+- **Sending data to a backend and checking it arrives:** [docs/exporting.md](docs/exporting.md).
+- **Prompts and completions are not recorded by default.** The default mode, `metadata_only`, keeps model, token usage, timing and error type, but no message content. To record content, see [Content capture](docs/integrations.md#content-capture).
+- **Agent name, conversation id and user id:** run the code inside `withAgent(name, fn)`, `withConversationId(id, fn)` or `withUserId(id, fn)`, or set a default agent name and user id in the `Client` config. See [Identity](docs/integrations.md#identity).
 
-```
-OTEL_EXPORTER_OTLP_ENDPOINT=https://<your-otlp-gateway>
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>
-OTEL_SERVICE_NAME=my-agent
-OTEL_SERVICE_VERSION=0.1.0
-OTEL_DEPLOYMENT_ENVIRONMENT_NAME=dev
-```
+### Recording calls yourself
 
-For backend setup (endpoint, auth, smoke test), see [`docs/exporting.md`](docs/exporting.md).
+For a model or framework without an integration, record each call with the `Client` directly: `client.startGeneration(...)`, then `rec.setResult(...)` and `rec.end()` (or `await using rec = ...`). [examples/basic-chat](examples/basic-chat/index.ts) shows the full pattern, and the other `Client` methods cover embeddings, tools, retrievals and agents.
 
-## Content capture and privacy
+A recorder started this way does not become the parent of spans started after it. To nest spans under an agent, use the callback form `client.invokeAgent(seed, async (rec) => { ... })`, or `rec.withActiveContext(fn)`. Nesting and the `with*` helpers need an OpenTelemetry context manager; `bootstrapOtel` and `NodeTracerProvider.register()` install one.
 
-Prompt and completion **content is not captured by default.** The client
-default mode is `metadata_only`: every span keeps its structured metadata
-(model, token usage, timing, error type) but carries no prompts, completions,
-system instructions, tool definitions, tool arguments or results, conversation
-title, or retrieval and embedding text. The exception events the library
-records and raw error messages are left off too, since they can quote the
-input that caused them.
+## Supported frameworks
 
-To capture content, opt in:
+Each integration has its own import path, and its framework package is an optional peer dependency.
 
-- **Prompts and completions:** `new Client({ contentCaptureMode: 'no_tool_content' })` —
-  emits the input/output messages as structured `gen_ai.input.messages` /
-  `gen_ai.output.messages` span attributes, but keeps tool arguments/results and
-  retrieval query/documents off.
-- **Everything:** `new Client({ contentCaptureMode: 'full' })` — also emits tool
-  arguments/results, full tool definitions, and retrieval query/documents.
+- [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) (`@genai-otel/core/vercel-ai-sdk`)
+- [OpenAI SDK](docs/integrations.md#openai-sdk) (`@genai-otel/core/openai`, `@genai-otel/core/openai/instrumentation`)
+- [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) (`@genai-otel/core/openai-agents/instrumentation`)
+- [Anthropic SDK](docs/integrations.md#anthropic-sdk) (`@genai-otel/core/anthropic`)
+- [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) (`@genai-otel/core/langchain`, `@genai-otel/core/langchain/instrumentation`)
+- [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) (`@genai-otel/core/claude-agent-sdk/instrumentation`, `@genai-otel/core/claude-agent-sdk`)
 
-Both are also settable per call (`contentCapture`) and ambiently
-(`withContentCaptureMode`). Embedding input texts stay off in every mode until
-you also set `embeddingCapture.captureInput: true`. Once content is on, it
-leaves your process on every span.
+## Documentation
 
-To restrict what is exported:
-
-- **Keep only reviewed attributes:** `contentCaptureMode: 'allow_list'` — no
-  content, and every span keeps only attributes on a fixed allowlist, so a new
-  or unknown attribute is dropped. See
-  [`docs/content-retention.md`](docs/content-retention.md).
-- **Cap size:** `new Client({ contentCapture: { maxContentLength: 8192 } })` —
-  trims long content while keeping the emitted JSON valid.
-- **Redact fields:** register a redacting `SpanProcessor` at bootstrap. Content
-  is user-owned and redacted at the OTel layer — the library ships no in-SDK
-  sanitizer. See the recipe in [`docs/exporting.md`](docs/exporting.md#redacting-content).
-
-## Framework integrations
-
-First-party adapters live at their own subpath exports. Each peer dep is optional.
-
-```ts
-// Vercel AI SDK
-import { wrapGenerateText, wrapStreamText } from '@genai-otel/core/vercel-ai-sdk';
-
-// OpenAI SDK: one-line proxy, or OTel auto-instrumentation
-import { wrapOpenAI } from '@genai-otel/core/openai';
-import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
-
-// OpenAI Agents SDK: register alongside OpenAIInstrumentation
-import { OpenAIAgentsInstrumentation } from '@genai-otel/core/openai-agents/instrumentation';
-
-// Anthropic SDK
-import { wrapAnthropic } from '@genai-otel/core/anthropic';
-
-// Claude Agent SDK (an OTel instrumentation; needs the ESM loader hook in a preload,
-// see docs/integrations.md#claude-agent-sdk)
-import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
-
-// LangChain.js (and LangGraph)
-import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
-```
-
-See [`docs/integrations.md`](docs/integrations.md) for the per-adapter usage guide, mapping tables, streaming notes, and where each adapter takes the agent name, conversation id and user id from.
-
-### Notes
-
-- **Vercel AI SDK version**: the `vercel-ai-sdk` adapter targets AI SDK v7 (`ai ^7.0.0`). v7 uses `maxOutputTokens` and `inputTokens`/`outputTokens` usage fields, and the final stream callback is `onEnd` (v6's `onFinish`); the wrapper duck-types the legacy `maxTokens` and `promptTokens`/`completionTokens` names too, so it stays tolerant of older shapes.
-- **OpenAI Agents SDK**: register `OpenAIAgentsInstrumentation` and `OpenAIInstrumentation` together. The agents instrumentation emits the orchestration spans (`invoke_workflow`, `invoke_agent`, `execute_tool`) and activates OTel context around the model call; the OpenAI instrumentation emits the `chat` span, where time-to-first-token and the server address are visible. Register only the first and agent runs on the default (Responses) path come out with no model-call span.
-- **Fluent-mode parenting**: `withConversationId(id)` and friends set values in the OpenTelemetry context, but they do NOT start a span. Like span parenting, they need a context manager; `bootstrapOtel` and `NodeTracerProvider.register()` install one. A fluent-mode generation inside a `tracer.startActiveSpan(...)` block will auto-parent under that span (because OTel context is active), but two sibling fluent generations inside a bare `withConversationId(...)` block are siblings of the trace root, not of each other. Use the callback variant of `client.invokeAgent(seed, async (rec) => { ... })` when you need explicit parenting (or `rec.withActiveContext(fn)` on a fluent recorder); spans started inside it also take the agent's identity, unless they set their own.
+- [docs/integrations.md](docs/integrations.md): setting up each framework, and what each one records.
+- [docs/semconv-mapping.md](docs/semconv-mapping.md): every span attribute, metric and span kind.
+- [docs/content-retention.md](docs/content-retention.md): the `allow_list` mode, which keeps only a fixed set of reviewed attributes.
+- [docs/bootstrap.md](docs/bootstrap.md): the `bootstrapOtel` helper.
+- [docs/exporting.md](docs/exporting.md): exporter setup, smoke test, redacting content, resource detectors.
+- [docs/blueprint.md](docs/blueprint.md): design goals and decisions.
+- [examples/](examples/README.md): runnable examples.
+- [CHANGELOG.md](CHANGELOG.md): changes in each release.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development setup and tests.
 
 ## Status
 
-Pre-1.0. APIs may change. See [`docs/blueprint.md`](docs/blueprint.md) for the design rationale and [`docs/semconv-mapping.md`](docs/semconv-mapping.md) for the exhaustive attribute list.
+Pre-1.0. APIs may change; check [CHANGELOG.md](CHANGELOG.md) before upgrading.
 
 ## License
 
 Copyright (c) Snowflake Inc. All rights reserved.
 
-Licensed under the Apache 2.0 license.
+Licensed under the [Apache 2.0 license](LICENSE).
