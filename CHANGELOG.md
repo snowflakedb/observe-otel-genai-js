@@ -132,6 +132,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentName`, or is named plain `invoke_agent`. The CLI session id is now the
   conversation id only when neither `wrapQuery` nor an enclosing scope sets one,
   and subagent spans no longer carry the main agent's version.
+- Core: `withAgent`, `withConversationId` and the other scope helpers now keep
+  their values in the OpenTelemetry context, so they need a context manager
+  registered, as span parenting does. Restoring a saved context now restores the
+  scope too.
+- Claude Agent SDK: spans use the scope `query()` was called in, even when the
+  stream is read outside it.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.

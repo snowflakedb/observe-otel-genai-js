@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+import { context } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -247,6 +248,14 @@ describe('identity handed down by the enclosing recorder', () => {
     await gen.end();
 
     expect(spansOf('execute_tool')[0]!.attributes['genai.conversation.title']).toBe('Billing');
+  });
+
+  it('keeps the scope in a saved context and restores it later', async () => {
+    const client = setup();
+    const saved = withAgent('saved-agent', () => context.active());
+    await context.with(saved, () => client.startGeneration({ model: MODEL }).end());
+
+    expect(identity(chat())).toMatchObject({ agentName: 'saved-agent' });
   });
 
   it('keeps parallel invocations apart', async () => {

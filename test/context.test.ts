@@ -28,7 +28,16 @@ import {
 import { ATTR_AGENT_NAME, ATTR_CONVERSATION_ID, ATTR_USER_ID } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
 
-describe('context (AsyncLocalStorage helpers)', () => {
+describe('scope helpers', () => {
+  // Scopes live in the OpenTelemetry context, so they need the harness's context manager.
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
   it('getter returns undefined outside any scope', () => {
     expect(conversationIdFromContext()).toBeUndefined();
   });

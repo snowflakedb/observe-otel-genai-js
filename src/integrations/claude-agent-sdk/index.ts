@@ -324,7 +324,8 @@ class AgentRun {
     try {
       for await (const msg of stream) {
         try {
-          this.onMessage(msg);
+          // Spans open as the caller reads, so record in the context `query()` was called in.
+          context.with(this.callerContext, () => this.onMessage(msg));
         } catch (err) {
           logRecordingFailure(err);
         }
@@ -335,9 +336,11 @@ class AgentRun {
       error = err;
       throw err;
     } finally {
-      await this.end(error ?? (completed ? this.missingResultError() : undefined)).catch(
-        logRecordingFailure,
-      );
+      await context
+        .with(this.callerContext, () =>
+          this.end(error ?? (completed ? this.missingResultError() : undefined)),
+        )
+        .catch(logRecordingFailure);
     }
   }
 
@@ -554,6 +557,7 @@ class AgentRun {
   /** Opened on the first message, so the span can carry the session id from `init`. */
   private openRoot(): AgentInvocationRecorder {
     if (this.root) return this.root;
+    // Also opened by end() when the caller closes the stream before reading it.
     this.root = context.with(this.callerContext, () =>
       this.client.invokeAgent({
         ...this.sharedSeed(),

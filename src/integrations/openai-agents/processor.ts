@@ -154,7 +154,6 @@ interface TraceRecord {
   readonly span: Span;
   /** Content-capture mode resolved when the trace opened. */
   readonly mode: ContentCaptureMode;
-  readonly context: Context;
   readonly spanIds: Set<string>;
   /** Spans already ended, so a start delivered after its end does not open the span again. */
   readonly endedSpanIds: Set<string>;
@@ -253,7 +252,6 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       ownedByRun: this.activeRun() !== undefined,
       span,
       mode,
-      context: otelTrace.setSpan(otelContext.active(), span),
       spanIds: new Set(),
       endedSpanIds: new Set(),
       runTokens: new Set(),
@@ -288,7 +286,9 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     const record: SpanRecord = {
       sdkSpan: span,
       trace,
-      otelContext: parent?.otelContext ?? trace.context,
+      // A top-level span takes the caller's current scope, which may be set after the
+      // trace opened (inside a withTrace block), under the trace's span.
+      otelContext: parent?.otelContext ?? otelTrace.setSpan(otelContext.active(), trace.span),
       owner: parent?.owner,
       agent: parent?.agent,
     };

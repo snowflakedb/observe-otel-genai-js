@@ -49,7 +49,12 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { withAgent } from '../../src/context.js';
+import {
+  withAgent,
+  withContentCaptureMode,
+  withConversationId,
+  withUserId,
+} from '../../src/context.js';
 import { OpenAIAgentsInstrumentation } from '../../src/integrations/openai-agents/instrumentation.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
@@ -907,6 +912,54 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
         op,
       );
       expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('conv_1');
+    }
+  });
+
+  it('takes a scope set inside withTrace, not the one the trace opened under', async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'scoped-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await core.withTrace('block', () =>
+      withUserId('u1', () => withConversationId('c1', () => new A.Runner().run(agent, 'hi'))),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes[ATTR_CONVERSATION_ID], op).toBe('c1');
+      expect(span.attributes['user.id'], op).toBe('u1');
+    }
+  });
+
+  it('applies an allow_list mode set inside withTrace', async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'filtered-agent',
+      instructions: 'Be brief.',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await withContentCaptureMode('full', () =>
+      core.withTrace('block', () =>
+        withContentCaptureMode('allow_list', () => new A.Runner().run(agent, 'hi')),
+      ),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes['gen_ai.input.messages'], op).toBeUndefined();
+      expect(span.attributes['gen_ai.output.messages'], op).toBeUndefined();
     }
   });
 

@@ -652,6 +652,28 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, CHAT), 'gen_ai.conversation.id')).toBe('scoped');
   });
 
+  it('uses the scope query() was called in, even when the stream is read outside it', async () => {
+    const h = harness();
+    const traced = wrapQuery(
+      h.client,
+      fakeQuery([
+        init(),
+        assistant('msg_1', [toolUse('tu_1', 'Read')]),
+        toolResult('tu_1', 'body'),
+        result(),
+      ]),
+    );
+    const stream = withConversationId('scoped-conv', () =>
+      withAgent('scoped-agent', () => traced({ prompt: 'hi', options: { model: MODEL } })),
+    );
+    await drain(stream);
+
+    for (const name of ['invoke_agent scoped-agent', CHAT, 'execute_tool Read']) {
+      expect(attr(findSpan(h, name), 'gen_ai.conversation.id'), name).toBe('scoped-conv');
+      expect(attr(findSpan(h, name), 'gen_ai.agent.name'), name).toBe('scoped-agent');
+    }
+  });
+
   it('takes the agent name from the scope when the options give none', async () => {
     const h = harness();
     await withAgent('scoped-agent', () =>
@@ -1490,6 +1512,18 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('names a run closed before reading anything after the scope query() was called in', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), result()])({ prompt: '' }), { close: () => {} });
+
+    const q = withAgent('scoped-agent', () => wrapQuery(h.client, query)({ prompt: 'p' }));
+    q.close();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(findSpan(h, 'invoke_agent scoped-agent')).toBeDefined();
   });
 
   it("ends the run, and passes on the error, when the SDK's own close() throws", async () => {

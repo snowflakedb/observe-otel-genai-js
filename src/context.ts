@@ -18,17 +18,15 @@
 /**
  * Ambient identity helpers.
  *
- * Each `withX(value, fn)` runs `fn` inside an AsyncLocalStorage scope so any
- * recorder created during `fn` (directly or through awaited / non-awaited
- * children) inherits the value as its default. Use this to scope
- * `conversation_id` to a request handler without threading it through every
- * call site.
- *
- * The functions accept either sync or async `fn`. Awaited continuations
- * inherit the same store via Node's async hooks.
+ * Each `withX(value, fn)` runs `fn` in an OpenTelemetry context that carries the
+ * value, so any recorder created during `fn` (directly or through awaited /
+ * non-awaited children) inherits it. The values live in the same context as the
+ * active span, so code that saves and restores a context restores both together.
+ * Like span parenting, this needs a context manager registered
+ * (`@opentelemetry/context-async-hooks`); without one, scopes do nothing.
  */
 
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { type Context, context, createContextKey } from '@opentelemetry/api';
 import type { ContentCaptureMode } from './content/capture.js';
 import type { IdentityFields } from './models/identity.js';
 
@@ -36,18 +34,26 @@ interface ContextValues extends IdentityFields {
   contentCaptureMode?: ContentCaptureMode;
 }
 
-const storage = new AsyncLocalStorage<ContextValues>();
+const SCOPE_KEY = createContextKey('@genai-otel/scope');
+
+function getScope(ctx: Context = context.active()): ContextValues | undefined {
+  return ctx.getValue(SCOPE_KEY) as ContextValues | undefined;
+}
 
 /**
- * Opens a scope over the current one. Empty values keep the outer value. An agent
- * version is kept only with the agent name set in the same call, so naming an
- * agent drops the outer agent's version.
+ * Returns `ctx` with `patch` laid over its scope. Empty values keep the outer
+ * value. An agent version is kept only with the agent name set in the same patch,
+ * so naming an agent drops the outer agent's version.
  */
-function runWith<T>(patch: ContextValues, fn: () => T): T {
+export function setScope(ctx: Context, patch: ContextValues): Context {
   const { agentVersion, ...rest } = patch;
   const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v)) as ContextValues;
   if (set.agentName) set.agentVersion = agentVersion || undefined;
-  return storage.run({ ...storage.getStore(), ...set }, fn);
+  return ctx.setValue(SCOPE_KEY, { ...getScope(ctx), ...set });
+}
+
+function runWith<T>(patch: ContextValues, fn: () => T): T {
+  return context.with(setScope(context.active(), patch), fn);
 }
 
 // -----------------------------------------------------------------------------
@@ -94,27 +100,27 @@ export function withContext<T>(values: ContextValues, fn: () => T): T {
 // -----------------------------------------------------------------------------
 
 export function conversationIdFromContext(): string | undefined {
-  return storage.getStore()?.conversationId;
+  return getScope()?.conversationId;
 }
 
 export function conversationTitleFromContext(): string | undefined {
-  return storage.getStore()?.conversationTitle;
+  return getScope()?.conversationTitle;
 }
 
 export function userIdFromContext(): string | undefined {
-  return storage.getStore()?.userId;
+  return getScope()?.userId;
 }
 
 export function agentNameFromContext(): string | undefined {
-  return storage.getStore()?.agentName;
+  return getScope()?.agentName;
 }
 
 export function agentVersionFromContext(): string | undefined {
-  return storage.getStore()?.agentVersion;
+  return getScope()?.agentVersion;
 }
 
 export function contentCaptureModeFromContext(): ContentCaptureMode | undefined {
-  return storage.getStore()?.contentCaptureMode;
+  return getScope()?.contentCaptureMode;
 }
 
 /**
@@ -131,7 +137,7 @@ export function resolveIdentity(
   own: IdentityFields,
   clientConfig: IdentityFields,
 ): { identity: IdentityFields; handedDown: IdentityFields } {
-  const scope = storage.getStore();
+  const scope = getScope();
   return {
     identity: firstSet([own, scope, clientConfig]),
     handedDown: firstSet([own, scope]),

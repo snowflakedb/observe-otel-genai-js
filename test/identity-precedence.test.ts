@@ -38,11 +38,20 @@ afterEach(async () => {
   h = undefined;
 });
 
-async function generation(seed: Partial<GenerationStart>, config?: ClientConfig) {
+/** Sets up the harness before a scope opens, since scopes need its context manager. */
+function setUp(config?: ClientConfig) {
   // The conversation title is content, so metadata_only (the default) would drop it.
   h = createHarness({ contentCaptureMode: 'full', ...config });
-  await h.client.startGeneration({ model: MODEL, ...seed }).end();
-  return h.spans.getFinishedSpans()[0]!.attributes;
+}
+
+async function recordGeneration(seed: Partial<GenerationStart>) {
+  await h!.client.startGeneration({ model: MODEL, ...seed }).end();
+  return h!.spans.getFinishedSpans()[0]!.attributes;
+}
+
+async function generation(seed: Partial<GenerationStart>, config?: ClientConfig) {
+  setUp(config);
+  return recordGeneration(seed);
 }
 
 function identity(attrs: ReadableSpan['attributes']) {
@@ -67,12 +76,14 @@ const client = { agentName: 'client-agent', agentVersion: 'client-v', userId: 'c
 
 describe('identity resolution order', () => {
   it("the span's own values beat the enclosing scope", async () => {
-    const attrs = await withContext(level('scope'), () => generation(level('own'), client));
+    setUp(client);
+    const attrs = await withContext(level('scope'), () => recordGeneration(level('own')));
     expect(identity(attrs)).toEqual(level('own'));
   });
 
   it('the enclosing scope beats the client config', async () => {
-    const attrs = await withContext(level('scope'), () => generation({}, client));
+    setUp(client);
+    const attrs = await withContext(level('scope'), () => recordGeneration({}));
     expect(identity(attrs)).toEqual(level('scope'));
   });
 
@@ -89,8 +100,9 @@ describe('identity resolution order', () => {
   });
 
   it('skips empty values', async () => {
+    setUp(client);
     const attrs = await withContext({ conversationId: 'scope-conv' }, () =>
-      generation({ agentName: '', conversationId: '' }, client),
+      recordGeneration({ agentName: '', conversationId: '' }),
     );
     expect(attrs[ATTR_AGENT_NAME]).toBe('client-agent');
     expect(attrs[ATTR_CONVERSATION_ID]).toBe('scope-conv');
@@ -106,13 +118,15 @@ describe('agent version follows the agent name', () => {
     });
     await h?.shutdown();
 
-    const fromScope = await withAgent('bot', '3', () => generation({ agentName: 'bot' }));
+    setUp();
+    const fromScope = await withAgent('bot', '3', () => recordGeneration({ agentName: 'bot' }));
     expect(identity(fromScope)).toMatchObject({ agentName: 'bot', agentVersion: '3' });
   });
 
   it('prefers the version of the nearest source that gives the same name', async () => {
+    setUp(client);
     const attrs = await withAgent('client-agent', 'scope-v', () =>
-      generation({ agentName: 'client-agent', agentVersion: 'own-v' }, client),
+      recordGeneration({ agentName: 'client-agent', agentVersion: 'own-v' }),
     );
     expect(attrs[ATTR_AGENT_VERSION]).toBe('own-v');
   });
@@ -123,7 +137,10 @@ describe('agent version follows the agent name', () => {
     expect(fromConfig[ATTR_AGENT_VERSION]).toBeUndefined();
     await h?.shutdown();
 
-    const fromScope = await withAgent('parent', '1.0', () => generation({ agentName: 'child' }));
+    setUp();
+    const fromScope = await withAgent('parent', '1.0', () =>
+      recordGeneration({ agentName: 'child' }),
+    );
     expect(fromScope[ATTR_AGENT_VERSION]).toBeUndefined();
   });
 
@@ -139,42 +156,48 @@ describe('agent version follows the agent name', () => {
 
 describe('scopes set the agent name and version as a pair', () => {
   it('withAgent sets both', async () => {
-    const attrs = await withAgent('scoped', '4', () => generation({}, client));
+    setUp(client);
+    const attrs = await withAgent('scoped', '4', () => recordGeneration({}));
     expect(identity(attrs)).toMatchObject({ agentName: 'scoped', agentVersion: '4' });
   });
 
   it("an inner agent name clears the outer agent's version", async () => {
+    setUp();
     const viaWithAgent = await withAgent('outer', '1', () =>
-      withAgent('inner', () => generation({})),
+      withAgent('inner', () => recordGeneration({})),
     );
     expect(identity(viaWithAgent)).toMatchObject({ agentName: 'inner', agentVersion: undefined });
     await h?.shutdown();
 
+    setUp();
     const viaContext = await withContext({ agentName: 'outer', agentVersion: '1' }, () =>
-      withContext({ agentName: 'inner' }, () => generation({})),
+      withContext({ agentName: 'inner' }, () => recordGeneration({})),
     );
     expect(identity(viaContext)).toMatchObject({ agentName: 'inner', agentVersion: undefined });
   });
 
   it('ignores a version set without a name', async () => {
+    setUp();
     const attrs = await withAgent('outer', '1', () =>
-      withContext({ agentVersion: '2' }, () => generation({})),
+      withContext({ agentVersion: '2' }, () => recordGeneration({})),
     );
     expect(identity(attrs)).toMatchObject({ agentName: 'outer', agentVersion: '1' });
   });
 
   it('withAgent with an undefined version clears the outer version', async () => {
+    setUp();
     const attrs = await withAgent('outer', '1', () =>
-      withAgent('inner', undefined, () => generation({})),
+      withAgent('inner', undefined, () => recordGeneration({})),
     );
     expect(identity(attrs)).toMatchObject({ agentName: 'inner', agentVersion: undefined });
   });
 
   it('keeps the outer value when an inner scope sets a field empty', async () => {
+    setUp(client);
     const attrs = await withAgent('outer', '1', () =>
       withContext({ agentName: undefined, userId: '', conversationId: 'c' }, () =>
         withContext({ userId: 'u' }, () =>
-          withContext({ userId: undefined }, () => generation({}, client)),
+          withContext({ userId: undefined }, () => recordGeneration({})),
         ),
       ),
     );
@@ -187,8 +210,9 @@ describe('scopes set the agent name and version as a pair', () => {
   });
 
   it('a scope that sets other fields keeps the outer agent', async () => {
+    setUp();
     const attrs = await withAgent('outer', '1', () =>
-      withContext({ conversationId: 'c' }, () => generation({})),
+      withContext({ conversationId: 'c' }, () => recordGeneration({})),
     );
     expect(identity(attrs)).toMatchObject({
       agentName: 'outer',

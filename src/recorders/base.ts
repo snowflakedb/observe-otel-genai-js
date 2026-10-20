@@ -37,7 +37,7 @@ import {
   type ContentCaptureMode,
   resolveContentCaptureMode,
 } from '../content/capture.js';
-import { contentCaptureModeFromContext, withContext } from '../context.js';
+import { contentCaptureModeFromContext, setScope } from '../context.js';
 import type { ErrorClassifier } from '../errors/classify.js';
 import { classifyError } from '../errors/classify.js';
 import type { GenAIMetrics } from '../metrics/histograms.js';
@@ -202,9 +202,7 @@ export abstract class RecorderBase {
    * resolution" in `docs/semconv-mapping.md`).
    */
   withActiveContext<T>(fn: () => T): T {
-    return context.with(trace.setSpan(context.active(), this.span), () =>
-      withContext(this.handedDown, fn),
-    );
+    return context.with(setScope(trace.setSpan(context.active(), this.span), this.handedDown), fn);
   }
 
   // ---------------------------------------------------------------------------
