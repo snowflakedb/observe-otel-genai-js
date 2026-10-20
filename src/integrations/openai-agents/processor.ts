@@ -54,6 +54,7 @@ import {
   resolveContentCaptureMode,
 } from '../../content/capture.js';
 import { contentCaptureModeFromContext } from '../../context.js';
+import { classifyError } from '../../errors/classify.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
@@ -61,10 +62,12 @@ import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import {
   ATTR_CONVERSATION_ID,
+  ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
   ATTR_SDK_NAME,
   ATTR_WORKFLOW_NAME,
+  ERR_CATEGORY_SDK,
   INSTRUMENTATION_NAME,
   OP_CHAT,
   OP_INVOKE_WORKFLOW,
@@ -164,6 +167,7 @@ interface TraceRecord {
   readonly ownedByRun: boolean;
   /** The `invoke_workflow` span. */
   readonly span: Span;
+  readonly startedAtMs: number;
   /** Content-capture mode resolved when the trace opened. */
   readonly mode: ContentCaptureMode;
   readonly spanIds: Set<string>;
@@ -242,7 +246,8 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       void this.safely('closeTrace', () => this.closeTrace(trace.traceId));
     // Started under the caller's context, so a run inside a request handler nests
     // under the handler's span.
-    const options = { kind: SpanKind.INTERNAL, startTime: new Date(this.client.now()) };
+    const startedAtMs = this.client.now();
+    const options = { kind: SpanKind.INTERNAL, startTime: new Date(startedAtMs) };
     const mode = resolveContentCaptureMode(
       this.contentCapture,
       contentCaptureModeFromContext(),
@@ -270,6 +275,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       resumed,
       ownedByRun: this.activeRun() !== undefined,
       span,
+      startedAtMs,
       mode,
       spanIds: new Set(),
       endedSpanIds: new Set(),
@@ -621,15 +627,29 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
   private endWorkflowSpan(trace: TraceRecord, error: unknown): void {
     const span = trace.span;
     const errorType = error == null ? '' : (errorName(error) ?? '_OTHER');
+    const errorCategory = errorType
+      ? (this.client.errorClassifier ?? classifyError)(error) || ERR_CATEGORY_SDK
+      : '';
     if (errorType) {
       span.setAttribute(ATTR_ERROR_TYPE, errorType);
+      span.setAttribute(ATTR_ERROR_CATEGORY, errorCategory);
       span.setStatus({
         code: SpanStatusCode.ERROR,
         message: omitsContent(trace.mode) ? errorType : errorMessage(error),
       });
     }
 
-    span.end(new Date(this.client.now()));
+    const endedAtMs = this.client.now();
+    span.end(new Date(endedAtMs));
+    this.client.metrics.recordOperationDuration((endedAtMs - trace.startedAtMs) / 1000, {
+      operationName: OP_INVOKE_WORKFLOW,
+      providerName: '',
+      requestModel: '',
+      agentName: '',
+      conversationId: trace.conversationId,
+      errorType,
+      errorCategory,
+    });
   }
 
   /**

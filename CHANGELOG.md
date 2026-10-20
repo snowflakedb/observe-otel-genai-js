@@ -75,6 +75,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Runs and `withTrace` blocks that reject are closed with the error, since the
     SDK leaves them open. Failures the run recovers from do not fail the run.
   - A streamed run that fails reports the error on its workflow span.
+  - Each run records `gen_ai.client.operation.duration` with `gen_ai.operation.name`
+    set to `invoke_workflow`, so runs have their own count, error and duration
+    series. Its provider, model and agent name are empty.
   - The processor stays registered when the SDK's processor list is replaced, so
     `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
   - Time-to-first-token on the AI SDK path, measured from the first delta event.

@@ -328,7 +328,7 @@ beforeEach(() => setTracingDisabled(false));
 - Model calls and tool calls run inside the OpenTelemetry context of their agent or tool span, so spans from other instrumentations (a `chat` span, a database call inside a tool) nest under them.
 - On the AI SDK path the `chat` span is recorded when the model call ends, so spans the provider client creates during the call sit beside it under `invoke_agent`.
 - Tools served by an MCP server get `gen_ai.tool.type = mcp`; other tools get `function`.
-- Metrics: `gen_ai.client.operation.duration` for agent spans and AI SDK `chat` spans (not the workflow span), `gen_ai.client.tool_execution.duration` for tool spans, and `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted twice. On the AI SDK path, time to first token is measured from the first text, reasoning or tool-argument delta.
+- Metrics: `gen_ai.client.operation.duration` for the workflow span, agent spans and AI SDK `chat` spans, `gen_ai.client.tool_execution.duration` for tool spans, and `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted twice. On the AI SDK path, time to first token is measured from the first text, reasoning or tool-argument delta.
 
 ### The workflow span
 
@@ -352,7 +352,7 @@ Resumed runs:
 
 - A run resumed after a tool approval gets its own workflow span, with the same name and conversation id as the first part.
 - A run resumed from `result.state` in the same process gets no trace start or end from the SDK, so its workflow span closes when the resumed run's `task` span ends. A run resumed from `RunState.fromString` is traced normally.
-- With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or `turn` spans: a turn's error is not copied to its agent span, and a resumed run's workflow span stays open until the trace cap or shutdown ends it.
+- With `tracing: { includeTaskAndTurnSpans: false }` the SDK sends no `task` or `turn` spans: a turn's error is not copied to its agent span, and a resumed run's workflow span stays open until the trace cap or shutdown ends it, and its workflow duration is measured up to then.
 
 The workflow attributes are listed in [semconv-mapping.md](semconv-mapping.md#openai-agents-workflow).
 

@@ -123,7 +123,7 @@ On generation spans, token counts of zero are left out. The Claude Agent SDK als
 
 ### OpenAI Agents workflow
 
-Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its `invoke_agent` spans. It has no agent name, no user id, and no metric.
+Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its `invoke_agent` spans. It has no agent name and no user id. It records `gen_ai.client.operation.duration`, with an empty provider, model and agent name.
 
 | Attribute | Type | Where |
 |---|---|---|
@@ -141,7 +141,7 @@ Set only when the operation fails.
 | Attribute | Type | Values |
 |---|---|---|
 | `error.type` | string | see below |
-| `error.category` | string | `timeout`, `rate_limit`, `auth_error`, `server_error`, `client_error`, or `sdk_error` (when nothing more specific matches). Not set on `invoke_workflow`. |
+| `error.category` | string | `timeout`, `rate_limit`, `auth_error`, `server_error`, `client_error`, or `sdk_error` (when nothing more specific matches). |
 
 Default `error.type` by span:
 
@@ -189,7 +189,7 @@ All five are histograms.
 
 | Name | Unit | Recorded for | Buckets |
 |---|---|---|---|
-| `gen_ai.client.operation.duration` | s | generation, `embeddings`, `invoke_agent`, `create_agent`, `retrieval` | powers of 2, 0.01 s to 81.92 s |
+| `gen_ai.client.operation.duration` | s | generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `create_agent`, `retrieval` | powers of 2, 0.01 s to 81.92 s |
 | `gen_ai.client.token.usage` | token | generation (all token types), `embeddings` (`input` only); counts of zero are not recorded | powers of 4, 1 to 67,108,864 |
 | `gen_ai.client.time_to_first_token` | s | streaming generations, from `setFirstTokenAt` or `setTimeToFirstToken` | powers of 2, 0.01 s to 81.92 s |
 | `gen_ai.client.tool_calls_per_operation` | count | every generation, including zero | OTel SDK default |
@@ -208,7 +208,7 @@ Attributes on each data point:
 
 The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
 
-`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `execute_tool`, and `retrieval`. `create_agent` data points never carry them.
+`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points never carry them.
 
 ## Span kinds and names
 

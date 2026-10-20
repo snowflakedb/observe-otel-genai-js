@@ -47,6 +47,7 @@ import { RUN_TOKEN_KEY } from '../../src/integrations/openai-agents/processor.js
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
+  ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
@@ -375,14 +376,30 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(root.attributes[ATTR_WORKFLOW_NAME]).toBeUndefined();
   });
 
-  it('records no duration metric for the workflow, only for its agents', async () => {
+  it('records a duration metric for the workflow as well as its agents', async () => {
     const trace = makeTrace({ name: 'timed-run' });
     await processor.onTraceStart(trace);
     await runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'a' }));
     await processor.onTraceEnd(trace);
 
-    expect(await durationPoints(OP_INVOKE_WORKFLOW)).toEqual([]);
+    const workflow = only(await durationPoints(OP_INVOKE_WORKFLOW));
+    expect(workflow.value.count).toBe(1);
+    expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('');
+    expect(workflow.attributes[ATTR_AGENT_NAME]).toBe('');
     expect(only(await durationPoints(OP_INVOKE_AGENT)).attributes[ATTR_AGENT_NAME]).toBe('a');
+  });
+
+  it("labels a failed workflow's duration with its error.type", async () => {
+    const error = new Error('boom');
+    error.name = 'BoomError';
+    const trace = makeTrace({ name: 'failed-run' });
+    await processor.onTraceStart(trace);
+    await processor.failTrace(trace.traceId, error);
+
+    const workflow = only(await durationPoints(OP_INVOKE_WORKFLOW));
+    expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('BoomError');
+    expect(workflow.attributes[ATTR_ERROR_CATEGORY]).toBe('sdk_error');
+    expect(only(spansWithOp(OP_INVOKE_WORKFLOW)).attributes[ATTR_ERROR_CATEGORY]).toBe('sdk_error');
   });
 
   it('ends the workflow span of a run ended by a resume, the trace cap, or stop()', async () => {
