@@ -742,9 +742,11 @@ node --import ./preload.mjs app.mjs
 The config takes the same options as `wrapQuery` except identity
 (`contentCapture`, `tags`, …), plus an optional `client`; without one, a client is
 built from the registered providers. To name the agent or set the conversation or user, wrap the
-call in `withAgent(...)`, `withConversationId(...)` or `withUserId(...)`, or pass
-them to `wrapQuery` below. With no name from either, the `invoke_agent` span takes
-the `Client`'s `agentName`, or is named plain `invoke_agent`.
+call in `withAgent(...)`, `withConversationId(...)` or `withUserId(...)`. With no
+name from a scope, the `invoke_agent` span takes the `Client`'s `agentName`, or is
+named plain `invoke_agent`. Options passed to `wrapQuery` have no effect while the
+instrumentation is on: it has already wrapped `query`, and `wrapQuery` returns that
+wrapped `query` unchanged.
 
 Without the hook, or if the SDK was imported before the hook was registered, nothing
 is traced and nothing is logged. An app that loads the SDK with `require()` is not

@@ -198,6 +198,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and stays out until it is tested.
 
 ### Known
+- Claude Agent SDK: while `ClaudeAgentSdkInstrumentation` is on, options passed to
+  `wrapQuery` (including identity) are ignored, since `query` is already wrapped. Set
+  identity with a `withX(...)` scope around the call instead.
+- With both the LangChain integration and the OpenAI integration on, a LangChain
+  model call through the `openai` package is recorded twice: one `chat` span from
+  each, in two separate traces, so token counts on metrics are doubled. An app that
+  calls OpenAI through LangChain should register only one of the two.
 - `gen_ai.tool.call.id` is not emitted on `execute_tool` spans from the OpenAI
   Agents SDK. Its `FunctionSpanData` is `{ name, input, output, mcp_data }` and
   carries no call id, so the only way to supply one is to scrape the preceding
