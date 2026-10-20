@@ -1099,9 +1099,15 @@ function extractStopReason(output: LLMResult): string | undefined {
 
 function extractResponseId(output: LLMResult): string | undefined {
   const llmOut = output.llmOutput as Record<string, unknown> | undefined;
-  if (!llmOut) return undefined;
-  if (typeof llmOut.id === 'string') return llmOut.id;
-  if (typeof (llmOut as { responseId?: string }).responseId === 'string')
-    return (llmOut as { responseId?: string }).responseId;
-  return undefined;
+  const message = firstGenerationMessage(output);
+  const known =
+    strField(llmOut, 'id') ??
+    strField(llmOut, 'responseId') ??
+    // ChatOpenAI on the Responses API, where the message id can be an output item's.
+    strField(responseMetadata(message), 'id');
+  if (known) return known;
+  // ChatOpenAI puts the response id on the message instead. When a message has
+  // none, LangChain fills in `run-<runId>`, which is not a response id.
+  const messageId = strField(message as Record<string, unknown> | undefined, 'id');
+  return messageId?.startsWith('run-') ? undefined : messageId;
 }

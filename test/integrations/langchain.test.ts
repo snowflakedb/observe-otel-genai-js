@@ -43,6 +43,7 @@ import {
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_REQUEST_STREAM,
+  ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_RETRIEVAL_DOCUMENTS,
   ATTR_RETRIEVAL_QUERY_TEXT,
@@ -275,6 +276,62 @@ describe('LangChain adapter — LLM lifecycle', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('server_error');
+  });
+});
+
+describe('LangChain adapter — response id', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function endWith(runId: string, result: unknown): Promise<void> {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, runId);
+    await handler.handleLLMEnd!(result as never, runId);
+  }
+
+  const generation = (message: Record<string, unknown>) => ({
+    generations: [[{ text: 'hi', message: { _getType: () => 'ai', content: 'hi', ...message } }]],
+  });
+
+  it('reads llmOutput.id first', async () => {
+    // ChatOpenAI 0.6 on the Responses API: the message carries an output item's id.
+    await endWith('run-resp-id-llmoutput', {
+      ...generation({ id: 'msg_1' }),
+      llmOutput: { id: 'resp_1' },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_1');
+  });
+
+  it('reads response_metadata.id before the message id (streamed Responses API)', async () => {
+    await endWith(
+      'run-resp-id-meta',
+      generation({ id: 'msg_1', response_metadata: { id: 'resp_1' } }),
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('resp_1');
+  });
+
+  it('falls back to the message id (ChatOpenAI chat completions)', async () => {
+    await endWith('run-resp-id-message', generation({ id: 'chatcmpl-abc' }));
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('chatcmpl-abc');
+  });
+
+  it('ignores the run-<runId> id LangChain fills in when the message has none', async () => {
+    const runId = 'run-resp-id-fallback';
+    await endWith(runId, generation({ id: `run-${runId}` }));
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_ID]).toBeUndefined();
   });
 });
 
