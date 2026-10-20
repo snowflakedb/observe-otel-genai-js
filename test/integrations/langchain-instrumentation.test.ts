@@ -138,11 +138,7 @@ describe('LangChainInstrumentation — auto-injection', () => {
   });
 
   it('does not double-instrument when the same run nests', async () => {
-    const instr = new LangChainInstrumentation({
-      client: h.client,
-      captureNestedChains: false,
-      enabled: false,
-    });
+    const instr = new LangChainInstrumentation({ client: h.client, enabled: false });
     const unpatch = patchLangChain(instr);
     try {
       // A pipe is a RunnableSequence: the sequence is the top-level run and each
@@ -155,7 +151,7 @@ describe('LangChainInstrumentation — auto-injection', () => {
       await instr.handler.dispose();
 
       // Only the top-level sequence becomes an invoke_agent span; the nested
-      // steps inherit the handler but are skipped (captureNestedChains: false).
+      // steps inherit the handler but are skipped.
       expect(invokeAgentSpans(h)).toHaveLength(1);
     } finally {
       unpatch();

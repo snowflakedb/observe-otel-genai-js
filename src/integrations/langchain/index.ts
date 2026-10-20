@@ -84,12 +84,6 @@ export interface GenAIOtelCallbackHandlerOptions {
    * only capture LLM + tool spans.
    */
   captureChains?: boolean;
-  /**
-   * When `true`, nested chain runs (e.g. each LangGraph node) also become
-   * `invoke_agent` spans. Defaults to `false` so the trace stays focused on
-   * the outermost graph invocation. Set to `true` to get a per-node tree.
-   */
-  captureNestedChains?: boolean;
 }
 
 interface ModelHint {
@@ -109,7 +103,6 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   private readonly client: Client;
   private readonly defaults: Omit<GenAIOtelCallbackHandlerOptions, 'client'>;
   private readonly captureChains: boolean;
-  private readonly captureNestedChains: boolean;
 
   /** runId → recorder maps so handle*End/handle*Error can find their start. */
   private readonly llmRunMap = new Map<
@@ -130,10 +123,9 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // other's OpenTelemetry context (parent span and scope).
     super({ _awaitHandler: true });
     this.client = options.client;
-    const { client: _c, captureChains, captureNestedChains, ...rest } = options;
+    const { client: _c, captureChains, ...rest } = options;
     this.defaults = rest;
     this.captureChains = captureChains !== false;
-    this.captureNestedChains = captureNestedChains === true;
   }
 
   // ---------------------------------------------------------------------------
@@ -359,11 +351,9 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // can walk up to a real ancestor (see nearestRecorder).
     this.runParent.set(runId, parentRunId);
 
-    // Top-level chains become invoke_agent spans. Nested chains only do so when
-    // captureNestedChains is on (off by default, to keep the trace at the
-    // outer agent boundary).
+    // Top-level chains become invoke_agent spans; nested chains are steps inside them.
     if (!this.captureChains) return;
-    if (parentRunId && !this.captureNestedChains) return;
+    if (parentRunId) return;
 
     const rec = this.nested(parentRunId, () =>
       this.client.invokeAgent({
