@@ -75,7 +75,7 @@ export function instrumentResponseApiPromise(
   if (isStreaming(params)) {
     const rec = client.startStreamingGeneration(seed);
     rec.setResult({ input: mapResponsesInput(params) });
-    const handlers = responsesStreamHandlers(rec, params);
+    const handlers = responsesStreamHandlers(rec);
     return instrumentApiPromise(apiPromise, rec, (stream) =>
       wrapProviderStream<AsyncIterable<ResponseStreamEvent>, ResponseStreamEvent>(
         stream as AsyncIterable<ResponseStreamEvent>,
@@ -85,8 +85,9 @@ export function instrumentResponseApiPromise(
   }
 
   const rec = client.startGeneration(seed);
+  rec.setResult({ input: mapResponsesInput(params) });
   return instrumentApiPromise(apiPromise, rec, (result) => {
-    recordResponseResult(rec, params, result as ResponseResult);
+    recordResponseResult(rec, result as ResponseResult);
     void rec.end();
     return result;
   });
@@ -138,17 +139,12 @@ function buildResponsesSeed(
 }
 
 /** Records a final Responses result onto the recorder, streamed or not. */
-function recordResponseResult(
-  rec: GenerationRecorder,
-  params: ResponseCreateParams,
-  result: ResponseResult,
-): void {
+function recordResponseResult(rec: GenerationRecorder, result: ResponseResult): void {
   rec.setResult({
     responseId: result.id,
     responseModel: result.model,
     stopReason: responsesStopReason(result),
     usage: mapResponsesUsage(result.usage),
-    input: mapResponsesInput(params),
     output: mapResponsesOutput(result.output),
   });
   if (result.status === 'failed' || result.error) {
@@ -189,16 +185,13 @@ function responsesErrorStatus(code: string | null | undefined): number {
  * handler: OpenAI assembles the response for us, so there is nothing to stitch
  * together from deltas.
  */
-function responsesStreamHandlers(
-  rec: GenerationRecorder,
-  params: ResponseCreateParams,
-): StreamWrapOptions<ResponseStreamEvent> {
+function responsesStreamHandlers(rec: GenerationRecorder): StreamWrapOptions<ResponseStreamEvent> {
   let firstTokenSeen = false;
   let finalResponse: ResponseResult | undefined;
   let streamError: Error | undefined;
 
   const finish = async ({ abandoned = false, error }: { abandoned?: boolean; error?: unknown }) => {
-    if (finalResponse) recordResponseResult(rec, params, finalResponse);
+    if (finalResponse) recordResponseResult(rec, finalResponse);
     // The most specific cause wins: the final response's own error, then the
     // `error` event, then a transport error.
     const cause = streamError ?? error;

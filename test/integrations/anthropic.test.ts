@@ -121,6 +121,25 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     expect(output[0].parts[0].content).toBe('hi back');
   });
 
+  it('records the input messages of a call that fails', async () => {
+    const fake = makeFakeAnthropic(async () => {
+      throw Object.assign(new Error('overloaded'), { status: 529 });
+    });
+
+    await expect(
+      instrumentedMessageCreate(
+        h.client,
+        fake,
+        { model: 'claude', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+        { contentCapture: 'no_tool_content' },
+      ),
+    ).rejects.toThrow('overloaded');
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input[0].parts[0].content).toBe('hi');
+  });
+
   it('captures system prompt from string', async () => {
     const fake = makeFakeAnthropic(async () => ({
       id: 'msg_sys',

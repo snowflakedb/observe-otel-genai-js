@@ -200,6 +200,7 @@ async function runMessageCreate(
   }
 
   await using rec = client.startGeneration(seed);
+  rec.setResult({ input: mapAnthropicInput(params.messages) });
   try {
     const result = (await anthropic.messages.create(params)) as AnthropicMessage;
     rec.setResult({
@@ -207,7 +208,6 @@ async function runMessageCreate(
       responseModel: result.model,
       stopReason: result.stop_reason ?? undefined,
       usage: mapAnthropicUsage(result.usage as unknown as AnthropicUsageShape),
-      input: mapAnthropicInput(params.messages),
       output: mapAnthropicOutput((result as { content?: unknown }).content),
     });
     return result;

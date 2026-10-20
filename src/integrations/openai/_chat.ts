@@ -94,9 +94,10 @@ export async function runChatCompletion(
   }
 
   await using rec = client.startGeneration(seed);
+  rec.setResult({ input: mapOpenAIInput(params.messages) });
   try {
     const result = (await invoke(params)) as ChatCompletionsResult;
-    recordChatResult(rec, params, result);
+    recordChatResult(rec, result);
     return result;
   } catch (err) {
     rec.setCallError(err);
@@ -135,8 +136,9 @@ export function instrumentChatCompletionApiPromise(
   }
 
   const rec = client.startGeneration(seed);
+  rec.setResult({ input: mapOpenAIInput(params.messages) });
   return instrumentApiPromise(apiPromise, rec, (result) => {
-    recordChatResult(rec, params, result as ChatCompletionsResult);
+    recordChatResult(rec, result as ChatCompletionsResult);
     void rec.end();
     return result;
   });
@@ -174,17 +176,12 @@ function buildChatSeed(
 }
 
 /** Records the result of a non-streaming chat completion onto the recorder. */
-function recordChatResult(
-  rec: ChatRecorder,
-  params: ChatCompletionsCreateParams,
-  result: ChatCompletionsResult,
-): void {
+function recordChatResult(rec: ChatRecorder, result: ChatCompletionsResult): void {
   rec.setResult({
     responseId: result.id,
     responseModel: result.model,
     stopReason: result.choices?.[0]?.finish_reason,
     usage: mapUsage(result.usage),
-    input: mapOpenAIInput(params.messages),
     output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
   });
 }

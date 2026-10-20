@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import {
   ATTR_ERROR_CATEGORY,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
@@ -460,6 +461,21 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
+    const input = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(input[0].parts[0].content).toBe('hi');
+  });
+
+  it('records the input messages of a chat.completions.create that fails', async () => {
+    nextResponse = () => errorResponse(400, 'bad request');
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(openai.chat.completions.create(CHAT_PARAMS)).rejects.toThrow(/bad request/);
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['error.type']).toBe('provider_call_error');
+    const input = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(input[0].parts[0].content).toBe('hi');
   });
 
   // The failures below arrive inside a 200, so only the response content says the call failed.

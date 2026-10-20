@@ -169,6 +169,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as a failed call ("stream was never consumed"), which counted toward error rates.
   A stream stopped before its final usage arrives has no output token count and is
   marked `genai.usage.is_partial`.
+- OpenAI and Anthropic: a non-streamed call that fails now records its input
+  messages. Before, they were recorded only with the reply, so a failed call
+  showed nothing of what was sent.
 - LangChain: `ChatOpenAI` calls now record `gen_ai.response.id`, read from the
   reply message. Before, it was read only from `llmOutput`, where `ChatOpenAI`
   usually puts none.

@@ -164,6 +164,27 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('rate_limit');
   });
+
+  it('records the input messages of a call that fails', async () => {
+    const fake = makeFakeOpenAI({
+      chat: async () => {
+        throw Object.assign(new Error('bad request'), { status: 400 });
+      },
+    });
+
+    await expect(
+      instrumentedChatCompletion(
+        h.client,
+        fake,
+        { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] },
+        { contentCapture: 'no_tool_content' },
+      ),
+    ).rejects.toThrow('bad request');
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input[0].parts[0].content).toBe('hi');
+  });
 });
 
 describe('OpenAI adapter — instrumentedEmbedding', () => {
