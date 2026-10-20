@@ -16,11 +16,12 @@ If your app already sets up OpenTelemetry:
 pnpm add @genai-otel/core @opentelemetry/api
 ```
 
-If you want the library to set up OpenTelemetry for you (easiest way to start), also add the SDK packages the bootstrap helper uses:
+If you want the library to set up OpenTelemetry for you (easiest way to start), also add the SDK packages the bootstrap helper uses, and `@opentelemetry/instrumentation` for auto-instrumentation:
 
 ```bash
 pnpm add @genai-otel/core \
   @opentelemetry/api \
+  @opentelemetry/instrumentation \
   @opentelemetry/sdk-trace-base \
   @opentelemetry/sdk-trace-node \
   @opentelemetry/sdk-metrics \
@@ -32,54 +33,72 @@ pnpm add @genai-otel/core \
 
 ## Quickstart
 
-This traces OpenAI SDK calls (`pnpm add openai` first) and sends them over OTLP.
+Auto-instrumentation traces your app without changing its code. Put the setup in a preload file:
 
-```ts
-import { Client } from '@genai-otel/core';
+```js
+// preload.mjs
+import { register } from 'node:module';
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { bootstrapOtel } from '@genai-otel/core/bootstrap';
-import { wrapOpenAI } from '@genai-otel/core/openai';
+import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+
+// The loader hook must be registered before the app imports `openai`.
+register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
+
+const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
+registerInstrumentations({ instrumentations: [new OpenAIInstrumentation()] });
+
+// Send what is still buffered when the process is about to exit.
+process.once('beforeExit', async () => {
+  await tracerProvider.shutdown();
+  await meterProvider.shutdown();
+});
+```
+
+Start the app with it. The app itself stays plain OpenAI SDK code:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-endpoint node --import ./preload.mjs app.mjs
+```
+
+```js
+// app.mjs
 import OpenAI from 'openai';
 
-// Sends traces and metrics to OTEL_EXPORTER_OTLP_ENDPOINT.
-const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
-
-const client = new Client();
-const openai = wrapOpenAI(client, new OpenAI());
-
-const resp = await openai.chat.completions.create({
+const openai = new OpenAI();
+await openai.chat.completions.create({
   model: 'gpt-4o-mini',
   messages: [{ role: 'user', content: 'What is OpenTelemetry?' }],
 });
-console.log(resp.choices[0]?.message.content);
-
-// Export what is still buffered before the process exits.
-await tracerProvider.shutdown();
-await meterProvider.shutdown();
 ```
 
-Run it with `OTEL_EXPORTER_OTLP_ENDPOINT` set to your backend's OTLP/HTTP endpoint, and `OTEL_EXPORTER_OTLP_HEADERS` if the backend needs an auth header. Each call becomes a `chat gpt-4o-mini` span.
+Each call becomes a `chat gpt-4o-mini` span, with token usage and duration metrics. Set `OTEL_EXPORTER_OTLP_HEADERS` too if your backend needs an auth header.
 
 - **Setup options and env vars:** [docs/bootstrap.md](docs/bootstrap.md).
 - **Sending data to a backend and checking it arrives:** [docs/exporting.md](docs/exporting.md).
 - **Prompts and completions are not recorded by default.** The default mode, `metadata_only`, keeps model, token usage, timing and error type, but no message content. To record content, see [Content capture](docs/integrations.md#content-capture).
 - **Agent name, conversation id and user id:** run the code inside `withAgent(name, fn)`, `withConversationId(id, fn)` or `withUserId(id, fn)`, or set a default agent name and user id in the `Client` config. See [Identity](docs/integrations.md#identity).
 
-### Recording calls yourself
+## Supported frameworks
+
+Add the instrumentation for each framework you use to the `instrumentations` list in the preload. Each framework package is an optional peer dependency.
+
+| Framework | How to turn it on |
+|---|---|
+| [OpenAI SDK](docs/integrations.md#openai-sdk) | `new OpenAIInstrumentation()` from `@genai-otel/core/openai/instrumentation` |
+| [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) | `new OpenAIAgentsInstrumentation()` from `@genai-otel/core/openai-agents/instrumentation`, together with `OpenAIInstrumentation` for the model calls |
+| [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) | `new LangChainInstrumentation()` from `@genai-otel/core/langchain/instrumentation`. Under ESM, also call its `manuallyInstrument(...)` (see the link) |
+| [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) | `new ClaudeAgentSdkInstrumentation()` from `@genai-otel/core/claude-agent-sdk/instrumentation` |
+| [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) | No instrumentation: call `registerTelemetry(genaiTelemetryIntegration(client))` once, from `@genai-otel/core/vercel-ai-sdk` |
+| [Anthropic SDK](docs/integrations.md#anthropic-sdk) | No instrumentation: wrap the client with `wrapAnthropic(client, new Anthropic())` from `@genai-otel/core/anthropic` |
+
+### Without auto-instrumentation
+
+To trace only some calls, or to skip the loader hook, wrap a client instead: `wrapOpenAI(client, new OpenAI())` from `@genai-otel/core/openai` traces every call made through that client. See [docs/integrations.md](docs/integrations.md) for the wrapper of each framework.
 
 For a model or framework without an integration, record each call with the `Client` directly: `client.startGeneration(...)`, then `rec.setResult(...)` and `rec.end()` (or `await using rec = ...`). [examples/basic-chat](examples/basic-chat/index.ts) shows the full pattern, and the other `Client` methods cover embeddings, tools, retrievals and agents.
 
 A recorder started this way does not become the parent of spans started after it. To nest spans under an agent, use the callback form `client.invokeAgent(seed, async (rec) => { ... })`, or `rec.withActiveContext(fn)`. Nesting and the `with*` helpers need an OpenTelemetry context manager; `bootstrapOtel` and `NodeTracerProvider.register()` install one.
-
-## Supported frameworks
-
-Each integration has its own import path, and its framework package is an optional peer dependency.
-
-- [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) (`@genai-otel/core/vercel-ai-sdk`)
-- [OpenAI SDK](docs/integrations.md#openai-sdk) (`@genai-otel/core/openai`, `@genai-otel/core/openai/instrumentation`)
-- [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) (`@genai-otel/core/openai-agents/instrumentation`)
-- [Anthropic SDK](docs/integrations.md#anthropic-sdk) (`@genai-otel/core/anthropic`)
-- [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) (`@genai-otel/core/langchain`, `@genai-otel/core/langchain/instrumentation`)
-- [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) (`@genai-otel/core/claude-agent-sdk/instrumentation`, `@genai-otel/core/claude-agent-sdk`)
 
 ## Documentation
 
