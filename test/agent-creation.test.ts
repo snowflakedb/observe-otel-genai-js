@@ -16,6 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { withAgent, withUserId } from '../src/context.js';
 import {
   ATTR_AGENT_DESCRIPTION,
   ATTR_AGENT_ID,
@@ -24,6 +25,7 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_USER_ID,
   OP_CREATE_AGENT,
 } from '../src/semconv.js';
 import { type Harness, createHarness } from './_harness.js';
@@ -126,6 +128,79 @@ describe('AgentCreationRecorder', () => {
     await rec.end();
     await rec.end();
     expect(h.spans.getFinishedSpans().length).toBe(1);
+  });
+});
+
+describe('AgentCreationRecorder — user id', () => {
+  let h: Harness;
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('takes the user id from the seed, then the withUserId scope, then the client', async () => {
+    h = createHarness({ userId: 'client-user' });
+    await withUserId('scoped-user', () =>
+      h.client.createAgent({ agentName: 'own', userId: 'own-user' }).end(),
+    );
+    await withUserId('scoped-user', () => h.client.createAgent({ agentName: 'scoped' }).end());
+    await h.client.createAgent({ agentName: 'default' }).end();
+
+    const byAgent = Object.fromEntries(
+      h.spans
+        .getFinishedSpans()
+        .map((s) => [s.attributes[ATTR_AGENT_NAME], s.attributes[ATTR_USER_ID]]),
+    );
+    expect(byAgent).toEqual({ own: 'own-user', scoped: 'scoped-user', default: 'client-user' });
+  });
+
+  it('hands its user id, and not its agent name, to the spans inside it', async () => {
+    h = createHarness();
+    await withAgent('outer', () =>
+      h.client.createAgent({ agentName: 'setup', userId: 'u-1' }, async () => {
+        await h.client.startToolExecution({ toolName: 'register' }).end();
+      }),
+    );
+
+    const tool = h.spans.getFinishedSpans().find((s) => s.name.startsWith('execute_tool'));
+    expect(tool?.attributes[ATTR_USER_ID]).toBe('u-1');
+    expect(tool?.attributes[ATTR_AGENT_NAME]).toBe('outer');
+  });
+
+  it("keeps the enclosing agent's identity on the spans inside it", async () => {
+    h = createHarness();
+    await h.client.invokeAgent(
+      { agentName: 'outer', agentVersion: '7', conversationId: 'conv-1' },
+      () =>
+        h.client.createAgent({ agentName: 'setup', userId: 'u-1' }, async () => {
+          await h.client.startToolExecution({ toolName: 'register' }).end();
+        }),
+    );
+
+    const tool = h.spans.getFinishedSpans().find((s) => s.name.startsWith('execute_tool'));
+    expect(tool?.attributes[ATTR_AGENT_NAME]).toBe('outer');
+    expect(tool?.attributes[ATTR_AGENT_VERSION]).toBe('7');
+    expect(tool?.attributes['gen_ai.conversation.id']).toBe('conv-1');
+    expect(tool?.attributes[ATTR_USER_ID]).toBe('u-1');
+  });
+
+  it('hands its user id down through withActiveContext on the fluent variant', async () => {
+    h = createHarness();
+    const rec = h.client.createAgent({ agentName: 'setup', userId: 'u-1' });
+    await rec.withActiveContext(() => h.client.startToolExecution({ toolName: 'register' }).end());
+    await rec.end();
+
+    const tool = h.spans.getFinishedSpans().find((s) => s.name.startsWith('execute_tool'));
+    expect(tool?.attributes[ATTR_USER_ID]).toBe('u-1');
+  });
+
+  it('labels the duration metric with the user id when that option is on', async () => {
+    h = createHarness({ metricAttributes: { userId: true } });
+    await h.client.createAgent({ agentName: 'a', userId: 'u-1' }).end();
+
+    const point = flattenMetrics(await h.collectMetrics())
+      .find((m) => m.descriptor.name === 'gen_ai.client.operation.duration')
+      ?.dataPoints.find((p) => p.attributes[ATTR_OPERATION_NAME] === OP_CREATE_AGENT);
+    expect(point?.attributes[ATTR_USER_ID]).toBe('u-1');
   });
 });
 

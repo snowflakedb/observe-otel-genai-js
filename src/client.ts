@@ -371,7 +371,8 @@ export class Client implements RecorderHostContext {
   /**
    * Callback variant — installs the create_agent span as the active span for
    * the duration of `fn`. Any spans created inside `fn` (e.g. tool registration
-   * spans) inherit it as their parent. Returns the awaited result of `fn`.
+   * spans) inherit it as their parent, and its user id unless they set their
+   * own. Returns the awaited result of `fn`.
    */
   createAgent<T>(
     start: AgentCreationStart,
@@ -383,7 +384,9 @@ export class Client implements RecorderHostContext {
     fn?: (recorder: AgentCreationRecorder) => Promise<T> | T,
   ): AgentCreationRecorder | Promise<T> {
     this.assertOpen();
-    const seed = { ...start };
+    // Hand down only the user id, so spans inside keep the enclosing agent's name.
+    const { identity, handedDown } = resolveIdentity({ userId: start.userId }, this.config);
+    const seed = { ...start, userId: identity.userId };
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;
 
@@ -393,7 +396,7 @@ export class Client implements RecorderHostContext {
         startTime: new Date(startedAtMs),
       });
       applyAgentCreationAttributes(span, seed);
-      return new AgentCreationRecorder(this, span, seed, startedAtMs, 'default');
+      return new AgentCreationRecorder(this, span, seed, startedAtMs, 'default', handedDown);
     }
 
     return new Promise<T>((resolve, reject) => {
@@ -404,9 +407,16 @@ export class Client implements RecorderHostContext {
           undefined,
           async (span: Span) => {
             applyAgentCreationAttributes(span, seed);
-            const recorder = new AgentCreationRecorder(this, span, seed, startedAtMs, 'default');
+            const recorder = new AgentCreationRecorder(
+              this,
+              span,
+              seed,
+              startedAtMs,
+              'default',
+              handedDown,
+            );
             try {
-              const out = await fn(recorder);
+              const out = await recorder.withActiveContext(() => fn(recorder));
               await recorder.end();
               resolve(out);
             } catch (err) {

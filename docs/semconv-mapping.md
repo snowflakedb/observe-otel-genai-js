@@ -20,7 +20,7 @@ Every span attribute, event, and metric this library emits, and when each is set
 | `gen_ai.agent.version` | string | with the agent name it belongs to |
 | `gen_ai.agent.id` | string | `invoke_agent` and `create_agent` spans, when set |
 | `gen_ai.agent.description` | string | `invoke_agent` and `create_agent` spans, when set |
-| `user.id` | string | every span except `create_agent` and `invoke_workflow`, when set |
+| `user.id` | string | every span, when set |
 | `genai.generation.id` | string | generation spans; generated when the caller does not supply one |
 | `genai.parent_generation_ids` | string[] | generation and `invoke_agent` spans, when `parentGenerationIds` is set. Span links are also added (see [Span links](#span-links)). |
 
@@ -119,11 +119,11 @@ On generation spans, token counts of zero are left out. The Claude Agent SDK als
 
 ### Agent-creation-only
 
-`create_agent` spans carry `gen_ai.operation.name`, `genai.sdk.name`, the agent name, id, version, and description, and the provider and model when set. They carry no conversation id, user id, or messages, since those belong to an invocation, not to the agent.
+`create_agent` spans carry `gen_ai.operation.name`, `genai.sdk.name`, the agent name, id, version, and description, and the provider, model and user id when set. The user id comes from `AgentCreationStart.userId`, else the `withUserId(...)` scope, else the client config. They carry no conversation id or messages, since those belong to an invocation, not to the agent.
 
 ### OpenAI Agents workflow
 
-Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its `invoke_agent` spans. It has no agent name and no user id. It records `gen_ai.client.operation.duration`, with an empty provider, model and agent name.
+Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its `invoke_agent` spans. It has no agent name. It records `gen_ai.client.operation.duration`, with an empty provider, model and agent name.
 
 | Attribute | Type | Where |
 |---|---|---|
@@ -131,6 +131,7 @@ Each OpenAI Agents run gets an `invoke_workflow <workflow name>` span above its 
 | `genai.sdk.name` | string | always |
 | `gen_ai.workflow.name` | string | the trace name (`RunConfig.workflowName`, or the `withTrace` name). For a run given none, the agent passed to `run()`. |
 | `gen_ai.conversation.id` | string | the `conversationId` passed to `run()`, else the SDK's `Trace.groupId` |
+| `user.id` | string | the `withUserId(...)` scope the trace opens in, else the client config |
 | `error.type` | string | when the run fails: the SDK's error class name, else `_OTHER` |
 | `genai.metadata.<key>` | string / number / bool | one per string, number, or boolean entry in the SDK's `Trace.metadata` |
 
@@ -208,7 +209,7 @@ Attributes on each data point:
 
 The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
 
-`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points never carry them.
+`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points can carry the user id, but never the conversation id.
 
 ## Span kinds and names
 

@@ -10,6 +10,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Core: `createAgent` accepts `userId`, and `create_agent` spans carry `user.id`,
+  falling back to a `withUserId(...)` scope, then the client config. Their
+  `gen_ai.client.operation.duration` data point carries it too when
+  `metricAttributes.userId` is on. Spans started inside `createAgent(seed, fn)`
+  get the same user id but keep the enclosing agent's name.
 - OpenAI: chat and embeddings spans record `server.address` and `server.port` from
   the client's `baseURL`. Chat Completions spans also record
   `gen_ai.tool.definitions` from the request's `tools`, and `gen_ai.output.type`
@@ -78,6 +83,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Each run records `gen_ai.client.operation.duration` with `gen_ai.operation.name`
     set to `invoke_workflow`, so runs have their own count, error and duration
     series. Its provider, model and agent name are empty.
+  - The workflow span carries `user.id` from the `withUserId(...)` scope the trace
+    opens in, else the client config, as does its duration data point when
+    `metricAttributes.userId` is on.
   - The processor stays registered when the SDK's processor list is replaced, so
     `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
   - Time-to-first-token on the AI SDK path, measured from the first delta event.

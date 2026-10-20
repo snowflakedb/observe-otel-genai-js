@@ -33,7 +33,7 @@ import { DataPointType, type HistogramMetricData } from '@opentelemetry/sdk-metr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTENT_ALLOW_LIST } from '../../src/content/allow-list.js';
-import { withContentCaptureMode } from '../../src/context.js';
+import { withContentCaptureMode, withUserId } from '../../src/context.js';
 import { mapAgentsItems } from '../../src/integrations/openai-agents/_map.js';
 import type {
   SdkModel,
@@ -52,6 +52,7 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_USER_ID,
   ATTR_WORKFLOW_NAME,
   METRIC_OPERATION_DURATION,
   OP_CHAT,
@@ -387,6 +388,19 @@ describe('GenAIOtelTracingProcessor', () => {
     expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('');
     expect(workflow.attributes[ATTR_AGENT_NAME]).toBe('');
     expect(only(await durationPoints(OP_INVOKE_AGENT)).attributes[ATTR_AGENT_NAME]).toBe('a');
+  });
+
+  it("takes the workflow's user id from the scope the trace opens in", async () => {
+    await h.shutdown();
+    h = createHarness({ metricAttributes: { userId: true } });
+    processor = new GenAIOtelTracingProcessor({ client: h.client, contentCapture: 'full' });
+    const trace = makeTrace({ name: 'user-run' });
+
+    await withUserId('u-1', () => processor.onTraceStart(trace));
+    await processor.onTraceEnd(trace);
+
+    expect(only(spansWithOp(OP_INVOKE_WORKFLOW)).attributes[ATTR_USER_ID]).toBe('u-1');
+    expect(only(await durationPoints(OP_INVOKE_WORKFLOW)).attributes[ATTR_USER_ID]).toBe('u-1');
   });
 
   it("labels a failed workflow's duration with its error.type", async () => {

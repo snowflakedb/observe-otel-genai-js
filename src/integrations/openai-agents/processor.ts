@@ -53,7 +53,7 @@ import {
   omitsContent,
   resolveContentCaptureMode,
 } from '../../content/capture.js';
-import { contentCaptureModeFromContext } from '../../context.js';
+import { contentCaptureModeFromContext, userIdFromContext } from '../../context.js';
 import { classifyError } from '../../errors/classify.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message } from '../../models/message.js';
@@ -66,6 +66,7 @@ import {
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
   ATTR_SDK_NAME,
+  ATTR_USER_ID,
   ATTR_WORKFLOW_NAME,
   ERR_CATEGORY_SDK,
   INSTRUMENTATION_NAME,
@@ -156,6 +157,8 @@ interface SpanRecord {
 interface TraceRecord {
   readonly sdkTrace: SdkTrace;
   readonly conversationId?: string;
+  /** From the `withUserId(...)` scope the trace opened in, else the client config. */
+  readonly userId?: string;
   /** `gen_ai.workflow.name`: the trace's own name, else its first agent's. */
   workflowName?: string;
   /**
@@ -266,11 +269,14 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     if (workflowName) span.setAttribute(ATTR_WORKFLOW_NAME, workflowName);
     const conversationId = this.activeRun()?.conversationId || trace.groupId || undefined;
     if (conversationId) span.setAttribute(ATTR_CONVERSATION_ID, conversationId);
+    const userId = userIdFromContext() || this.client.config.userId || undefined;
+    if (userId) span.setAttribute(ATTR_USER_ID, userId);
     applyMetadataAttributes(span, trace.metadata);
 
     const record: TraceRecord = {
       sdkTrace: trace,
       conversationId,
+      userId,
       workflowName,
       resumed,
       ownedByRun: this.activeRun() !== undefined,
@@ -647,6 +653,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       requestModel: '',
       agentName: '',
       conversationId: trace.conversationId,
+      userId: trace.userId,
       errorType,
       errorCategory,
     });

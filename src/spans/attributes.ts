@@ -304,6 +304,7 @@ export function applyAgentCreationAttributes(span: Span, start: AgentCreationSta
   setStr(span, ATTR_AGENT_DESCRIPTION, start.agentDescription);
   setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
   setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
+  setStr(span, ATTR_USER_ID, start.userId);
 }
 
 // -----------------------------------------------------------------------------

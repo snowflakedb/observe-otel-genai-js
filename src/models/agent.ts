@@ -54,9 +54,9 @@ export interface AgentInvocationStart {
  * registering tools, building the system prompt, etc.
  *
  * Per the OTel GenAI semantic conventions, `create_agent` is a distinct
- * operation from `invoke_agent`. It does not have a `task` field (creation
- * is the agent definition, not a specific task) nor a `conversationId` or
- * `userId` (creation is per-agent, not per-conversation/user).
+ * operation from `invoke_agent`. It has no `task` field (creation is the
+ * agent definition, not a specific task) and no `conversationId` (creation is
+ * per-agent, not per-conversation).
  */
 export interface AgentCreationStart {
   agentName: string;
@@ -67,6 +67,8 @@ export interface AgentCreationStart {
   requestProvider?: string;
   /** Model the agent is configured to use (emitted as `gen_ai.request.model`). */
   requestModel?: string;
+  /** Emitted as `user.id`. */
+  userId?: string;
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
   startedAt?: Date | number;

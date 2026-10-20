@@ -159,7 +159,8 @@ export class AgentInvocationRecorder extends RecorderBase {
  *
  * Lifecycle is minimal: optional `setError(err)` if setup fails, then
  * `end()`. Use the callback variant on `Client.createAgent(seed, fn)` to
- * auto-end on body completion and auto-parent any nested spans.
+ * auto-end on body completion and auto-parent any nested spans. Nested spans
+ * inherit its user id, but not its agent name.
  */
 export class AgentCreationRecorder extends RecorderBase {
   private readonly seed: AgentCreationStart;
@@ -170,8 +171,9 @@ export class AgentCreationRecorder extends RecorderBase {
     seed: AgentCreationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: IdentityFields,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -202,6 +204,7 @@ export class AgentCreationRecorder extends RecorderBase {
       providerName: this.seed.requestProvider ?? '',
       requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

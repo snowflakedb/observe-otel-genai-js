@@ -86,8 +86,11 @@ The agent name and version travel together:
 A span passes down to the spans started under it only its own and inherited values,
 never the `Client` config; those spans fall back to the `Client` on their own. So a
 sub-agent named `helper` under agent `checkout` version `1` has no version, and
-neither do the spans under it. `create_agent` spans take only what you pass to
-`createAgent`, and pass nothing down.
+neither do the spans under it. `create_agent` spans take their user id like any
+other span and everything else only from what you pass to `createAgent`. They pass
+down only their user id: spans started inside `createAgent(seed, fn)`, or inside its
+recorder's `withActiveContext(fn)`, get that user id but keep the enclosing agent's
+name.
 
 Scopes live in the OpenTelemetry context, next to the active span, so code that saves
 and restores a context restores both. Like span nesting, they need a registered
@@ -100,8 +103,10 @@ Integrations never make up a name, so an agent nothing names gets a plain
 
 The table shows where each integration reads the span's own value. A `withX(...)`
 scope and the `Client` work everywhere, and are the only way to set a field marked
-"–". The one exception is the OpenAI Agents `invoke_workflow` span, which takes only
-the run's `conversationId` or `groupId`.
+"–". The one exception is the OpenAI Agents `invoke_workflow` span, which has no agent
+name or conversation title, and takes its conversation id only from the run's
+`conversationId` or `groupId`. Its user id comes from the scope the trace opens in: for
+`withTrace(...)`, the scope around that call, not one inside it.
 
 | Integration | Agent name | Agent version | Conversation id | Conversation title | User id |
 |---|---|---|---|---|---|
