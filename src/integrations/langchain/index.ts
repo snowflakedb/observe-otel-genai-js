@@ -26,8 +26,8 @@
  *  - `handleLLMStart`  → `client.startGeneration({...})`. Captures `runId` so
  *                        subsequent `handleLLMNewToken` / `handleLLMEnd` /
  *                        `handleLLMError` find the matching recorder.
- *  - `handleLLMNewToken` → first call invokes `recorder.setFirstTokenAt(...)`
- *                        for TTFT.
+ *  - `handleLLMNewToken` → any chunk marks the call as streaming; the first
+ *                        chunk with text sets `recorder.setFirstTokenAt(...)`.
  *  - `handleLLMEnd`    → `recorder.setResult(...)` + `recorder.end()`.
  *  - `handleLLMError`  → `recorder.setCallError(err)` + `recorder.end()`.
  *  - `handleToolStart` → `client.startToolExecution({...})`.
@@ -263,13 +263,11 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   override async handleLLMNewToken(token: string, _idx: unknown, runId: string): Promise<void> {
     const entry = this.llmRunMap.get(runId);
     if (!entry || entry.firstTokenSeen) return;
+    // Any streamed chunk proves the call is streaming, even a tool-call-only one with no text.
+    entry.rec.setResult({ mode: 'STREAM' });
     if (token.length === 0) return;
     entry.firstTokenSeen = true;
     entry.rec.setFirstTokenAt(Date.now());
-    // Receiving streamed tokens is itself proof the call is streaming. Upgrade
-    // the mode so gen_ai.request.stream and time_to_first_token land even when
-    // the provider didn't expose invocation_params.stream at start.
-    entry.rec.setResult({ mode: 'STREAM' });
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
@@ -1095,9 +1093,12 @@ function extractResponseModel(output: LLMResult): string | undefined {
   const llmOut = output.llmOutput as Record<string, unknown> | undefined;
   const message = firstGenerationMessage(output);
   const meta = responseMetadata(message);
+  const generationInfo = output.generations?.[0]?.[0]?.generationInfo;
   return (
     firstStr(llmOut, RESPONSE_MODEL_KEYS) ??
     firstStr(meta, RESPONSE_MODEL_KEYS) ??
+    // When LangChain streams inside invoke(), ChatOpenAI reports it only on the generation.
+    firstStr(generationInfo, RESPONSE_MODEL_KEYS) ??
     // Streaming ChatAnthropic reports it only here.
     strField(additionalKwargs(message), 'model')
   );

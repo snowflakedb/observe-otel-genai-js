@@ -346,6 +346,24 @@ describe('LangChain adapter — response model', () => {
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('claude-sonnet-4-5-20250929');
   });
 
+  it('reads generationInfo.model_name (streaming ChatOpenAI)', async () => {
+    // When LangChain streams inside invoke(), ChatOpenAI carries the model only on the generation.
+    await endWith('run-resp-model-geninfo', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            generationInfo: { model_name: 'gpt-4o-2024-11-20' },
+            message: { _getType: () => 'ai', content: 'hi', response_metadata: {} },
+          },
+        ],
+      ],
+    } as never);
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('gpt-4o-2024-11-20');
+  });
+
   it('stays absent when the provider reports no model', async () => {
     await endWith('run-resp-model-absent', generation({}));
 
@@ -1007,6 +1025,23 @@ describe('LangChain adapter — streaming', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_REQUEST_STREAM]).toBe(true);
     expect(hasMetric(await h.collectMetrics(), 'gen_ai.client.time_to_first_token')).toBe(true);
+  });
+
+  it('marks a streamed call that returns only a tool call', async () => {
+    // Each chunk of a tool-call-only stream has no text, so no token is ever seen.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChatModelStart!(llmSerialized as any, [[]] as any, 'run-tool-stream');
+    await handler.handleLLMNewToken!('', {} as never, 'run-tool-stream');
+    await handler.handleLLMNewToken!('', {} as never, 'run-tool-stream');
+    await handler.handleLLMEnd!(
+      { generations: [[{ text: '', message: { _getType: () => 'ai', content: '' } }]] } as never,
+      'run-tool-stream',
+    );
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_STREAM]).toBe(true);
+    // Time to first token still waits for text.
+    expect(hasMetric(await h.collectMetrics(), 'gen_ai.client.time_to_first_token')).toBe(false);
   });
 
   it('leaves a synchronous call unmarked', async () => {

@@ -148,6 +148,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- LangChain: a streamed call that returns only a tool call now records
+  `gen_ai.request.stream`, and a ChatOpenAI call that LangChain streams inside
+  `invoke()` records `gen_ai.response.model`, which it then reports only on the
+  generation.
 - Core: spans started inside `client.invokeAgent(seed, fn)` or a recorder's
   `withActiveContext(fn)` now take that recorder's agent name and version,
   conversation id and title, and user id as their enclosing scope, unless they
