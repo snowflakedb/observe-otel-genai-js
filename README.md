@@ -4,32 +4,17 @@ OpenTelemetry tracing and metrics for AI agents, following the [GenAI semantic c
 
 The library records a span for each model call, embedding, tool call, retrieval, agent run and agent creation, plus five GenAI histograms (operation duration, token usage, time to first token, tool calls per operation, tool execution duration). It writes through the standard OpenTelemetry API, so the data goes wherever your app's exporter sends it: Observe, Tempo, Honeycomb, Jaeger, Datadog, or any other OTLP backend.
 
-The core entry point depends only on `@opentelemetry/api`. It does not register providers, open network connections, or start background work; your OpenTelemetry setup does that. If you have no setup yet, the optional `@genai-otel/core/bootstrap` helper creates one for you.
+The core entry point depends only on `@opentelemetry/api`. It does not register providers, open network connections, or start background work; your OpenTelemetry setup does that.
 
 ## Install
 
 Requires Node.js 22 or later. The package ships both ESM and CommonJS.
 
-If your app already sets up OpenTelemetry:
-
 ```bash
-pnpm add @genai-otel/core @opentelemetry/api
+pnpm add @genai-otel/core @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/instrumentation
 ```
 
-If you want the library to set up OpenTelemetry for you (easiest way to start), also add the SDK packages the bootstrap helper uses, and `@opentelemetry/instrumentation` for auto-instrumentation:
-
-```bash
-pnpm add @genai-otel/core \
-  @opentelemetry/api \
-  @opentelemetry/instrumentation \
-  @opentelemetry/sdk-trace-base \
-  @opentelemetry/sdk-trace-node \
-  @opentelemetry/sdk-metrics \
-  @opentelemetry/exporter-trace-otlp-http \
-  @opentelemetry/exporter-metrics-otlp-http \
-  @opentelemetry/resources \
-  @opentelemetry/semantic-conventions
-```
+If your app already sets up OpenTelemetry, skip `@opentelemetry/sdk-node` and add the instrumentations below to your existing setup.
 
 ## Quickstart
 
@@ -38,21 +23,20 @@ Auto-instrumentation traces your app without changing its code. Put the setup in
 ```js
 // preload.mjs
 import { register } from 'node:module';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
 
 // The loader hook must be registered before the app imports `openai`.
 register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 
-const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
-registerInstrumentations({ instrumentations: [new OpenAIInstrumentation()] });
+const sdk = new NodeSDK({
+  serviceName: 'my-agent',
+  instrumentations: [new OpenAIInstrumentation()],
+});
+sdk.start();
 
 // Send what is still buffered when the process is about to exit.
-process.once('beforeExit', async () => {
-  await tracerProvider.shutdown();
-  await meterProvider.shutdown();
-});
+process.once('beforeExit', () => sdk.shutdown());
 ```
 
 Start the app with it. The app itself stays plain OpenAI SDK code:
@@ -72,16 +56,15 @@ await openai.chat.completions.create({
 });
 ```
 
-Each call becomes a `chat gpt-4o-mini` span, with token usage and duration metrics. Set `OTEL_EXPORTER_OTLP_HEADERS` too if your backend needs an auth header.
+Each call becomes a `chat gpt-4o-mini` span, with token usage and duration metrics, sent over OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`. Set `OTEL_EXPORTER_OTLP_HEADERS` too if your backend needs an auth header.
 
-- **Setup options and env vars:** [docs/bootstrap.md](docs/bootstrap.md).
 - **Sending data to a backend and checking it arrives:** [docs/exporting.md](docs/exporting.md).
 - **Prompts and completions are not recorded by default.** The default mode, `metadata_only`, keeps model, token usage, timing and error type, but no message content. To record content, see [Content capture](docs/integrations.md#content-capture).
 - **Agent name, conversation id and user id:** run the code inside `withAgent(name, fn)`, `withConversationId(id, fn)` or `withUserId(id, fn)`, or set a default agent name and user id in the `Client` config. See [Identity](docs/integrations.md#identity).
 
 ## Supported frameworks
 
-Add the instrumentation for each framework you use to the `instrumentations` list in the preload. Each framework package is an optional peer dependency.
+Add the instrumentation for each framework you use to the `instrumentations` list. Each framework package is an optional peer dependency.
 
 | Framework | How to turn it on |
 |---|---|
@@ -98,14 +81,13 @@ To trace only some calls, or to skip the loader hook, wrap a client instead: `wr
 
 For a model or framework without an integration, record each call with the `Client` directly: `client.startGeneration(...)`, then `rec.setResult(...)` and `rec.end()` (or `await using rec = ...`). [examples/basic-chat](examples/basic-chat/index.ts) shows the full pattern, and the other `Client` methods cover embeddings, tools, retrievals and agents.
 
-A recorder started this way does not become the parent of spans started after it. To nest spans under an agent, use the callback form `client.invokeAgent(seed, async (rec) => { ... })`, or `rec.withActiveContext(fn)`. Nesting and the `with*` helpers need an OpenTelemetry context manager; `bootstrapOtel` and `NodeTracerProvider.register()` install one.
+A recorder started this way does not become the parent of spans started after it. To nest spans under an agent, use the callback form `client.invokeAgent(seed, async (rec) => { ... })`, or `rec.withActiveContext(fn)`. Nesting and the `with*` helpers need an OpenTelemetry context manager; `NodeSDK` and `NodeTracerProvider.register()` install one.
 
 ## Documentation
 
 - [docs/integrations.md](docs/integrations.md): setting up each framework, and what each one records.
 - [docs/semconv-mapping.md](docs/semconv-mapping.md): every span attribute, metric and span kind.
 - [docs/content-retention.md](docs/content-retention.md): the `allow_list` mode, which keeps only a fixed set of reviewed attributes.
-- [docs/bootstrap.md](docs/bootstrap.md): the `bootstrapOtel` helper.
 - [docs/exporting.md](docs/exporting.md): exporter setup, smoke test, redacting content, resource detectors.
 - [docs/blueprint.md](docs/blueprint.md): design goals and decisions.
 - [examples/](examples/README.md): runnable examples.
