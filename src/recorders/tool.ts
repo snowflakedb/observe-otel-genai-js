@@ -24,7 +24,11 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import { type ContentCaptureMode, applyContentAttribute } from '../content/capture.js';
+import {
+  type ContentCaptureMode,
+  applyContentAttribute,
+  omitsContent,
+} from '../content/capture.js';
 import type { IdentityFields } from '../models/identity.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
@@ -83,7 +87,7 @@ export class ToolExecutionRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
     const allowToolContent = !stripped && mode !== 'no_tool_content';
 
     this.span.updateName(toolSpanName(this.seed.toolName));
@@ -107,7 +111,7 @@ export class ToolExecutionRecorder extends RecorderBase {
     }
 
     // Status + metrics.
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_TOOL_EXECUTION, stripped)

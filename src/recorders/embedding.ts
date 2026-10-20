@@ -24,7 +24,7 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { ValidationError } from '../errors.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
 import type { IdentityFields } from '../models/identity.js';
@@ -63,7 +63,7 @@ export class EmbeddingRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(embeddingSpanName(this.seed.model.name));
 
@@ -77,7 +77,7 @@ export class EmbeddingRecorder extends RecorderBase {
     applyEmbeddingEndAttributes(this.span, result, capturedTexts);
 
     // Privacy-gated exception recording.
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
 
     let classified: ClassifiedError;
     if (this.callError != null) {

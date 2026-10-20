@@ -23,7 +23,7 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitRetrievalContent } from '../content/sink.js';
 import type { IdentityFields } from '../models/identity.js';
 import type { RetrievalDocument, RetrievalResult, RetrievalStart } from '../models/retrieval.js';
@@ -61,7 +61,7 @@ export class RetrievalRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
     // retrieval carries external content with similar sensitivity to tool payloads,
     // so users who opt out of tool content are opted out of retrieval content too.
     const allowRetrievalContent = !stripped && mode !== 'no_tool_content';
@@ -75,7 +75,7 @@ export class RetrievalRecorder extends RecorderBase {
       emitRetrievalContent(this.span, this.seed.queryText, result.documents, captureConfig);
     }
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped)

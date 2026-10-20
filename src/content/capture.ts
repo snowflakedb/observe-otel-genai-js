@@ -185,6 +185,15 @@ export function applyContentAttribute(
 }
 
 /**
+ * True when the mode records no messages, tool payloads, retrieval content or
+ * conversation title. `allow_list` filters spans as well, but the recorders still
+ * leave content out rather than rely on that filter alone.
+ */
+export function omitsContent(mode: ContentCaptureMode): boolean {
+  return mode === 'metadata_only' || mode === 'allow_list';
+}
+
+/**
  * Resolves the effective capture mode given a per-call override, an ambient
  * context value, and a client-level default. `default` falls through, ending
  * at `metadata_only`.

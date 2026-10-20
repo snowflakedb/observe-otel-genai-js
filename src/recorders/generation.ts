@@ -31,7 +31,7 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitGenerationContent } from '../content/sink.js';
 import { ValidationError } from '../errors.js';
 import type { Generation, GenerationStart, ModelRef } from '../models/generation.js';
@@ -120,12 +120,10 @@ export class GenerationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const isMetadataOnly = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     // 1. Merge seed + result into the final generation payload.
     const generation = this.mergeSeedAndResult(completedAtMs);
-
-    const stripped = isMetadataOnly;
 
     // 2. Update span name to reflect final operation + model.
     this.span.updateName(
@@ -165,8 +163,8 @@ export class GenerationRecorder extends RecorderBase {
     if (ttft !== undefined) this.span.setAttribute(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK, ttft);
 
     // 5. Privacy-gated exception recording.
-    this.recordExceptionIfAny(this.callError, stripped);
-    this.recordExceptionIfAny(this.mappingError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
+    this.recordExceptionIfAny(this.mappingError, mode);
 
     // 6. Status + error metric labels.
     let classified: import('./base.js').ClassifiedError;

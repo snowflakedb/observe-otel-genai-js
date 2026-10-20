@@ -36,7 +36,7 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitAgentContent } from '../content/sink.js';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
 import type { IdentityFields } from '../models/identity.js';
@@ -102,7 +102,7 @@ export class AgentInvocationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(agentSpanName(this.seed.agentName));
     applyAgentAttributes(this.span, this.seed);
@@ -119,7 +119,7 @@ export class AgentInvocationRecorder extends RecorderBase {
       );
     }
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped)
@@ -184,12 +184,12 @@ export class AgentCreationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(agentCreateSpanName(this.seed.agentName));
     applyAgentCreationAttributes(this.span, this.seed);
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_VALIDATION, stripped)

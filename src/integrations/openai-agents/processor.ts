@@ -48,7 +48,11 @@ import {
 
 import { Client } from '../../client.js';
 import { AllowListSpan, allowListSpanOptions } from '../../content/allow-list.js';
-import { type ContentCaptureMode, resolveContentCaptureMode } from '../../content/capture.js';
+import {
+  type ContentCaptureMode,
+  omitsContent,
+  resolveContentCaptureMode,
+} from '../../content/capture.js';
 import { contentCaptureModeFromContext } from '../../context.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message } from '../../models/message.js';
@@ -621,7 +625,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       span.setAttribute(ATTR_ERROR_TYPE, errorType);
       span.setStatus({
         code: SpanStatusCode.ERROR,
-        message: trace.mode === 'metadata_only' ? errorType : errorMessage(error),
+        message: omitsContent(trace.mode) ? errorType : errorMessage(error),
       });
     }
 

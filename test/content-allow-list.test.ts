@@ -26,7 +26,7 @@
 
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
@@ -351,6 +351,46 @@ describe('allow_list content mode', () => {
       expectAllowListed(span);
       expect(span.events.map((e) => e.attributes)).toEqual([{ 'exception.type': 'TypeError' }]);
     });
+
+    it('records no content when it starts under metadata_only and ends inside the scope', async () => {
+      useHarness();
+      const rec = h.client.startGeneration({ model: MODEL, conversationTitle: 'secret title' });
+      await withContentCaptureMode('allow_list', async () => {
+        rec.setResult({ input: secretMessages(), output: [assistantTextMessage('secret answer')] });
+        rec.setCallError(new TypeError('secret provider error'));
+        await rec.end();
+      });
+
+      const span = spanNamed('chat gpt-4o');
+      const exported = JSON.stringify([span.attributes, span.events, span.status]);
+      expect(exported).not.toContain('secret');
+    });
+  });
+
+  it('never hands content to the filter', async () => {
+    useHarness({ contentCaptureMode: 'allow_list' });
+    const written: string[] = [];
+    const setAttribute = vi
+      .spyOn(AllowListSpan.prototype, 'setAttribute')
+      .mockImplementation(function (this: AllowListSpan, key) {
+        written.push(key);
+        return this;
+      });
+    const setAttributes = vi
+      .spyOn(AllowListSpan.prototype, 'setAttributes')
+      .mockImplementation(function (this: AllowListSpan, attributes) {
+        written.push(...Object.keys(attributes));
+        return this;
+      });
+    try {
+      await driveEverySpanType(h.client);
+    } finally {
+      setAttribute.mockRestore();
+      setAttributes.mockRestore();
+    }
+
+    expect(written.length).toBeGreaterThan(0);
+    expect(written.filter((key) => CONTENT_KEYS.includes(key))).toEqual([]);
   });
 });
 

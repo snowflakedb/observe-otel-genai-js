@@ -247,14 +247,13 @@ export abstract class RecorderBase {
   }
 
   /**
-   * Records exception + sets ERROR status. Privacy-gated: when
-   * `isMetadataOnly` is true and the error originated from user content,
-   * `recordExceptionForUser` is suppressed and the description is replaced
-   * with the bare category.
+   * Records the call's error as an exception event, except under
+   * `metadata_only`. Under `allow_list` the event is kept, and the
+   * `AllowListSpan` reduces it to `exception.type`.
    */
-  protected recordExceptionIfAny(err: unknown, isMetadataOnly: boolean): void {
+  protected recordExceptionIfAny(err: unknown, mode: ContentCaptureMode): void {
     if (err == null) return;
-    if (isMetadataOnly) return;
+    if (mode === 'metadata_only') return;
     try {
       this.span.recordException(err instanceof Error ? err : new Error(String(err)));
     } catch {
