@@ -1,88 +1,80 @@
 # Exporting telemetry
 
-This library is vendor-neutral: it emits pure OpenTelemetry spans and metrics and ships them through whatever OTLP exporter your app configures. Any OTel-native backend works — Tempo, Honeycomb, Jaeger, Datadog, Observe, and others. The only thing that changes between backends is the OTLP endpoint and (optionally) an auth header.
+This library emits plain OpenTelemetry spans and metrics and sends them through whatever OTLP exporter your app sets up. Any backend that accepts OTLP works. Only the endpoint and, if needed, an auth header change between backends.
 
 ## Setup
 
-1. Get your OTLP/HTTP endpoint and auth header (if required) from your backend's OTLP setup guide. Endpoint URLs and header formats are backend-specific; for example, a hosted backend might look like `https://<account>.<vendor>.com/v1/otel` with `Authorization=Bearer <token>`.
+1. Get the OTLP/HTTP endpoint and auth header from your backend's OTLP setup guide.
 
-2. Configure env vars in your application's environment:
+2. Set the standard OTel env vars in your app's environment:
 
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-endpoint.example.com/v1/otel
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com
 OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <your-token>
 OTEL_SERVICE_NAME=my-agent
-OTEL_SERVICE_VERSION=0.1.0
 OTEL_DEPLOYMENT_ENVIRONMENT_NAME=prod
 ```
 
-3. Wire up OTel via `bootstrapOtel` (or your existing OTel setup) and create a `Client`:
+`OTEL_EXPORTER_OTLP_ENDPOINT` is the base URL: the OTLP/HTTP exporters add `/v1/traces` and `/v1/metrics` to it. To give a full per-signal URL instead, use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`.
+
+3. Set up OTel with `bootstrapOtel` (or your existing OTel setup) and create a `Client`:
 
 ```ts
 import { Client } from '@genai-otel/core';
 import { bootstrapOtel } from '@genai-otel/core/bootstrap';
 
-const { tracerProvider, meterProvider } = bootstrapOtel({
-  serviceName: 'my-agent',
-});
+const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
 const client = new Client();
 ```
 
-> The library never owns the exporter or any vendor-specific network code — `bootstrapOtel` is a thin convenience wrapper over the standard `@opentelemetry/sdk-*` OTLP/HTTP exporters driven entirely by `OTEL_EXPORTER_OTLP_*` env vars. If you already configure OTel in your app, skip `bootstrapOtel` and just construct a `Client`.
+`bootstrapOtel` is a thin wrapper over the standard OTLP/HTTP exporters; see [bootstrap.md](bootstrap.md). If your app already sets up OTel, skip it and just construct a `Client`.
 
 ## Smoke test
 
-Run the gated integration test against your real backend:
+Run the gated integration test against your backend. The default test config skips `test/integration/`, so pass `--config /dev/null` to run it on its own:
 
 ```bash
-OTLP_SMOKE_ENDPOINT=https://your-otlp-endpoint.example.com/v1/otel \
+OTLP_SMOKE_ENDPOINT=https://otlp.example.com \
 OTLP_SMOKE_TOKEN=<your-token> \
-  pnpm exec vitest run test/integration/otlp-export-smoke.test.ts
+  pnpm exec vitest run --config /dev/null test/integration/otlp-export-smoke.test.ts
 ```
+
+Both variables are required; without them the test is skipped. `OTLP_SMOKE_ENDPOINT` becomes `OTEL_EXPORTER_OTLP_ENDPOINT`, and the token is sent as `Authorization=Bearer <token>`.
 
 The test:
 
-1. Calls `bootstrapOtel({ serviceName: 'genai-otel-smoke' })`.
-2. Emits one chat span with token usage and no messages.
-3. Force-flushes the providers and shuts down.
+1. Calls `bootstrapOtel({ serviceName: 'genai-otel-smoke', ... })`.
+2. Emits one `chat` span with token usage and no messages.
+3. Flushes and shuts down the providers. An export error fails the test.
 
-If the test passes, the OTLP/HTTP path is reachable. To confirm visibility, query your backend for:
+A pass means the endpoint accepted the export. The test does not query the backend, so check there for a span with:
 
 - `service.name = "genai-otel-smoke"`
 - `gen_ai.operation.name = "chat"`
 - `gen_ai.conversation.id = "smoke-conv-1"`
 
-A row should appear within seconds.
-
 ## Things to verify on first integration
 
-- **Per-attribute size limit:** backends cap attribute size (commonly in the 64–256 KB range). If your prompts exceed it, lower `Client({ contentCapture: { maxContentLength: <smaller> } })`.
-- **Bucket boundaries on histograms:** your backend should render the advisory boundaries correctly. If dashboards don't look right, see [`docs/semconv-mapping.md`](semconv-mapping.md) for the canonical bucket families.
-- **`service.name` routing:** most backends group data by service. Set `OTEL_SERVICE_NAME` per environment so dev/staging/prod stay separate.
+- **Attribute size limits:** many backends cap the size of one attribute. Content is unbounded by default, so if your prompts are larger than your backend's limit, set `new Client({ contentCapture: { maxContentLength: <limit> } })`.
+- **Histogram buckets:** the histograms suggest bucket boundaries to the SDK. If dashboards look wrong, compare with the bucket families in [semconv-mapping.md](semconv-mapping.md#metrics).
+- **`service.name`:** most backends group data by service. Set `OTEL_SERVICE_NAME` (or `serviceName`) and `OTEL_DEPLOYMENT_ENVIRONMENT_NAME` so dev, staging and prod stay separate.
 
 ## Redacting content
 
-The library captures no prompt/completion content by default (see
-[integrations.md](integrations.md#content-capture)). There are two layers of
-control:
+No prompt or completion content is captured by default. The capture modes, including `allow_list`, are covered in [integrations.md](integrations.md#content-capture) and [content-retention.md](content-retention.md).
 
-1. **Coarse, built-in:** `contentCaptureMode`. `metadata_only` (the default)
-   drops all content across every span type (generation, agent, tool, embedding,
-   retrieval); `no_tool_content` keeps prompts/completions but strips tool
-   args/results and retrieval content; `full` keeps everything. Set
-   `allow_list` to drop content and also every attribute not on a fixed,
-   reviewed list (see [content-retention.md](content-retention.md)). This needs
-   no extra code.
-
-2. **Fine-grained:** a redacting `SpanProcessor`. Because content is emitted as
-   standard span attributes, a processor can scrub or drop it uniformly for
-   every span type before export — the OTel-native place for field-level
-   redaction. The library intentionally ships no in-SDK redaction hook.
+To scrub specific fields before they leave the process, add a redacting `SpanProcessor` ahead of the exporting one. It also covers spans from other libraries, which the capture modes do not. `bootstrapOtel` takes no extra span processors, so set up the trace provider yourself:
 
 ```ts
-import type { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import {
+  BatchSpanProcessor,
+  type ReadableSpan,
+  type SpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
-// Every attribute the library uses for content or user free text.
+// Attributes the library uses for content or user free text.
 const CONTENT_ATTRS = [
   'gen_ai.input.messages',
   'gen_ai.output.messages',
@@ -98,11 +90,10 @@ const CONTENT_ATTRS = [
 ];
 
 /**
- * Scrubs content attributes in place before the batch exporter serializes them.
- * Most content is JSON-encoded, so `redact` runs over the encoded string — good
- * for pattern-based scrubbing (emails, card numbers, tokens). Embedding input
- * texts and stop sequences are string arrays, so each item is scrubbed. Register
- * this BEFORE the exporting processor so the mutation is visible at export time.
+ * Rewrites content attributes in place before the batch exporter sends them.
+ * Most content is a JSON string, so `redact` runs over the encoded string.
+ * Embedding input texts and stop sequences are string arrays, so each item is
+ * scrubbed.
  */
 class RedactingSpanProcessor implements SpanProcessor {
   constructor(private readonly redact: (value: string) => string) {}
@@ -128,10 +119,27 @@ const redactor = new RedactingSpanProcessor((v) =>
     .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[redacted-email]')
     .replace(/\b\d{16}\b/g, '[redacted-card]'),
 );
-// Register `redactor` on your NodeTracerProvider ahead of the OTLP exporting
-// processor (BatchSpanProcessor).
+
+new NodeTracerProvider({
+  spanProcessors: [redactor, new BatchSpanProcessor(new OTLPTraceExporter())],
+}).register();
 ```
 
 ## Resource detectors
 
-For cloud / Kubernetes deployments, install `@opentelemetry/resource-detector-{aws,gcp,k8s}` and pass detected attributes into `bootstrapOtel`'s `extraResourceAttributes`. This auto-populates `cloud.provider`, `k8s.pod.name`, `host.name`, etc. on every span.
+`bootstrapOtel` runs no resource detectors and does not read `OTEL_RESOURCE_ATTRIBUTES`. Its resource is `service.name`, `service.version`, `deployment.environment.name` and `extraResourceAttributes`. To add host or cloud attributes, run the detectors yourself and pass the result in:
+
+```ts
+import { detectResources, hostDetector } from '@opentelemetry/resources';
+import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+
+const detected = detectResources({ detectors: [hostDetector] });
+await detected.waitForAsyncAttributes?.();
+
+bootstrapOtel({
+  serviceName: 'my-agent',
+  extraResourceAttributes: detected.attributes as Record<string, string | number | boolean>,
+});
+```
+
+Cloud detectors, such as those in `@opentelemetry/resource-detector-aws` and `@opentelemetry/resource-detector-gcp`, plug into `detectResources` the same way. If you set up the providers yourself, pass the detected resource to them directly.
