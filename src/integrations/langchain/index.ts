@@ -79,8 +79,8 @@ export interface GenAIOtelCallbackHandlerOptions {
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
   /**
-   * When `true` (default), every top-level chain start becomes an
-   * `invoke_agent` span. Set to `false` to skip chain instrumentation and
+   * When `true` (default), every top-level chain, and every named LangGraph
+   * graph nested inside one, becomes an `invoke_agent` span. Set to `false` to skip chain instrumentation and
    * only capture LLM + tool spans.
    */
   captureChains?: boolean;
@@ -351,13 +351,16 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // can walk up to a real ancestor (see nearestRecorder).
     this.runParent.set(runId, parentRunId);
 
-    // Top-level chains become invoke_agent spans; nested chains are steps inside them.
+    // Top-level chains become invoke_agent spans. A nested chain is a step inside
+    // one, unless it is a named LangGraph graph: another agent, called from a tool
+    // or added as a node.
     if (!this.captureChains) return;
-    if (parentRunId) return;
+    const agentName = callerRunName(chain, runName);
+    if (parentRunId && !(isLangGraph(chain) && agentName)) return;
 
     const rec = this.nested(parentRunId, () =>
       this.client.invokeAgent({
-        agentName: callerRunName(chain, runName),
+        agentName,
         input: chainInputToMessages(inputs),
         ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
@@ -704,10 +707,20 @@ const LANGGRAPH_DEFAULT_NAME = 'LangGraph';
  * or for a LangGraph graph with `LangGraph`. Those count as no name.
  */
 function callerRunName(chain: Serialized, runName: string | undefined): string | undefined {
-  const id = (chain as { id?: string[] }).id ?? [];
+  const id = serializedId(chain);
   if (!runName || runName === id[id.length - 1] || runName.startsWith('Runnable')) return undefined;
   if (id[0] === 'langgraph' && runName === LANGGRAPH_DEFAULT_NAME) return undefined;
   return runName;
+}
+
+/** A compiled LangGraph graph: `createAgent`, `StateGraph.compile()` or `entrypoint`. */
+function isLangGraph(chain: Serialized): boolean {
+  const id = serializedId(chain);
+  return id[0] === 'langgraph' && id[1] === 'pregel';
+}
+
+function serializedId(chain: Serialized): string[] {
+  return (chain as { id?: string[] }).id ?? [];
 }
 
 function nonEmpty(value: unknown): string | undefined {

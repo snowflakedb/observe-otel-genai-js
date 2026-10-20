@@ -135,7 +135,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **LangChain: the `captureNestedChains` option is removed.** It turned every step
   inside a graph into an `invoke_agent` span named after the step (`__start__`,
   `model_request`, …), and the `chat` spans under a step then took the step's name
-  as their agent name.
+  as their agent name. A named LangGraph graph inside another agent now gets its
+  own span without it (see Fixed).
 - Vercel AI SDK telemetry: a call whose `deriveOptions` returns no agent name (by
   default: no `functionId` and no `runtimeContext.agent`) is no longer named
   `agent`. Its `invoke_agent` span takes the name from an enclosing
@@ -158,6 +159,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- LangChain: a named LangGraph graph run inside another agent, called from a tool
+  or added as a graph node, now gets its own `invoke_agent` span. Before, it was
+  skipped as an inner step, and its model calls carried the outer agent's name.
 - Claude Agent SDK: a streamed prompt (an async iterable passed to `query()` or
   `streamInput()`) is now recorded as the run's input and in each `chat` span's
   conversation. Before, only a string prompt was.

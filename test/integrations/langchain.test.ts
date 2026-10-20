@@ -85,6 +85,13 @@ const graphSerialized = {
   id: ['langgraph', 'pregel', 'CompiledStateGraph'],
 };
 
+/** A step inside a graph, such as a node. */
+const sequenceSerialized = {
+  lc: 1,
+  type: 'not_implemented',
+  id: ['langchain_core', 'runnables', 'RunnableSequence'],
+};
+
 const chainSerialized = {
   lc: 1,
   type: 'constructor',
@@ -1523,6 +1530,140 @@ describe('LangChain adapter — span nesting', () => {
     const agent = [...map.entries()].find(([n]) => n.startsWith('invoke_agent'))![1];
     const chat = [...map.entries()].find(([n]) => n.startsWith('chat'))![1];
     expect(chat.parent).toBe(agent.id);
+  });
+
+  it('gives a named graph called from a tool its own agent span', async () => {
+    // A supervisor agent whose tool invokes a researcher agent.
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'outer',
+      undefined,
+      [],
+      {},
+      undefined,
+      'supervisor',
+    );
+    await handler.handleChainStart!(
+      sequenceSerialized as never,
+      {},
+      'tools',
+      'outer',
+      [],
+      {},
+      undefined,
+      'tools',
+    );
+    await handler.handleToolStart!(toolSerialized as never, '{}', 't1', 'tools');
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'inner',
+      't1',
+      [],
+      {},
+      undefined,
+      'researcher',
+    );
+    await handler.handleChainStart!(
+      sequenceSerialized as never,
+      {},
+      'node',
+      'inner',
+      [],
+      {},
+      undefined,
+      'model_request',
+    );
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'node');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    for (const run of ['node', 'inner']) await handler.handleChainEnd!({} as never, run);
+    await handler.handleToolEnd!('ok' as never, 't1');
+    for (const run of ['tools', 'outer']) await handler.handleChainEnd!({} as never, run);
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.name).sort()).toEqual([
+      'chat gpt-4o',
+      'execute_tool search',
+      'invoke_agent researcher',
+      'invoke_agent supervisor',
+    ]);
+    const map = byName();
+    expect(map.get('invoke_agent researcher')!.parent).toBe(map.get('execute_tool search')!.id);
+    expect(map.get('chat gpt-4o')!.parent).toBe(map.get('invoke_agent researcher')!.id);
+    const chat = spans.find((s) => s.name === 'chat gpt-4o')!;
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('researcher');
+  });
+
+  it('gives a named graph added as a node its own agent span', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'outer',
+      undefined,
+      [],
+      {},
+      undefined,
+      'pipeline',
+    );
+    await handler.handleChainStart!(
+      sequenceSerialized as never,
+      {},
+      'node',
+      'outer',
+      [],
+      {},
+      undefined,
+      'research',
+    );
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'inner',
+      'node',
+      [],
+      {},
+      undefined,
+      'researcher',
+    );
+    for (const run of ['inner', 'node', 'outer']) await handler.handleChainEnd!({} as never, run);
+
+    const map = byName();
+    expect([...map.keys()].sort()).toEqual(['invoke_agent pipeline', 'invoke_agent researcher']);
+    expect(map.get('invoke_agent researcher')!.parent).toBe(map.get('invoke_agent pipeline')!.id);
+  });
+
+  it('keeps an unnamed nested graph as a step of the outer agent', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'outer',
+      undefined,
+      [],
+      {},
+      undefined,
+      'pipeline',
+    );
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {},
+      'inner',
+      'outer',
+      [],
+      {},
+      undefined,
+      'LangGraph',
+    );
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'inner');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    for (const run of ['inner', 'outer']) await handler.handleChainEnd!({} as never, run);
+
+    const map = byName();
+    expect([...map.keys()].sort()).toEqual(['chat gpt-4o', 'invoke_agent pipeline']);
+    expect(map.get('chat gpt-4o')!.parent).toBe(map.get('invoke_agent pipeline')!.id);
   });
 
   it('leaves a span with no ancestor as a root', async () => {

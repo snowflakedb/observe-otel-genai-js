@@ -43,7 +43,7 @@ Messages and tool definitions appear only once content capture is on.
 | TTFT on streaming | yes | yes | yes (AI SDK model path) | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |
 | per-call tags and metadata (identity: see [Identity](#identity)) | hooks / options | `withMetadata` | `Trace.metadata` | `withMetadata` | handler options | instrumentation config, or `wrapQuery` options |
 | `invoke_agent` spans | via hooks | — | yes | — | via chains | yes |
-| nested `invoke_agent` for subagents | — | — | yes (agents used as tools) | — | — | yes |
+| nested `invoke_agent` for subagents | — | — | yes (agents used as tools) | — | yes (named LangGraph graphs) | yes |
 | OTel auto-instrumentation | — | yes | yes | — | yes | yes |
 
 ## Identity
@@ -590,7 +590,7 @@ await chain.invoke(
 
 The handler reads identity from the run itself:
 
-- **Agent name**: the top-level chain's `runName`, such as `withConfig({ runName })`,
+- **Agent name**: the agent chain's `runName`, such as `withConfig({ runName })`,
   `createAgent({ name })` or a compiled graph's name.
   - The names LangChain fills in when you set none do not count: the runnable's
     class name, any `Runnable*` name, and `LangGraph` for an unnamed graph.
@@ -620,7 +620,7 @@ retriever spans under a chain carry the chain's identity.
 | `handleToolStart` | `client.startToolExecution({ toolName })` (the run's `runName`, else the serialized class name); `recorder.setResult({ arguments })` |
 | `handleToolEnd` | `recorder.setToolName(...)` (the authoritative tool name from the `ToolMessage`, overriding `runName`), `recorder.setResult({ result })`; `recorder.end()` |
 | `handleToolError` | `recorder.setExecError(err)`; `recorder.end()` |
-| `handleChainStart` (top-level only) | `client.invokeAgent({ agentName })` (the `runName` you set, see Identity) + input messages from `chainInputToMessages(inputs)` |
+| `handleChainStart` (top-level, or a named nested LangGraph graph) | `client.invokeAgent({ agentName })` (the `runName` you set, see Identity) + input messages from `chainInputToMessages(inputs)` |
 | `handleChainEnd` | `recorder.setOutput(chainOutputToMessages(output))`; `recorder.end()` |
 | `handleChainError` | `recorder.setError(err)`; `recorder.end()` |
 | `handleRetrieverStart` | `client.startRetrieval({ dataSourceId, topK?, queryText })` — the retrieval span becomes the active parent |
@@ -628,6 +628,8 @@ retriever spans under a chain carry the chain's identity.
 | `handleRetrieverError` | `recorder.setCallError(err)`; `recorder.end()` |
 
 All spans nest into one trace: an `invoke_agent` root with `chat` / `execute_tool` / `retrieval` spans beneath it. Runs with no span of their own (suppressed nested chains) stay in the run tree as pass-through nodes so their descendants still parent under the nearest real ancestor.
+
+A nested chain is a step inside the agent and gets no span of its own, with one exception: a LangGraph graph with a name (`createAgent({ name })`, `compile({ name })`, `entrypoint(name, …)`) is another agent, and gets its own `invoke_agent` span. That covers an agent called from inside a tool, and a graph added as a node of another graph. The spans under it take its name. An unnamed nested graph stays a step of the outer agent.
 
 Retrievers emit a `retrieval` span (kind CLIENT); an in-retriever query rewrite nests under it. Query text and documents are emitted as the Opt-In `gen_ai.retrieval.query.text` / `gen_ai.retrieval.documents`. `gen_ai.retrieval.top_k` and `gen_ai.data_source.id` are read only from the retriever's serialized config (not run metadata), so they're often absent; `gen_ai.provider.name` / `gen_ai.request.model` aren't emitted (they describe the embedding call, which LangChain doesn't surface). Pass any of these to `client.startRetrieval(...)` directly if you know them.
 
@@ -699,7 +701,7 @@ await graph.invoke(input, {
 });
 ```
 
-The top-level graph invocation is the `invoke_agent` span, and the `chat` / `execute_tool` spans nest under it as one connected trace.
+The top-level graph invocation is the `invoke_agent` span (a named graph run inside it gets its own), and the `chat` / `execute_tool` spans nest under it as one connected trace.
 
 The `thread_id` you pass in `configurable` is read from the run metadata and set as `gen_ai.conversation.id` on every span in the run, so all turns of a persisted conversation share one id. It wins over a `withConversationId(...)` scope around the call.
 
