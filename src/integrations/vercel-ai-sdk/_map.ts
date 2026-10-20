@@ -144,6 +144,11 @@ export interface AiChunkEvent {
   chunk: { type: string; text?: string };
 }
 
+/** `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before its tools run. */
+export interface AiLanguageModelCallEndEvent {
+  callId: string;
+}
+
 /** `onError` event (AI SDK v7). The SDK types it as `unknown` but passes `{ callId, error }`. */
 export interface AiErrorEvent {
   callId: string;

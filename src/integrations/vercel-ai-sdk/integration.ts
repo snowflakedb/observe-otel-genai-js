@@ -22,8 +22,9 @@
  * every `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call
  * in the process emits genai-otel spans — no per-call-site wiring.
  *
- * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) →
- * `execute_tool` (per tool). The operation span is opened in `onStart`, and every
+ * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) and
+ * `execute_tool` (per tool), side by side. A `chat` span ends with its model call,
+ * before the step's tools run. The operation span is opened in `onStart`, and every
  * child span's *creation* is wrapped in the parent recorder's `withActiveContext`,
  * which installs the parent as the active OTel span, and its identity as the
  * enclosing scope, for the synchronous `startSpan` call. Separately,
@@ -47,6 +48,7 @@ import { OP_CHAT, OP_GENERATE_CONTENT, type OperationName } from '../../semconv.
 import {
   type AiAbortEvent,
   type AiErrorEvent,
+  type AiLanguageModelCallEndEvent,
   type AiObjectStepEndEvent,
   type AiObjectStepStartEvent,
   type AiOperationEndEvent,
@@ -105,8 +107,9 @@ export interface GenaiTelemetryOptions {
    * Whether to open an `invoke_agent` operation span wrapping the steps. `true`
    * (default) matches the GenAI semantic conventions (and `@ai-sdk/otel`). Pass
    * a predicate to emit it only for some calls (e.g. real agents but not
-   * one-shot `generateObject` sites). When suppressed, `chat`/`execute_tool`
-   * spans are emitted without an operation parent.
+   * one-shot `generateObject` sites). When suppressed, `chat` spans have no
+   * operation parent, and `execute_tool` spans sit under the `chat` span that
+   * asked for them.
    */
   emitOperationSpan?: boolean | ((event: DeriveOptionsEvent) => boolean);
 }
@@ -228,13 +231,19 @@ class GenaiTelemetry {
     );
   }
 
+  /**
+   * Stamps the step's `chat` span with the model call's end time, so it leaves out
+   * tool time. The span ends later, in onStepEnd, which carries the output and usage.
+   * The event has no step number; steps run one at a time, so it is the latest step.
+   */
+  onLanguageModelCallEnd(event: AiLanguageModelCallEndEvent): void {
+    this.get(event.callId)?.latestStep?.rec.setEndedAt(this.client.now());
+  }
+
   onToolExecutionStart(event: AiToolExecutionStartEvent): void {
     const op = this.get(event.callId);
-    if (!op || !op.latestStep) return;
-    // Create the tool span under the latest open step (v7 tool events carry no
-    // stepNumber; within an op the tool-loop runs steps sequentially, so the
-    // latest open step is the correct parent).
-    const rec = op.latestStep.rec.withActiveContext(() =>
+    if (!op) return;
+    const rec = this.underToolParent(op, op.latestStep, () =>
       this.client.startToolExecution({
         toolName: event.toolCall.toolName,
         toolCallId: event.toolCall.toolCallId,
@@ -373,7 +382,7 @@ class GenaiTelemetry {
         metadata: op.options.metadata,
         parentGenerationIds: op.options.parentGenerationIds,
       });
-    const rec = op.agent ? op.agent.withActiveContext(create) : create();
+    const rec = this.underAgent(op, create);
     if (extra.input.length > 0) rec.setResult({ input: extra.input });
     const step: StepState = { rec, closedToolCallIds: new Set() };
     op.steps.set(stepNumber, step);
@@ -400,7 +409,7 @@ class GenaiTelemetry {
       if (rec) {
         op.tools.delete(tc.toolCallId);
       } else {
-        rec = step.rec.withActiveContext(() =>
+        rec = this.underToolParent(op, step, () =>
           this.client.startToolExecution({
             toolName: tc.toolName,
             toolCallId: tc.toolCallId,
@@ -439,6 +448,20 @@ class GenaiTelemetry {
       if (error !== undefined) op.agent.setError(error);
       await end(op.agent);
     }
+  }
+
+  /** Starts a span under the operation's `invoke_agent` span, if it has one. */
+  private underAgent<T>(op: OpState, start: () => T): T {
+    return op.agent ? op.agent.withActiveContext(start) : start();
+  }
+
+  /**
+   * Starts a tool span under `invoke_agent`, next to the step's `chat` span. With
+   * no `invoke_agent` span it goes under the `chat` span, so the run stays one trace.
+   */
+  private underToolParent<T>(op: OpState, step: StepState | undefined, start: () => T): T {
+    const parent = op.agent ?? step?.rec;
+    return parent ? parent.withActiveContext(start) : start();
   }
 
   private recordInputs(event: unknown): boolean {
@@ -484,6 +507,9 @@ export function genaiTelemetryIntegration(
     },
     onStepStart: (e) => {
       impl.onStepStart(e as unknown as AiStepStartEvent);
+    },
+    onLanguageModelCallEnd: (e) => {
+      impl.onLanguageModelCallEnd(e as unknown as AiLanguageModelCallEndEvent);
     },
     onToolExecutionStart: (e) => {
       impl.onToolExecutionStart(e as unknown as AiToolExecutionStartEvent);

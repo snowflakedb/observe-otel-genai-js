@@ -178,6 +178,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Vercel AI SDK: a model call that fails and then succeeds on retry, such as after
   a rate limit, no longer marks the call as failed. Before, the first failed
   attempt ended the call's spans with an error, and the successful reply was lost.
+- Vercel AI SDK: a step's `chat` span now ends when the model replies, before the
+  step's tools run, and `execute_tool` spans sit next to `chat` under `invoke_agent`.
+  Before, tool spans were created under `chat`, which stayed open until the tools
+  returned, so `chat` durations and `gen_ai.client.operation.duration` included tool
+  time. With `emitOperationSpan: false`, tool spans still sit under `chat`. Tool
+  calls approved in an earlier turn, which run before the first step, now get an
+  `execute_tool` span too.
 - LangChain: a named LangGraph graph run inside another agent, called from a tool
   or added as a graph node, now gets its own `invoke_agent` span. Before, it was
   skipped as an inner step, and its model calls carried the outer agent's name.

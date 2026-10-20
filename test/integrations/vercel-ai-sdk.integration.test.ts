@@ -136,6 +136,13 @@ function clearIntegrations() {
     undefined;
 }
 
+function msOf([seconds, nanos]: [number, number]): number {
+  return seconds * 1000 + nanos / 1e6;
+}
+
+const byStart = (spans: ReturnType<typeof byName>) =>
+  [...spans].sort((a, b) => msOf(a.startTime) - msOf(b.startTime));
+
 const byName = (h: Harness, prefix: string) =>
   h.spans.getFinishedSpans().filter((s) => s.name.startsWith(prefix));
 const oneByName = (h: Harness, prefix: string) =>
@@ -207,7 +214,7 @@ describe('genaiTelemetryIntegration', () => {
     expect(oneByName(h, 'chat')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
   });
 
-  it('nests execute_tool under chat under invoke_agent in a 2-step tool loop', async () => {
+  it('puts execute_tool next to chat under invoke_agent in a 2-step tool loop', async () => {
     registerTelemetry(genaiTelemetryIntegration(h.client));
     await drain(
       streamText({
@@ -233,10 +240,7 @@ describe('genaiTelemetryIntegration', () => {
     expect(chats.every((c) => c.parentSpanContext?.spanId === agent!.spanContext().spanId)).toBe(
       true,
     );
-    const toolParent = chats.find(
-      (c) => c.spanContext().spanId === toolSpan!.parentSpanContext?.spanId,
-    );
-    expect(toolParent).toBeDefined();
+    expect(toolSpan!.parentSpanContext?.spanId).toBe(agent!.spanContext().spanId);
   });
 
   it('parents spans created inside tool.execute under the execute_tool span', async () => {
@@ -368,6 +372,52 @@ describe('genaiTelemetryIntegration', () => {
     expect(chat).toBeDefined();
     // No agent parent — chat is a root span.
     expect(chat!.parentSpanContext).toBeUndefined();
+  });
+
+  it('puts execute_tool under its chat span when emitOperationSpan is false', async () => {
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, {
+        emitOperationSpan: false,
+        deriveOptions: () => ({ agentName: 'my-agent' }),
+      }),
+    );
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: { ping: tool({ inputSchema: z.object({}), execute: async () => 'pong' }) },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [firstChat] = byStart(byName(h, 'chat'));
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(toolSpan?.parentSpanContext?.spanId).toBe(firstChat!.spanContext().spanId);
+    expect(toolSpan?.attributes['gen_ai.agent.name']).toBe('my-agent');
+  });
+
+  it('puts a tool call with no execute under invoke_agent', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-ask',
+      doGenerate: async () => ({
+        content: [{ type: 'tool-call', toolCallId: 'a0', toolName: 'ask', input: '{}' }],
+        finishReason: v7Finish('tool-calls'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+    });
+    await generateText({
+      model,
+      prompt: 'ask me',
+      tools: { ask: tool({ inputSchema: z.object({}) }) },
+    });
+
+    const agent = oneByName(h, 'invoke_agent');
+    expect(oneByName(h, 'execute_tool')?.parentSpanContext?.spanId).toBe(
+      agent!.spanContext().spanId,
+    );
   });
 
   it('captures a generate_content span for generateObject', async () => {
@@ -536,6 +586,119 @@ describe('genaiTelemetryIntegration', () => {
     );
 
     expect(h.spans.getFinishedSpans()).toEqual([]);
+  });
+});
+
+describe('genaiTelemetryIntegration step timing', () => {
+  let h: Harness;
+  let clock: number;
+  beforeEach(() => {
+    clock = 1_000_000;
+    h = createHarness({ contentCaptureMode: 'no_tool_content', now: () => clock });
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  // Each model call takes 100ms and each tool 5s on the fake clock.
+  const ping = tool({
+    inputSchema: z.object({}),
+    execute: async () => {
+      clock += 5000;
+      return 'pong';
+    },
+  });
+
+  /** Step `i` asks for `toolCalls[i]` parallel `ping` calls; the step after the last answers. */
+  function timedToolModel(toolCalls: number[]) {
+    let step = 0;
+    return new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-timed',
+      doGenerate: async () => {
+        clock += 100;
+        const calls = toolCalls[step] ?? 0;
+        step += 1;
+        if (calls === 0) {
+          return {
+            content: [{ type: 'text', text: 'done' }],
+            finishReason: v7Finish('stop'),
+            usage: v7Usage(2, 1),
+            warnings: [],
+          };
+        }
+        return {
+          content: Array.from({ length: calls }, (_, i) => ({
+            type: 'tool-call' as const,
+            toolCallId: `step${step}-call${i}`,
+            toolName: 'ping',
+            input: '{}',
+          })),
+          finishReason: v7Finish('tool-calls'),
+          usage: v7Usage(2, 1),
+          warnings: [],
+        };
+      },
+    });
+  }
+
+  it('ends each chat span before its own tools start', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await generateText({
+      model: timedToolModel([2, 1]),
+      prompt: 'ping please',
+      tools: { ping },
+      stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 3) as never,
+    });
+
+    const agent = oneByName(h, 'invoke_agent');
+    const chats = byStart(byName(h, 'chat'));
+    const tools = byName(h, 'execute_tool');
+    expect(chats).toHaveLength(3);
+    expect(tools).toHaveLength(3);
+    for (const chat of chats) expect(msOf(chat.endTime) - msOf(chat.startTime)).toBe(100);
+    for (const t of tools) {
+      expect(t.parentSpanContext?.spanId).toBe(agent!.spanContext().spanId);
+      const step = String(t.attributes['gen_ai.tool.call.id']).startsWith('step1') ? 0 : 1;
+      expect(msOf(t.startTime)).toBeGreaterThanOrEqual(msOf(chats[step]!.endTime));
+    }
+  });
+
+  it('leaves tool time out of the chat duration metric', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await generateText({
+      model: timedToolModel([1]),
+      prompt: 'ping please',
+      tools: { ping },
+      stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+    });
+
+    const duration = (await h.collectMetrics())
+      .flatMap((rm) => rm.scopeMetrics)
+      .flatMap((sm) => sm.metrics)
+      .find((m) => m.descriptor.name === 'gen_ai.client.operation.duration');
+    const chatSeconds = (duration?.dataPoints ?? [])
+      .filter((p) => p.attributes['gen_ai.operation.name'] === 'chat')
+      .reduce((sum, p) => sum + (p.value as { sum: number }).sum, 0);
+    expect(chatSeconds).toBeCloseTo(0.2, 5);
+  });
+
+  it('ends a streamed chat span before its tool starts', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: { ping },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [firstChat] = byStart(byName(h, 'chat'));
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(msOf(firstChat!.endTime)).toBe(msOf(firstChat!.startTime));
+    expect(msOf(toolSpan!.endTime) - msOf(toolSpan!.startTime)).toBe(5000);
   });
 });
 

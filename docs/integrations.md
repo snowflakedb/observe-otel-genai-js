@@ -144,11 +144,12 @@ await generateText({
 Options:
 
 - `deriveOptions(event)`: returns the identity, `tags` and `metadata` for one call, from its `functionId` and `runtimeContext`. The default reads `functionId` (or `runtimeContext.agent`) as the agent name, and `runtimeContext.conversationId` and `runtimeContext.userId`. The AI SDK passes on only the `runtimeContext` fields you list in `telemetry.includeRuntimeContext`.
-- `emitOperationSpan` (`boolean | (event) => boolean`, default `true`): whether each call gets an `invoke_agent` span above its steps. Pass a function to keep it for real agents and drop it for one-shot calls.
+- `emitOperationSpan` (`boolean | (event) => boolean`, default `true`): whether each call gets an `invoke_agent` span above its steps. Pass a function to keep it for real agents and drop it for one-shot calls. Without it, `execute_tool` spans sit under the `chat` span that asked for them.
 
 What gets recorded:
 
 - One `invoke_agent` span per call, one `chat` span per step (`generate_content` for `generateObject`), and one `execute_tool` span per tool call.
+- `chat` and `execute_tool` spans sit side by side under `invoke_agent`. A `chat` span ends when the model replies, so its duration does not include the step's tools.
 - Concurrent calls stay in separate trees.
 - Work inside a tool, such as HTTP calls or a nested `generateText`, nests under that tool's `execute_tool` span. A nested `generateText` gets its own `invoke_agent` span there.
 - A failed call marks the `invoke_agent` span as an error, whether the model call failed or something around it, such as `prepareStep`. A model call that fails and then succeeds on retry is not an error.

@@ -23,8 +23,8 @@
  * 1. **Telemetry integration** (recommended) — `genaiTelemetryIntegration(client)`
  *    registered once via the AI SDK's `registerTelemetry(...)`. Every
  *    `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in
- *    the process then emits genai-otel spans (`invoke_agent` → `chat` →
- *    `execute_tool`) with no per-call-site wiring.
+ *    the process then emits genai-otel spans (`invoke_agent`, with `chat` and
+ *    `execute_tool` spans under it) with no per-call-site wiring.
  *
  * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap a
  *    single top-level AI SDK call and emit one generation span per invocation,
