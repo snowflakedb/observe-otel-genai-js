@@ -1820,3 +1820,101 @@ describe('Claude Agent SDK adapter: identity from the client', () => {
     expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('svc');
   });
 });
+
+describe('Claude Agent SDK adapter: streamed prompt', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
+  const user = (content: string): AgentMessage => ({
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+  });
+  const inputOf = (span: FinishedSpan) => JSON.parse(String(attr(span, 'gen_ai.input.messages')));
+  const textsOf = (messages: { role: string; parts: { content?: string }[] }[]) =>
+    messages.map((m) => `${m.role}:${m.parts.map((p) => p.content).join('')}`);
+
+  /** Reads the prompt ahead of answering, as the SDK does, then answers `turns` times. */
+  function eagerQuery(turns: number, read = Number.POSITIVE_INFINITY) {
+    return (params: AgentQueryParams) =>
+      (async function* () {
+        const input = (params.prompt as AsyncIterable<AgentMessage>)[Symbol.asyncIterator]();
+        for (let i = 0; i < read && !(await input.next()).done; i++);
+        await input.return?.();
+        yield init();
+        for (let i = 1; i <= turns; i++) {
+          yield assistant(`msg_${i}`, [text(`a${i}`)]);
+          yield result();
+        }
+      })();
+  }
+
+  it('records each user message when the SDK reads it', async () => {
+    const h = harness();
+    async function* prompt() {
+      yield user('u1');
+      yield user('u2');
+    }
+    await drain(wrapQuery(h.client, eagerQuery(2))({ prompt: prompt() }));
+
+    expect(textsOf(inputOf(findSpan(h, ROOT)))).toEqual(['user:u1', 'user:u2']);
+    const [first, second] = allSpans(h, CHAT);
+    expect(textsOf(inputOf(first!))).toEqual(['user:u1', 'user:u2']);
+    expect(textsOf(inputOf(second!))).toEqual(['user:u1', 'user:u2', 'assistant:a1']);
+  });
+
+  it('records messages sent through streamInput()', async () => {
+    const h = harness();
+    let streamed!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      streamed = resolve;
+    });
+    const sdk = (_params: AgentQueryParams) =>
+      Object.assign(
+        (async function* () {
+          yield init();
+          yield assistant('msg_1', [text('a1')]);
+          yield result();
+          await answered;
+          yield assistant('msg_2', [text('a2')]);
+          yield result();
+        })(),
+        {
+          async streamInput(input: AsyncIterable<unknown>) {
+            for await (const _ of input);
+            streamed();
+          },
+        },
+      );
+    async function* more() {
+      yield user('u2');
+    }
+
+    const q = wrapQuery(h.client, sdk)({ prompt: 'u1' });
+    let sent = false;
+    for await (const msg of q) {
+      if (msg.type === 'result' && !sent) {
+        sent = true;
+        await q.streamInput(more());
+      }
+    }
+
+    expect(textsOf(inputOf(findSpan(h, ROOT)))).toEqual(['user:u1', 'user:u2']);
+    const [, second] = allSpans(h, CHAT);
+    expect(textsOf(inputOf(second!))).toEqual(['user:u1', 'assistant:a1', 'user:u2']);
+  });
+
+  it("closes the caller's prompt when the SDK stops reading it", async () => {
+    const h = harness();
+    let closed = false;
+    async function* prompt() {
+      try {
+        yield user('u1');
+        yield user('never read');
+      } finally {
+        closed = true;
+      }
+    }
+    await drain(wrapQuery(h.client, eagerQuery(1, 1))({ prompt: prompt() }));
+
+    expect(closed).toBe(true);
+  });
+});

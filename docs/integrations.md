@@ -832,6 +832,11 @@ invoke_agent <agentName>          one per query() call
   `options.thinking` go on the main thread's `chat` spans only; subagents have their
   own. A preset is not recorded: the CLI renders it, and its `append` is only part of
   the prompt.
+- A streamed prompt (an async iterable of user messages, passed to `query()` or
+  `streamInput()`) is passed to the SDK unchanged, and the run's input lists every
+  user message. In the `chat` spans' conversation, a user message appears once the
+  SDK has read it. The SDK reads ahead whenever the prompt yields, so a message can
+  appear before the call that answers it.
 - After the CLI compacts the conversation, the run and every later `chat` span carry
   `gen_ai.conversation.compacted`. Later `chat` inputs start after the compaction:
   the summary the CLI puts in place of the earlier turns never reaches the process.

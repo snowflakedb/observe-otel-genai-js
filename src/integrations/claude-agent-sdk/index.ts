@@ -122,10 +122,16 @@ export function wrapQuery<F extends AgentQueryFn>(
 ): F {
   if (isTracedQuery(query)) return query;
   const traced = (params: Parameters<F>[0]) => {
-    const run = new AgentRun(client, options, params as AgentQueryParams);
+    const queryParams = params as AgentQueryParams;
+    const run = new AgentRun(client, options, queryParams);
+    const { prompt } = queryParams;
     let stream: AsyncIterable<unknown>;
     try {
-      stream = query(params);
+      stream = query(
+        (isAsyncIterable(prompt)
+          ? { ...queryParams, prompt: run.recordPrompt(prompt) }
+          : params) as Parameters<F>[0],
+      );
     } catch (err) {
       void run.end(err).catch(logRecordingFailure);
       throw err;
@@ -203,6 +209,8 @@ function observeIteration<T extends object>(stream: T, run: AgentRun): T {
             run.markInterrupted();
             return target.interrupt?.();
           };
+        case 'streamInput':
+          return (input: AsyncIterable<unknown>) => target.streamInput?.(run.recordPrompt(input));
       }
       const value = Reflect.get(target, prop, target);
       return typeof value === 'function' ? value.bind(target) : value;
@@ -212,7 +220,12 @@ function observeIteration<T extends object>(stream: T, run: AgentRun): T {
 
 /** The members of the SDK's `Query` the proxy intercepts. */
 type SdkQuery = Partial<
-  AsyncGenerator<unknown> & AsyncDisposable & { close(): void; interrupt(): Promise<unknown> }
+  AsyncGenerator<unknown> &
+    AsyncDisposable & {
+      close(): void;
+      interrupt(): Promise<unknown>;
+      streamInput(input: AsyncIterable<unknown>): Promise<void>;
+    }
 >;
 
 function logRecordingFailure(err: unknown): void {
@@ -270,7 +283,8 @@ class AgentRun {
   private readonly client: Client;
   private readonly config: ClaudeAgentSdkOptions;
   private readonly queryOptions: AgentQueryOptions;
-  private readonly prompt: unknown;
+  /** The caller's prompt as messages; a streamed prompt adds them as the SDK reads it. */
+  private readonly promptInput: Message[];
   private readonly provider: string;
   private readonly startedAt = Date.now();
   /** Where `query()` was called. The root opens later, on the first message. */
@@ -305,8 +319,30 @@ class AgentRun {
     this.client = client;
     this.config = config;
     this.queryOptions = params.options ?? {};
-    this.prompt = params.prompt;
+    this.promptInput = promptMessages(params.prompt);
     this.provider = resolveProvider(this.queryOptions);
+  }
+
+  /** Passes a streamed prompt through unchanged, recording each user message as it is read. */
+  async *recordPrompt(prompt: AsyncIterable<unknown>): AsyncGenerator<unknown, void> {
+    for await (const msg of prompt) {
+      try {
+        this.onPromptMessage(msg as AgentMessage);
+      } catch (err) {
+        logRecordingFailure(err);
+      }
+      yield msg;
+    }
+  }
+
+  private onPromptMessage(msg: AgentMessage): void {
+    if (msg.type !== 'user' || msg.parent_tool_use_id) return;
+    const message = blocksToMessage(blocksOf(msg.message?.content), 'user');
+    if (!message) return;
+    this.promptInput.push(message);
+    // The root opens on the CLI's first message; until then the input waits here.
+    this.root?.setInput([...this.promptInput]);
+    if (this.main) remember(this.main, message);
   }
 
   markStoppedByCaller(): void {
@@ -563,7 +599,7 @@ class AgentRun {
         ...this.sharedSeed(),
         requestProvider: this.provider,
         requestModel: this.queryOptions.model ?? this.model,
-        input: promptMessages(this.prompt),
+        input: [...this.promptInput],
         parentGenerationIds: this.config.parentGenerationIds,
         startedAt: this.startedAt,
       }),
@@ -576,7 +612,7 @@ class AgentRun {
     this.main ??= {
       agent: this.openRoot(),
       isMain: true,
-      history: promptMessages(this.prompt),
+      history: [...this.promptInput],
       readyAt: this.startedAt,
     };
     return this.main;
@@ -883,9 +919,17 @@ function blocksToMessage(blocks: AgentContentBlock[], role: Message['role']): Me
   return parts.length > 0 ? { role, parts } : undefined;
 }
 
-/** A string prompt; a streamed prompt is not replayed onto spans. */
+/** A string prompt. A streamed prompt's messages are added by `recordPrompt` as the SDK reads them. */
 function promptMessages(prompt: unknown): Message[] {
-  return typeof prompt === 'string' && prompt ? [{ role: 'user', parts: [textPart(prompt)] }] : [];
+  const message =
+    typeof prompt === 'string' ? blocksToMessage(blocksOf(prompt), 'user') : undefined;
+  return message ? [message] : [];
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof (value as AsyncIterable<unknown> | undefined)?.[Symbol.asyncIterator] === 'function'
+  );
 }
 
 /**

@@ -154,6 +154,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Claude Agent SDK: a streamed prompt (an async iterable passed to `query()` or
+  `streamInput()`) is now recorded as the run's input and in each `chat` span's
+  conversation. Before, only a string prompt was.
 - OpenAI Agents: a run that fails with an `openai` API error now records its class
   (`AuthenticationError`, `RateLimitError`, …) as `error.type` on the workflow span,
   instead of `Error`. Those classes leave `name` as `Error`. Agent and tool spans,
