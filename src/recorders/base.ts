@@ -74,6 +74,8 @@ export abstract class RecorderBase {
   protected readonly span: Span;
   protected readonly startedAtMs: number;
   protected readonly perCallContentCapture: ContentCaptureMode;
+  /** The mode from the `withContentCaptureMode` scope the span started in. */
+  private readonly scopeContentCapture: ContentCaptureMode | undefined;
   /** The identity spans started inside {@link withActiveContext} inherit. */
   private readonly handedDown: IdentityFields;
 
@@ -99,6 +101,7 @@ export abstract class RecorderBase {
     this.span = span;
     this.startedAtMs = startedAtMs;
     this.perCallContentCapture = perCallContentCapture;
+    this.scopeContentCapture = contentCaptureModeFromContext();
     this.handedDown = handedDown;
   }
 
@@ -218,7 +221,7 @@ export abstract class RecorderBase {
   protected resolveContentCapture(): { mode: ContentCaptureMode; config: ContentCapture } {
     const mode = resolveContentCaptureMode(
       this.perCallContentCapture,
-      contentCaptureModeFromContext(),
+      this.scopeContentCapture,
       this.host.config.contentCaptureMode,
     );
     return { mode, config: this.host.config.contentCapture };

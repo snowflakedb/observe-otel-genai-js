@@ -43,6 +43,8 @@ The mode comes from the first of these that is set:
 2. A `withContentCaptureMode(mode, fn)` scope around the call.
 3. The `Client`'s `contentCaptureMode`.
 
+The scope in effect when a span starts sets its mode. A span started inside `withContentCaptureMode('full', ...)` keeps its content even if it ends after the scope exits; a span started before the scope is not affected.
+
 The Vercel AI SDK adapter ignores a `contentCapture` option, so use a scope or the `Client` there.
 
 | Mode | What is recorded |

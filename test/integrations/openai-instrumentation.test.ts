@@ -37,7 +37,7 @@ import { DiagLogLevel, diag } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { withAgent, withConversationId } from '../../src/context.js';
+import { withAgent, withContentCaptureMode, withConversationId } from '../../src/context.js';
 import { isInstrumented } from '../../src/integrations/_common/instrumented.js';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
@@ -45,6 +45,7 @@ import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
   ATTR_CONVERSATION_TURN_ROLE,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_TYPE,
   ATTR_REQUEST_MODEL,
@@ -379,6 +380,22 @@ describe('OpenAIInstrumentation', () => {
     expect(names).toContain('run_sql');
     expect(names).not.toContain('Look up weather');
     expect(await ask('metadata_only')).toBeUndefined();
+  });
+
+  it('keeps the content of a call returned from a withContentCaptureMode scope', async () => {
+    const client = await setup(() => chatCompletion());
+
+    await withContentCaptureMode('full', () =>
+      client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi there' }],
+        tools: [{ type: 'function', function: { name: 'get_weather', parameters: {} } }],
+      }),
+    );
+
+    const span = onlyChatSpan(h);
+    expect(String(span.attributes[ATTR_INPUT_MESSAGES])).toContain('hi there');
+    expect(String(span.attributes[ATTR_TOOL_DEFINITIONS])).toContain('get_weather');
   });
 
   it('preserves the APIPromise so withResponse() still works', async () => {

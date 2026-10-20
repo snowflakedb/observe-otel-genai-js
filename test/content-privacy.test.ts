@@ -22,11 +22,13 @@
  * removed per-generation sanitizer hook. Unlike that hook (which only ever ran
  * on generation spans), the mode is honored by every recorder. This test proves
  * content is stripped from all four content-bearing span types: generation,
- * agent, tool, and embedding.
+ * agent, tool, and embedding. It also checks that a span takes its mode from the
+ * scope it started in.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { withContentCaptureMode } from '../src/context.js';
 import type { Message } from '../src/models/message.js';
 import {
   assistantTextMessage,
@@ -256,5 +258,43 @@ describe('no_tool_content sanitizes tool payloads on the chat span', () => {
     expect(input).not.toContain('secret');
     expect(output).toContain('call-2');
     expect(output).not.toContain('secret');
+  });
+});
+
+describe('the scope a span starts in decides its content mode', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function endWithMessages(rec: ReturnType<Harness['client']['startGeneration']>) {
+    rec.setResult({
+      input: [userTextMessage('user question')],
+      output: [assistantTextMessage('final answer')],
+    });
+    await rec.end();
+  }
+
+  it('keeps content for a span started in the scope and ended after it', async () => {
+    const rec = withContentCaptureMode('full', () =>
+      h.client.startGeneration({ model: { provider: 'openai', name: 'm' } }),
+    );
+    await endWithMessages(rec);
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(String(span?.attributes[ATTR_INPUT_MESSAGES])).toContain('user question');
+    expect(String(span?.attributes[ATTR_OUTPUT_MESSAGES])).toContain('final answer');
+  });
+
+  it('records no content for a span started before the scope and ended in it', async () => {
+    const rec = h.client.startGeneration({ model: { provider: 'openai', name: 'm' } });
+    await withContentCaptureMode('full', () => endWithMessages(rec));
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_INPUT_MESSAGES]).toBeUndefined();
+    expect(span?.attributes[ATTR_OUTPUT_MESSAGES]).toBeUndefined();
   });
 });

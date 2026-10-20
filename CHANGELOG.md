@@ -159,6 +159,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Core: a `withContentCaptureMode` scope now applies to every span started inside
+  it, even one that ends after the scope exits, such as a call whose promise is
+  returned from the scope rather than awaited in it. Before, the mode was read when
+  the span ended, so that call recorded no content. A scope entered only around
+  `end()` no longer applies.
 - LangChain: a named LangGraph graph run inside another agent, called from a tool
   or added as a graph node, now gets its own `invoke_agent` span. Before, it was
   skipped as an inner step, and its model calls carried the outer agent's name.
