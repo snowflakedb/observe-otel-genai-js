@@ -232,13 +232,13 @@ export abstract class RecorderBase {
    * used for `error.type` / `error.category` attributes and metric labels.
    * Returns empty strings on success.
    */
-  protected classify(err: unknown, defaultType: string, isMetadataOnly = false): ClassifiedError {
+  protected classify(err: unknown, defaultType: string, stripped = false): ClassifiedError {
     if (err == null) {
       return { errorType: '', errorCategory: '', statusMessage: '' };
     }
     const classifier = this.host.errorClassifier ?? classifyError;
     const category = (classifier(err) || ERR_CATEGORY_SDK) as ErrorCategory;
-    const statusMessage = isMetadataOnly ? category : stringifyError(err);
+    const statusMessage = stripped ? category : stringifyError(err);
     return {
       errorType: this.errorTypeOverride ?? defaultType,
       errorCategory: category,

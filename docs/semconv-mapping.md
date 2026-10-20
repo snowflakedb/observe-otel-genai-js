@@ -84,7 +84,7 @@ On generation spans, token counts of zero are left out. The Claude Agent SDK als
 |---|---|---|
 | `gen_ai.embeddings.input_count` | int | when the result reports it |
 | `gen_ai.embeddings.dimension.count` | int | when the request or result gives it |
-| `gen_ai.embeddings.input_texts` | string[] | only with `embeddingCapture.captureInput: true` and a mode other than `metadata_only`. Keeps the first `maxInputItems` texts (default 20), each cut to `maxTextLength` characters (default 1024). |
+| `gen_ai.embeddings.input_texts` | string[] | only with `embeddingCapture.captureInput: true` and a mode other than `metadata_only` or `allow_list`. Keeps the first `maxInputItems` texts (default 20), each cut to `maxTextLength` characters (default 1024). |
 
 ### Tool-execution-only
 
