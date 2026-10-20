@@ -223,6 +223,8 @@ export function applyEmbeddingStartAttributes(span: Span, start: EmbeddingStart)
   setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
   setStr(span, ATTR_USER_ID, start.userId);
   setNum(span, ATTR_EMBEDDING_DIMENSION_COUNT, start.dimensions);
+  setStr(span, ATTR_SERVER_ADDRESS, start.serverAddress);
+  setNum(span, ATTR_SERVER_PORT, start.serverPort);
   if (start.encodingFormat && start.encodingFormat.trim() !== '') {
     span.setAttribute(ATTR_REQUEST_ENCODING_FORMATS, [start.encodingFormat.trim()]);
   }

@@ -46,8 +46,11 @@ import {
   ATTR_CONVERSATION_ID,
   ATTR_CONVERSATION_TURN_ROLE,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_TYPE,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
+  ATTR_SERVER_ADDRESS,
+  ATTR_SERVER_PORT,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
@@ -266,6 +269,116 @@ describe('OpenAIInstrumentation', () => {
       .filter((s) => s.attributes[ATTR_OPERATION_NAME] === OP_EMBEDDINGS);
     expect(spans).toHaveLength(1);
     expect(spans[0]?.attributes[ATTR_REQUEST_MODEL]).toBe('text-embedding-3-small');
+  });
+
+  it('records the server address and port on chat and embeddings spans', async () => {
+    const client = await setup((req) =>
+      req.url.includes('embeddings')
+        ? {
+            object: 'list',
+            model: 'text-embedding-3-small',
+            data: [{ object: 'embedding', index: 0, embedding: [0.1] }],
+            usage: { prompt_tokens: 1, total_tokens: 1 },
+          }
+        : chatCompletion(),
+    );
+    const { hostname, port } = new URL(server.baseURL);
+
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    await client.embeddings.create({ model: 'text-embedding-3-small', input: 'hi' });
+
+    expect(h.spans.getFinishedSpans()).toHaveLength(2);
+    for (const span of h.spans.getFinishedSpans()) {
+      expect(span.attributes[ATTR_SERVER_ADDRESS], span.name).toBe(hostname);
+      expect(span.attributes[ATTR_SERVER_PORT], span.name).toBe(Number(port));
+    }
+  });
+
+  it('records the server address through wrapOpenAI too', async () => {
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+    await wrapOpenAI(h.client, client).chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(onlyChatSpan(h).attributes[ATTR_SERVER_ADDRESS]).toBe(new URL(server.baseURL).hostname);
+  });
+
+  it('maps the Chat Completions response_format to gen_ai.output.type', async () => {
+    const client = await setup(() => chatCompletion());
+    const ask = (response_format: unknown) =>
+      client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        response_format,
+      } as never);
+
+    await ask({ type: 'json_object' });
+    await ask({ type: 'json_schema', json_schema: { name: 'x', schema: { type: 'object' } } });
+    await ask({ type: 'text' });
+    await ask(undefined);
+
+    expect(chatSpans(h).map((s) => s.attributes[ATTR_OUTPUT_TYPE])).toEqual([
+      'json',
+      'json',
+      'text',
+      undefined,
+    ]);
+  });
+
+  it('maps a Responses json_object format to gen_ai.output.type', async () => {
+    const client = await setup(() => responsesMessage());
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      text: { format: { type: 'json_object' } },
+    });
+
+    expect(onlyChatSpan(h).attributes[ATTR_OUTPUT_TYPE]).toBe('json');
+  });
+
+  it('records Chat Completions tool definitions under each capture mode', async () => {
+    const tools = [
+      {
+        type: 'function' as const,
+        function: {
+          name: 'get_weather',
+          description: 'Look up weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      },
+      { type: 'custom' as const, custom: { name: 'run_sql', description: 'Run a query' } },
+    ];
+    const ask = async (contentCapture: 'full' | 'no_tool_content' | 'metadata_only') => {
+      const client = await setup(() => chatCompletion(), { contentCapture });
+      await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools,
+      });
+      const value = onlyChatSpan(h).attributes[ATTR_TOOL_DEFINITIONS];
+      unpatch?.();
+      unpatch = undefined;
+      await server.close();
+      h.spans.reset();
+      return value === undefined ? undefined : String(value);
+    };
+
+    const full = await ask('full');
+    expect(full).toContain('get_weather');
+    expect(full).toContain('Look up weather');
+    expect(full).toContain('city');
+    expect(full).toContain('run_sql');
+    const names = await ask('no_tool_content');
+    expect(names).toContain('get_weather');
+    expect(names).toContain('run_sql');
+    expect(names).not.toContain('Look up weather');
+    expect(await ask('metadata_only')).toBeUndefined();
   });
 
   it('preserves the APIPromise so withResponse() still works', async () => {

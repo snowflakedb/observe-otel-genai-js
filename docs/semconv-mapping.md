@@ -40,8 +40,8 @@ Exhaustive list of every attribute, event, and metric this library emits. Names 
 | `gen_ai.request.model` | string | generation, embedding, and agent spans, when the model is known |
 | `gen_ai.response.model` | string | generation, embedding spans (when known after the provider call) |
 | `gen_ai.response.id` | string | generation spans (provider's response id) |
-| `server.address` | string | generation spans, when `serverAddress` is set (provider endpoint host) |
-| `server.port` | int | generation spans, when `serverPort` is set |
+| `server.address` | string | generation and embedding spans, when `serverAddress` is set (provider endpoint host; the OpenAI integration takes it from the client's `baseURL`) |
+| `server.port` | int | generation and embedding spans, when `serverPort` is set |
 
 ### Request controls
 

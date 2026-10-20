@@ -37,7 +37,7 @@ Messages and tool definitions appear only once content capture is on.
 | Capability | Vercel | OpenAI | OpenAI Agents | Anthropic | LangChain | Claude Agent SDK |
 |---|---|---|---|---|---|---|
 | input / output messages | yes | yes | yes | yes | yes | yes (reconstructed from the message stream) |
-| tool definitions (`gen_ai.tool.definitions`) | — | yes (Responses) | — | — | yes | — |
+| tool definitions (`gen_ai.tool.definitions`) | — | yes | — | — | yes | — |
 | request params (`temperature`, `top_p`, …) | yes | yes | — | yes | — | partial (system prompt, effort, thinking) |
 | separate `execute_tool` spans | yes | no (tool calls ride on messages) | yes | no (tool calls ride on messages) | yes | yes |
 | TTFT on streaming | yes | yes | yes (AI SDK model path) | yes | yes (`handleLLMNewToken`) | yes (with `includePartialMessages`) |

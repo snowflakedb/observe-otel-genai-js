@@ -47,6 +47,7 @@ import { OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
 import { identityFieldsFromOptions } from '../_common/metadata.js';
+import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 
 type ResponseCreateParams = OpenAI.Responses.ResponseCreateParams;
@@ -67,8 +68,9 @@ export function instrumentResponseApiPromise(
   apiPromise: ApiPromiseLike<unknown>,
   params: ResponseCreateParams,
   options: AdapterCallOptions,
+  baseURL?: string,
 ): unknown {
-  const seed = buildResponsesSeed(params, options);
+  const seed = buildResponsesSeed(params, options, baseURL);
 
   if (isStreaming(params)) {
     const rec = client.startStreamingGeneration(seed);
@@ -98,6 +100,7 @@ function isStreaming(params: ResponseCreateParams): boolean {
 function buildResponsesSeed(
   params: ResponseCreateParams,
   options: AdapterCallOptions,
+  baseURL: string | undefined,
 ): GenerationStart {
   const p = params as ResponseCreateParams & {
     max_output_tokens?: number | null;
@@ -119,8 +122,9 @@ function buildResponsesSeed(
     // what `gen_ai.system_instructions` is for. Chat Completions instead rides it
     // inline in `messages` as a system-role turn.
     systemPrompt: p.instructions ?? undefined,
-    outputType: p.text?.format?.type === 'json_schema' ? 'json' : undefined,
+    outputType: outputTypeOf(p.text?.format?.type),
     tools: mapResponsesTools(p.tools),
+    ...serverOf(baseURL),
     ...identityFieldsFromOptions(options),
     // The request's own conversation, unless withMetadata names one.
     conversationId:

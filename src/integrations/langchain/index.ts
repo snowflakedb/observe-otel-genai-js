@@ -69,6 +69,7 @@ import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { RetrievalRecorder } from '../../recorders/retrieval.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import { matchProvider } from '../_common/provider.js';
+import { toolDefinitions } from '../_common/tool-definitions.js';
 
 export interface GenAIOtelCallbackHandlerOptions {
   client: Client;
@@ -1032,58 +1033,7 @@ function toolDefinitionsFromExtraParams(
   extraParams?: Record<string, unknown>,
 ): ToolDefinition[] | undefined {
   const invocation = extraParams?.invocation_params as Record<string, unknown> | undefined;
-  const rawTools = invocation?.tools;
-  if (!Array.isArray(rawTools) || rawTools.length === 0) return undefined;
-
-  const defs: ToolDefinition[] = [];
-  for (const raw of rawTools) {
-    const def = normalizeToolDefinition(raw);
-    if (def) defs.push(def);
-  }
-  return defs.length > 0 ? defs : undefined;
-}
-
-/**
- * Normalizes one provider-specific tool entry into `{ name, description?,
- * inputSchemaJson? }`. Handles the three shapes LangChain forwards:
- *   - OpenAI:    `{ type: 'function', function: { name, description, parameters } }`
- *   - Anthropic: `{ name, description, input_schema }`
- *   - already-normalized: `{ name, description, parameters }`
- * The JSON schema is stored as a JSON string (`inputSchemaJson`); the content
- * sink parses it back into `parameters` for the semconv shape.
- */
-function normalizeToolDefinition(raw: unknown): ToolDefinition | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const r = raw as Record<string, unknown>;
-
-  // OpenAI wraps the definition under `function`; other providers are flat.
-  const fn =
-    r.function && typeof r.function === 'object'
-      ? (r.function as Record<string, unknown>)
-      : undefined;
-  const src = fn ?? r;
-
-  const name = src.name;
-  if (typeof name !== 'string' || name.length === 0) return undefined;
-
-  const def: ToolDefinition = { name };
-
-  const description = src.description;
-  if (typeof description === 'string' && description.length > 0) def.description = description;
-
-  // `parameters` (OpenAI / normalized) or `input_schema` (Anthropic).
-  const schema = src.parameters ?? src.input_schema ?? src.inputSchema ?? src.schema;
-  if (schema != null) {
-    const encoded = lcJson(schema);
-    if (encoded != null) def.inputSchemaJson = encoded;
-  }
-
-  // The OTel schema requires `type`. OpenAI carries it at the top level
-  // (`type: 'function'`); Anthropic and bare/normalized tools don't, so default
-  // to the cross-provider function-tool type.
-  def.type = typeof r.type === 'string' && r.type.length > 0 ? r.type : 'function';
-
-  return def;
+  return toolDefinitions(invocation?.tools);
 }
 
 /** `gen_ai.response.model` — the model that served the call, which is more

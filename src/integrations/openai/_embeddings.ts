@@ -26,6 +26,7 @@ import type OpenAI from 'openai';
 import type { Client } from '../../client.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
+import { serverOf } from '../_common/request.js';
 
 type OpenAIAdapterOptions = AdapterCallOptions;
 
@@ -50,8 +51,9 @@ export async function runEmbedding(
   invoke: EmbeddingsInvoke,
   params: EmbeddingCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): Promise<EmbeddingResult> {
-  await using rec = client.startEmbedding(buildEmbeddingSeed(params, options));
+  await using rec = client.startEmbedding(buildEmbeddingSeed(params, options, baseURL));
   try {
     const result = await invoke(params);
     recordEmbeddingResult(rec, params, result);
@@ -74,8 +76,9 @@ export function instrumentEmbeddingApiPromise(
   apiPromise: ApiPromiseLike<unknown>,
   params: EmbeddingCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): unknown {
-  const rec = client.startEmbedding(buildEmbeddingSeed(params, options));
+  const rec = client.startEmbedding(buildEmbeddingSeed(params, options, baseURL));
   return instrumentApiPromise(apiPromise, rec, (result) => {
     recordEmbeddingResult(rec, params, result as EmbeddingResult);
     void rec.end();
@@ -84,7 +87,11 @@ export function instrumentEmbeddingApiPromise(
 }
 
 /** Builds the embedding recorder seed from the request params. */
-function buildEmbeddingSeed(params: EmbeddingCreateParams, options: OpenAIAdapterOptions) {
+function buildEmbeddingSeed(
+  params: EmbeddingCreateParams,
+  options: OpenAIAdapterOptions,
+  baseURL: string | undefined,
+) {
   return {
     model: { provider: 'openai', name: params.model },
     agentName: options.agentName,
@@ -93,6 +100,7 @@ function buildEmbeddingSeed(params: EmbeddingCreateParams, options: OpenAIAdapte
     userId: options.userId,
     dimensions: params.dimensions,
     encodingFormat: params.encoding_format,
+    ...serverOf(baseURL),
     contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,

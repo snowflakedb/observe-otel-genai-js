@@ -30,6 +30,10 @@ export interface EmbeddingStart {
   dimensions?: number;
   /** e.g. `"float"`, `"base64"`. */
   encodingFormat?: string;
+  /** GenAI provider endpoint host (`server.address`). */
+  serverAddress?: string;
+  /** GenAI provider endpoint port (`server.port`). */
+  serverPort?: number;
   /** Per-call content-capture override (see `GenerationStart.contentCapture`). */
   contentCapture?: ContentCaptureMode;
   tags?: Record<string, string>;

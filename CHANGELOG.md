@@ -10,6 +10,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- OpenAI: chat and embeddings spans record `server.address` and `server.port` from
+  the client's `baseURL`. Chat Completions spans also record
+  `gen_ai.tool.definitions` from the request's `tools`, and `gen_ai.output.type`
+  from `response_format` (`json` for `json_schema` and `json_object`, `text` for
+  `text`). Responses now also maps `json_object`, and records `text` when the
+  request names the text format.
 - Core: opt-in `user.id` on metrics. Set
   `new Client({ metricAttributes: { userId: true } })` to add it to every histogram
   data point whose operation has a user id. Off by default, since each user becomes

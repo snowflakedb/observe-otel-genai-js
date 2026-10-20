@@ -36,7 +36,9 @@ import {
 import { OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/metadata.js';
+import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
+import { toolDefinitions } from '../_common/tool-definitions.js';
 
 type OpenAIAdapterOptions = AdapterCallOptions;
 
@@ -72,9 +74,10 @@ export async function runChatCompletion(
   invoke: ChatCompletionsInvoke,
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): Promise<unknown> {
   const isStream = (params as { stream?: boolean }).stream === true;
-  const seed = buildChatSeed(params, options);
+  const seed = buildChatSeed(params, options, baseURL);
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
@@ -114,9 +117,10 @@ export function instrumentChatCompletionApiPromise(
   apiPromise: ApiPromiseLike<unknown>,
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): unknown {
   const isStream = (params as { stream?: boolean }).stream === true;
-  const seed = buildChatSeed(params, options);
+  const seed = buildChatSeed(params, options, baseURL);
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
@@ -142,6 +146,7 @@ export function instrumentChatCompletionApiPromise(
 function buildChatSeed(
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL: string | undefined,
 ): GenerationStart {
   return {
     model: { provider: 'openai', name: params.model },
@@ -157,6 +162,9 @@ function buildChatSeed(
     seed: params.seed ?? undefined,
     choiceCount: params.n ?? undefined,
     toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
+    outputType: outputTypeOf(params.response_format?.type),
+    tools: toolDefinitions(params.tools),
+    ...serverOf(baseURL),
     ...identityFieldsFromOptions(options),
     contentCapture: options.contentCapture,
     tags: options.tags,
