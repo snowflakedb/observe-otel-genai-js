@@ -88,10 +88,10 @@ In short, it covers:
 
 The filter applies to span attributes, event attributes, and link attributes,
 on every span the library creates: `chat`, `embeddings`, `execute_tool`,
-`retrieval`, `invoke_agent`, `create_agent`, and the OpenAI Agents
-`invoke_workflow` span. It also covers writes that do not come from the
-library: `rec.setAttributes(...)`, and `trace.getActiveSpan()` inside an
-`invokeAgent` / `createAgent` callback or `rec.withActiveContext(...)`, where the
+`retrieval`, `invoke_agent`, `invoke_workflow`, and `create_agent`. It also
+covers writes that do not come from the library: `rec.setAttributes(...)`, and
+`trace.getActiveSpan()` inside an `invokeAgent` / `invokeWorkflow` / `createAgent`
+callback or `rec.withActiveContext(...)`, where the
 active span is the filtered one.
 
 ## The list is fixed
@@ -103,9 +103,10 @@ and needs a privacy review.
 ## What it does not cover
 
 - **Metrics.** Metric attributes are a fixed set (operation, provider, model,
-  agent name, tool name, token type, error type and category, and the opt-in
-  conversation id and user id), all on the list, so they are not filtered at
-  runtime. A test fails if a metric attribute outside the list is added.
+  agent name, tool name, workflow name, token type, error type and category, and
+  the opt-in conversation id and user id), all on the list, so they are not
+  filtered at runtime. A test fails if a metric attribute outside the list is
+  added.
 - **Span names.** Names such as `chat gpt-4o`, `execute_tool search`,
   `invoke_agent planner`, `retrieval docs-index`, or `invoke_workflow
   support-flow` are built from the operation, model, tool, agent, data source,

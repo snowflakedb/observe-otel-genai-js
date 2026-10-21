@@ -144,6 +144,7 @@ describe('conversation id on metrics', () => {
     await gen.end();
     await h.client.startToolExecution({ toolName: 'search', conversationId }).end();
     await h.client.invokeAgent({ agentName: 'planner', conversationId }).end();
+    await h.client.invokeWorkflow({ workflowName: 'rag', conversationId }).end();
     await h.client.startRetrieval({ dataSourceId: 'docs', conversationId }).end();
     await h.client
       .startEmbedding({ model: { provider: 'openai', name: 'embed-3' }, conversationId })
@@ -171,6 +172,7 @@ describe('conversation id on metrics', () => {
       'gen_ai.client.token.usage',
       'gen_ai.client.tool_calls_per_operation',
       'gen_ai.client.tool_execution.duration',
+      'gen_ai.invoke_workflow.duration',
     ]);
     for (const m of all) {
       for (const p of m.dataPoints) {
@@ -205,6 +207,7 @@ describe('user id on metrics', () => {
     await gen.end();
     await h.client.startToolExecution({ toolName: 'search', userId }).end();
     await h.client.invokeAgent({ agentName: 'planner', userId }).end();
+    await h.client.invokeWorkflow({ workflowName: 'rag', userId }).end();
     await h.client.startRetrieval({ dataSourceId: 'docs', userId }).end();
     await h.client.startEmbedding({ model: { provider: 'openai', name: 'embed-3' }, userId }).end();
 
@@ -229,6 +232,7 @@ describe('user id on metrics', () => {
       'gen_ai.client.token.usage',
       'gen_ai.client.tool_calls_per_operation',
       'gen_ai.client.tool_execution.duration',
+      'gen_ai.invoke_workflow.duration',
     ]);
     for (const m of all) {
       for (const p of m.dataPoints)
@@ -321,6 +325,21 @@ describe('label trimming', () => {
     const metrics = await h.collectMetrics();
     const tool = findMetric(metrics[0]!, 'gen_ai.client.tool_execution.duration');
     expect(tool!.dataPoints[0]!.attributes['error.type']).toBe('Timeout');
+  });
+
+  it('trims the labels of the workflow duration too', async () => {
+    h = createHarness({ metricAttributes: { conversationId: true, userId: true } });
+    await h.client
+      .invokeWorkflow({ workflowName: ' rag ', conversationId: ' conv-1 ', userId: ' user-1 ' })
+      .end();
+
+    const metrics = await h.collectMetrics();
+    const workflow = findMetric(metrics[0]!, 'gen_ai.invoke_workflow.duration');
+    expect(workflow!.dataPoints[0]!.attributes).toMatchObject({
+      'gen_ai.workflow.name': 'rag',
+      'gen_ai.conversation.id': 'conv-1',
+      'user.id': 'user-1',
+    });
   });
 
   it('leaves off an opted-in label that is only spaces', async () => {

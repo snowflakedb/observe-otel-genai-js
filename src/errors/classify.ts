@@ -38,6 +38,23 @@ const STATUS_CODE_FIELDS = ['status', 'statusCode', 'status_code', 'Status', 'St
 const STATUS_REGEX = /\b([1-5][0-9][0-9])\b/g;
 
 /**
+ * `error.type` must stay low-cardinality, but error records can carry free text, so
+ * only class-like names pass. `TripwireTriggered` keeps OpenAI Agents guardrail trips
+ * visible.
+ */
+export const ERROR_CLASS_NAME =
+  /^(?:[A-Za-z_$][A-Za-z0-9_$.]{0,127})?(?:Error|Exception|TripwireTriggered)$/;
+
+/** The class name of a thrown `Error`, such as `AuthenticationError`, when it looks like one. */
+export function errorClassName(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  // The openai package's error classes leave `name` as 'Error'.
+  const className = err.constructor.name;
+  const name = err.name === 'Error' && ERROR_CLASS_NAME.test(className) ? className : err.name;
+  return ERROR_CLASS_NAME.test(name) ? name : undefined;
+}
+
+/**
  * Returns one of the canonical `error.category` values for `err`. Returns
  * `'sdk_error'` when `fallbackSdk` is true and no other category matches.
  */

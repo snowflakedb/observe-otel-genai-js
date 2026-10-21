@@ -174,6 +174,7 @@ export const METRIC_TOKEN_USAGE = 'gen_ai.client.token.usage';
 export const METRIC_TIME_TO_FIRST_TOKEN = 'gen_ai.client.time_to_first_token';
 export const METRIC_TOOL_CALLS_PER_OPERATION = 'gen_ai.client.tool_calls_per_operation';
 export const METRIC_TOOL_EXECUTION_DURATION = 'gen_ai.client.tool_execution.duration';
+export const METRIC_INVOKE_WORKFLOW_DURATION = 'gen_ai.invoke_workflow.duration';
 
 export const METRIC_ATTR_TOKEN_TYPE = 'gen_ai.token.type';
 
@@ -196,6 +197,14 @@ export type TokenType =
  */
 export const DURATION_BUCKETS_SECONDS: readonly number[] = [
   0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+];
+
+/**
+ * Workflow duration buckets in seconds, 1s to 2h, as the GenAI conventions advise
+ * for `gen_ai.invoke_workflow.duration`: a workflow often runs for minutes.
+ */
+export const WORKFLOW_DURATION_BUCKETS_SECONDS: readonly number[] = [
+  1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200,
 ];
 
 /**

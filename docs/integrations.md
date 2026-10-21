@@ -67,7 +67,8 @@ tool spans also carry a conversation title. Each takes the first value set by:
    start call in manual instrumentation).
 2. **The enclosing scope**: `withAgent(name, version?)`, `withConversationId`,
    `withConversationTitle`, `withUserId` or `withContext` around the call, or the
-   span the call runs under (inside `client.invokeAgent(seed, fn)` or a recorder's
+   span the call runs under (inside `client.invokeAgent(seed, fn)`,
+   `client.invokeWorkflow(seed, fn)` or a recorder's
    `withActiveContext(fn)`). The innermost scope that sets a value wins.
 3. **The `Client` config**: `agentName`, `agentVersion`, `userId`.
 
@@ -90,7 +91,9 @@ neither do the spans under it. `create_agent` spans take their user id like any
 other span and everything else only from what you pass to `createAgent`. They pass
 down only their user id: spans started inside `createAgent(seed, fn)`, or inside its
 recorder's `withActiveContext(fn)`, get that user id but keep the enclosing agent's
-name.
+name. `invoke_workflow` spans have no agent name. They pass down their conversation
+id and user id, so spans inside `invokeWorkflow(seed, fn)` keep the enclosing
+agent's name.
 
 Scopes live in the OpenTelemetry context, next to the active span, so code that saves
 and restores a context restores both. Like span nesting, they need a registered
@@ -333,7 +336,7 @@ beforeEach(() => setTracingDisabled(false));
 - Model calls and tool calls run inside the OpenTelemetry context of their agent or tool span, so spans from other instrumentations (a `chat` span, a database call inside a tool) nest under them.
 - On the AI SDK path the `chat` span is recorded when the model call ends, so spans the provider client creates during the call sit beside it under `invoke_agent`.
 - Tools served by an MCP server get `gen_ai.tool.type = mcp`; other tools get `function`.
-- Metrics: `gen_ai.client.operation.duration` for the workflow span, agent spans and AI SDK `chat` spans, `gen_ai.client.tool_execution.duration` for tool spans, and `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted twice. On the AI SDK path, time to first token is measured from the first text, reasoning or tool-argument delta.
+- Metrics: `gen_ai.invoke_workflow.duration` for the workflow span, `gen_ai.client.operation.duration` for agent spans and AI SDK `chat` spans, `gen_ai.client.tool_execution.duration` for tool spans, and `gen_ai.client.token.usage` from `chat` spans only, so totals are not counted twice. On the AI SDK path, time to first token is measured from the first text, reasoning or tool-argument delta.
 
 ### The workflow span
 

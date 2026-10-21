@@ -14,6 +14,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Core: `client.invokeWorkflow(seed)` and `client.invokeWorkflow(seed, fn)` record an
+  `invoke_workflow` span, for steps chained together that decide nothing on their
+  own. It works like `invokeAgent`, but has no agent name: it records
+  `gen_ai.workflow.name`, and spans inside it take its conversation id and user id
+  and keep the enclosing agent's name. A failed workflow's `error.type` is the
+  error's class name, as on the OpenAI Agents workflow span.
+- Core: workflow durations are recorded in `gen_ai.invoke_workflow.duration`, the
+  GenAI conventions' histogram for workflows, with buckets from 1 s to 2 h and
+  `gen_ai.workflow.name` when the workflow has one. The OpenAI Agents workflow
+  is recorded there too, not in `gen_ai.client.operation.duration`.
 - Core: `createAgent` accepts `userId`, and `create_agent` spans carry `user.id`,
   falling back to a `withUserId(...)` scope, then the client config. Their
   `gen_ai.client.operation.duration` data point carries it too when
@@ -84,9 +94,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Runs and `withTrace` blocks that reject are closed with the error, since the
     SDK leaves them open. Failures the run recovers from do not fail the run.
   - A streamed run that fails reports the error on its workflow span.
-  - Each run records `gen_ai.client.operation.duration` with `gen_ai.operation.name`
-    set to `invoke_workflow`, so runs have their own count, error and duration
-    series. Its provider, model and agent name are empty.
+  - Each run records `gen_ai.invoke_workflow.duration`, so runs have their own
+    count, error and duration series.
   - The workflow span carries `user.id` from the `withUserId(...)` scope the trace
     opens in, else the client config, as does its duration data point when
     `metricAttributes.userId` is on.

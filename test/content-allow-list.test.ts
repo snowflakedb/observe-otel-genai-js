@@ -202,6 +202,11 @@ async function driveEverySpanType(client: Client): Promise<void> {
     }),
   ).rejects.toThrow('secret thrown by the agent');
 
+  const workflow = client.invokeWorkflow({ workflowName: 'rag', input: secretMessages() });
+  workflow.setOutput([assistantTextMessage('secret workflow answer')]);
+  workflow.setError(new Error('secret workflow error'));
+  await workflow.end();
+
   const creation = client.createAgent({ agentName: 'planner' });
   creation.setError(new Error('secret setup error'));
   await creation.end();
@@ -247,6 +252,7 @@ describe('allow_list content mode', () => {
       'execute_tool search',
       'invoke_agent callback-agent',
       'invoke_agent planner',
+      'invoke_workflow rag',
       'retrieval kb',
     ]);
     for (const span of spans) {
@@ -268,6 +274,8 @@ describe('allow_list content mode', () => {
       .flatMap((rm) => rm.scopeMetrics)
       .flatMap((sm) => sm.metrics);
     expect(metrics.length).toBeGreaterThan(0);
+    const labels = metrics.flatMap((m) => m.dataPoints.map((p) => p.attributes));
+    expect(labels.some((a) => a['gen_ai.workflow.name'] === 'rag')).toBe(true);
     for (const metric of metrics) {
       for (const point of metric.dataPoints) {
         for (const key of Object.keys(point.attributes)) {
@@ -288,6 +296,7 @@ describe('allow_list content mode', () => {
     expect(chat.attributes['gen_ai.request.temperature']).toBe(0.2);
     expect(chat.attributes['error.type']).toBe('provider_call_error');
     expect(spanNamed('invoke_agent planner').links).toHaveLength(1);
+    expect(spanNamed('invoke_workflow rag').attributes['gen_ai.workflow.name']).toBe('rag');
   });
 
   it('keeps the agent name on embedding spans', async () => {

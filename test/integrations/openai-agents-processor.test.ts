@@ -54,6 +54,7 @@ import {
   ATTR_REQUEST_MODEL,
   ATTR_USER_ID,
   ATTR_WORKFLOW_NAME,
+  METRIC_INVOKE_WORKFLOW_DURATION,
   METRIC_OPERATION_DURATION,
   OP_CHAT,
   OP_EXECUTE_TOOL,
@@ -120,18 +121,23 @@ describe('GenAIOtelTracingProcessor', () => {
     return list[0] as T;
   };
   const agentSpans = () => spansWithOp(OP_INVOKE_AGENT);
-  /** Data points of the operation duration histogram for one operation. */
-  const durationPoints = async (op: string) => {
+  /** Data points of one histogram. */
+  const histogramPoints = async (name: string) => {
     const histogram = (await h.collectMetrics())
       .at(-1)
       ?.scopeMetrics.flatMap((sm) => sm.metrics)
       .find(
         (m): m is HistogramMetricData =>
-          m.descriptor.name === METRIC_OPERATION_DURATION &&
-          m.dataPointType === DataPointType.HISTOGRAM,
+          m.descriptor.name === name && m.dataPointType === DataPointType.HISTOGRAM,
       );
-    return (histogram?.dataPoints ?? []).filter((p) => p.attributes[ATTR_OPERATION_NAME] === op);
+    return histogram?.dataPoints ?? [];
   };
+  /** Data points of the operation duration histogram for one operation. */
+  const durationPoints = async (op: string) =>
+    (await histogramPoints(METRIC_OPERATION_DURATION)).filter(
+      (p) => p.attributes[ATTR_OPERATION_NAME] === op,
+    );
+  const workflowPoints = () => histogramPoints(METRIC_INVOKE_WORKFLOW_DURATION);
   const ops = () =>
     h.spans.getFinishedSpans().map((s) => s.attributes[ATTR_OPERATION_NAME] ?? '<none>');
 
@@ -383,10 +389,12 @@ describe('GenAIOtelTracingProcessor', () => {
     await runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'a' }));
     await processor.onTraceEnd(trace);
 
-    const workflow = only(await durationPoints(OP_INVOKE_WORKFLOW));
+    const workflow = only(await workflowPoints());
     expect(workflow.value.count).toBe(1);
     expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('');
-    expect(workflow.attributes[ATTR_AGENT_NAME]).toBe('');
+    expect(workflow.attributes).not.toHaveProperty(ATTR_AGENT_NAME);
+    expect(workflow.attributes[ATTR_WORKFLOW_NAME]).toBe('timed-run');
+    expect(await durationPoints(OP_INVOKE_WORKFLOW)).toEqual([]);
     expect(only(await durationPoints(OP_INVOKE_AGENT)).attributes[ATTR_AGENT_NAME]).toBe('a');
   });
 
@@ -400,7 +408,7 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceEnd(trace);
 
     expect(only(spansWithOp(OP_INVOKE_WORKFLOW)).attributes[ATTR_USER_ID]).toBe('u-1');
-    expect(only(await durationPoints(OP_INVOKE_WORKFLOW)).attributes[ATTR_USER_ID]).toBe('u-1');
+    expect(only(await workflowPoints()).attributes[ATTR_USER_ID]).toBe('u-1');
   });
 
   it("labels a failed workflow's duration with its error.type", async () => {
@@ -410,7 +418,7 @@ describe('GenAIOtelTracingProcessor', () => {
     await processor.onTraceStart(trace);
     await processor.failTrace(trace.traceId, error);
 
-    const workflow = only(await durationPoints(OP_INVOKE_WORKFLOW));
+    const workflow = only(await workflowPoints());
     expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('BoomError');
     expect(workflow.attributes[ATTR_ERROR_CATEGORY]).toBe('sdk_error');
     expect(only(spansWithOp(OP_INVOKE_WORKFLOW)).attributes[ATTR_ERROR_CATEGORY]).toBe('sdk_error');

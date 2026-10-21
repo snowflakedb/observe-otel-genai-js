@@ -98,9 +98,11 @@ export type { EmbeddingRecorder } from './recorders/embedding.js';
 export type { GenerationRecorder } from './recorders/generation.js';
 export type { RetrievalRecorder } from './recorders/retrieval.js';
 export type { ToolExecutionRecorder } from './recorders/tool.js';
+export type { WorkflowInvocationRecorder } from './recorders/workflow.js';
 
 // Models
 export type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
+export type { WorkflowInvocationStart } from './models/workflow.js';
 export type {
   Generation,
   GenerationMode,

@@ -32,6 +32,7 @@ import type { Generation, GenerationStart } from '../models/generation.js';
 import type { RetrievalStart } from '../models/retrieval.js';
 import type { ToolExecutionStart } from '../models/tool.js';
 import type { TokenUsage } from '../models/usage.js';
+import type { WorkflowInvocationStart } from '../models/workflow.js';
 import {
   ATTR_AGENT_DESCRIPTION,
   ATTR_AGENT_ID,
@@ -81,10 +82,12 @@ import {
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
   ATTR_USER_ID,
+  ATTR_WORKFLOW_NAME,
   OP_CREATE_AGENT,
   OP_EMBEDDINGS,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
   SDK_NAME,
 } from '../semconv.js';
@@ -288,6 +291,19 @@ export function applyAgentAttributes(span: Span, start: AgentInvocationStart) {
       start.parentGenerationIds.map((p: unknown) => parentRefToString(p)),
     );
   }
+}
+
+// -----------------------------------------------------------------------------
+// Workflow invocation
+// -----------------------------------------------------------------------------
+
+export function applyWorkflowAttributes(span: Span, start: WorkflowInvocationStart) {
+  setStr(span, ATTR_OPERATION_NAME, OP_INVOKE_WORKFLOW);
+  setStr(span, ATTR_SDK_NAME, SDK_NAME);
+
+  setStr(span, ATTR_WORKFLOW_NAME, start.workflowName);
+  setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
 }
 
 // -----------------------------------------------------------------------------

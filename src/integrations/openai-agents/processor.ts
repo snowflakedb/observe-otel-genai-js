@@ -54,7 +54,7 @@ import {
   resolveContentCaptureMode,
 } from '../../content/capture.js';
 import { contentCaptureModeFromContext, userIdFromContext } from '../../context.js';
-import { classifyError } from '../../errors/classify.js';
+import { ERROR_CLASS_NAME, classifyError, errorClassName } from '../../errors/classify.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
@@ -199,12 +199,6 @@ interface RunState {
 }
 
 const DEFAULT_MAX_TRACES = 1000;
-
-/**
- * `error.type` must stay low-cardinality, but SDK error records carry free text, so
- * only class-like names pass. `TripwireTriggered` keeps guardrail trips visible.
- */
-const ERROR_NAME = /^(?:[A-Za-z_$][A-Za-z0-9_$.]{0,127})?(?:Error|Exception|TripwireTriggered)$/;
 
 export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
   readonly client: Client;
@@ -672,11 +666,8 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
 
     const endedAtMs = this.client.now();
     span.end(new Date(endedAtMs));
-    this.client.metrics.recordOperationDuration((endedAtMs - trace.startedAtMs) / 1000, {
-      operationName: OP_INVOKE_WORKFLOW,
-      providerName: '',
-      requestModel: '',
-      agentName: '',
+    this.client.metrics.recordWorkflowDuration((endedAtMs - trace.startedAtMs) / 1000, {
+      workflowName: trace.workflowName,
       conversationId: trace.conversationId,
       userId: trace.userId,
       errorType,
@@ -819,19 +810,14 @@ function applyError(recorder: Recorder, error: unknown): void {
  * fixed text such as `'Error in agent run'` in `message`.
  */
 function errorName(error: unknown): string | undefined {
-  if (error instanceof Error) {
-    // The openai package's error classes leave `name` as 'Error'.
-    const className = error.constructor.name;
-    const name = error.name === 'Error' && ERROR_NAME.test(className) ? className : error.name;
-    return ERROR_NAME.test(name) ? name : undefined;
-  }
+  if (error instanceof Error) return errorClassName(error);
   const record = error as SdkSpanError;
   const detail = record?.data?.error as string | { name?: string } | undefined;
   const candidate = typeof detail === 'string' ? detail : (detail?.name ?? record?.message);
   if (typeof candidate !== 'string') return undefined;
   const name = candidate.split(':')[0]?.trim() ?? '';
   // The SDK often records only the error's text, such as "Error: 401 bad key", which names no class.
-  return name !== 'Error' && ERROR_NAME.test(name) ? name : undefined;
+  return name !== 'Error' && ERROR_CLASS_NAME.test(name) ? name : undefined;
 }
 
 function errorMessage(error: unknown): string {

@@ -16,7 +16,7 @@
  */
 
 /**
- * The five GenAI client metrics.
+ * The six GenAI metrics.
  *
  * Wraps a {@link Meter} with helpers that record into the right histogram
  * with the right attribute set. Histograms are created lazily but only once
@@ -44,8 +44,10 @@ import {
   ATTR_REQUEST_MODEL,
   ATTR_TOOL_NAME,
   ATTR_USER_ID,
+  ATTR_WORKFLOW_NAME,
   DURATION_BUCKETS_SECONDS,
   METRIC_ATTR_TOKEN_TYPE,
+  METRIC_INVOKE_WORKFLOW_DURATION,
   METRIC_OPERATION_DURATION,
   METRIC_TIME_TO_FIRST_TOKEN,
   METRIC_TOKEN_USAGE,
@@ -53,6 +55,7 @@ import {
   METRIC_TOOL_EXECUTION_DURATION,
   TOKEN_USAGE_BUCKETS,
   type TokenType,
+  WORKFLOW_DURATION_BUCKETS_SECONDS,
 } from '../semconv.js';
 
 export interface OperationLabels {
@@ -65,6 +68,16 @@ export interface OperationLabels {
 }
 
 export interface DurationLabels extends OperationLabels {
+  errorType: string;
+  errorCategory: string;
+}
+
+/** A workflow has no provider, model or agent of its own, so it has none of those labels. */
+export interface WorkflowDurationLabels {
+  /** Left off when unset. */
+  workflowName?: string;
+  conversationId?: string;
+  userId?: string;
   errorType: string;
   errorCategory: string;
 }
@@ -86,6 +99,7 @@ export class GenAIMetrics {
   readonly timeToFirstToken: Histogram;
   readonly toolCallsPerOperation: Histogram;
   readonly toolExecutionDuration: Histogram;
+  readonly invokeWorkflowDuration: Histogram;
   private readonly attributes: MetricAttributesConfig;
 
   constructor(
@@ -112,6 +126,10 @@ export class GenAIMetrics {
       unit: 's',
       advice: { explicitBucketBoundaries: [...DURATION_BUCKETS_SECONDS] },
     });
+    this.invokeWorkflowDuration = meter.createHistogram(METRIC_INVOKE_WORKFLOW_DURATION, {
+      unit: 's',
+      advice: { explicitBucketBoundaries: [...WORKFLOW_DURATION_BUCKETS_SECONDS] },
+    });
   }
 
   recordOperationDuration(durationSeconds: number, given: DurationLabels): void {
@@ -122,6 +140,22 @@ export class GenAIMetrics {
       [ATTR_PROVIDER_NAME]: labels.providerName,
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_AGENT_NAME]: labels.agentName,
+      [ATTR_ERROR_TYPE]: labels.errorType,
+      [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...this.optionalAttributes(labels),
+    });
+  }
+
+  /**
+   * Records into `gen_ai.invoke_workflow.duration`, the GenAI conventions' own
+   * histogram for workflows, with their longer buckets. Workflows are not recorded
+   * in `gen_ai.client.operation.duration`.
+   */
+  recordWorkflowDuration(durationSeconds: number, given: WorkflowDurationLabels): void {
+    if (durationSeconds < 0 || !Number.isFinite(durationSeconds)) return;
+    const labels = trimmed(given);
+    this.invokeWorkflowDuration.record(durationSeconds, {
+      ...(labels.workflowName ? { [ATTR_WORKFLOW_NAME]: labels.workflowName } : {}),
       [ATTR_ERROR_TYPE]: labels.errorType,
       [ATTR_ERROR_CATEGORY]: labels.errorCategory,
       ...this.optionalAttributes(labels),
