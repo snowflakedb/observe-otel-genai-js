@@ -549,18 +549,21 @@ registerInstrumentations({
 ```
 
 - The config takes every handler option plus an optional `client`. Without a `client`, one is built from the registered providers, so register those first (for example with `bootstrapOtel`).
-- **CommonJS**: patched automatically. Call `registerInstrumentations(...)` before the first `require('@langchain/core')`.
-- **ESM**: call `manuallyInstrument(...)` once, before importing `@langchain/core`. Do the same for bundlers that inline `@langchain/core` (Next.js, some Webpack or esbuild setups) and non-Node runtimes. Do not enable the OpenTelemetry ESM loader hook for `@langchain/core`: it breaks the library's LangSmith interop.
+- **CommonJS**: patched automatically. Call `registerInstrumentations(...)` before the first `require('@langchain/core')` or `require('@langchain/langgraph')`.
+- **ESM**: call `manuallyInstrument(...)` once with the modules below, before importing `@langchain/core`. Do the same for bundlers that inline `@langchain/core` (Next.js, some Webpack or esbuild setups) and non-Node runtimes. Do not enable the OpenTelemetry ESM loader hook for `@langchain/core`: it breaks the library's LangSmith interop.
 
   ```ts
   import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
   import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
+  import * as PregelModule from '@langchain/langgraph/pregel';
 
   const instrumentation = new LangChainInstrumentation();
-  instrumentation.manuallyInstrument(CallbackManagerModule);
+  // Pass PregelModule only when you use LangGraph.
+  instrumentation.manuallyInstrument(CallbackManagerModule, PregelModule);
   ```
 
-- Supported `@langchain/core` versions: >=0.3.0 <2 (0.3.x and 1.x).
+- With LangGraph, the instrumentation also looks at each graph itself when it starts a run, to tell a `createAgent` graph from one that only inherited its run metadata, such as a graph run started inside a `createAgent` tool with its own `callbacks`. `langchain` 1.4.4 and later mark a `createAgent` graph in its config; for earlier versions, any graph with a `model_request` node counts. Without the patch (no instrumentation, `PregelModule` not passed under ESM, or `@langchain/langgraph` older than 1.0), the handler goes by the run metadata alone, and `langchain` before 1.3 puts nothing there, so its `createAgent` graphs are recorded as workflows.
+- Supported `@langchain/core` versions: >=0.3.0 <2 (0.3.x and 1.x). The LangGraph patch covers `@langchain/langgraph` >=1.0.0 <2.
 - `await instrumentation.shutdown()` ends open runs and shuts down a `Client` the instrumentation created. `disable()` removes the patch and ends open runs, but does not flush that client; prefer `shutdown()`, or rely on your `TracerProvider` shutdown.
 
 ### What gets recorded

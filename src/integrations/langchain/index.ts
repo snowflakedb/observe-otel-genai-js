@@ -72,6 +72,12 @@ import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import type { WorkflowInvocationRecorder } from '../../recorders/workflow.js';
 import { matchProvider } from '../_common/provider.js';
 import { toolDefinitions } from '../_common/tool-definitions.js';
+import {
+  CREATE_AGENT_INTEGRATION,
+  type GraphIdentity,
+  LANGGRAPH_DEFAULT_NAME,
+  graphIdentity,
+} from './_graph.js';
 
 export interface GenAIOtelCallbackHandlerOptions {
   client: Client;
@@ -359,7 +365,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
 
     if (!this.captureChains) return;
     const name = callerRunName(chain, runName);
-    const kind = chainKind(chain, name, parentRunId, metadata);
+    const kind = chainKind(chain, name, parentRunId, metadata, graphIdentity(chain));
     if (!kind) return;
 
     const seed = {
@@ -707,9 +713,6 @@ function toolNameFromOutput(output: unknown): string | undefined {
   return typeof msg.name === 'string' && msg.name.length > 0 ? msg.name : undefined;
 }
 
-/** LangGraph's name for a graph compiled without one (`Pregel.lc_name()`). */
-const LANGGRAPH_DEFAULT_NAME = 'LangGraph';
-
 /**
  * The chain's `runName` when the caller chose it. LangChain fills it in when the
  * caller set none: with the runnable's class name (wrappers such as `withRetry()`
@@ -726,14 +729,14 @@ function callerRunName(chain: Serialized, runName: string | undefined): string |
 /** An agent's name when nothing names it. */
 const DEFAULT_AGENT_NAME = 'langchain';
 
-/** The run metadata `createAgent` (from `langchain`) sets on its graph. */
-const CREATE_AGENT_INTEGRATION = 'langchain_create_agent';
-
 /**
  * What a chain run is recorded as, if anything:
  *  - A top-level graph is an agent when it shows it is one: a `createAgent` graph,
  *    or a name with "agent" in it (the fill-in name `LangGraph` is no name). Any
- *    other top-level graph chains steps together and is a workflow.
+ *    other top-level graph chains steps together and is a workflow. Whether
+ *    `createAgent` built it comes from the graph itself when
+ *    `LangChainInstrumentation` recorded it, else from the run metadata, which a
+ *    run started inside a `createAgent` tool inherits.
  *  - Any other top-level chain is an agent.
  *  - A nested chain is a step of its parent, unless it is a named graph: another
  *    agent, called from a tool or added as a node.
@@ -743,12 +746,14 @@ function chainKind(
   name: string | undefined,
   parentRunId: string | undefined,
   metadata: Record<string, unknown> | undefined,
+  graph: GraphIdentity | undefined,
 ): 'agent' | 'workflow' | undefined {
   if (parentRunId) return isLangGraph(chain) && name ? 'agent' : undefined;
   if (!isLangGraph(chain)) return 'agent';
-  const isAgent =
-    strField(metadata, 'ls_integration') === CREATE_AGENT_INTEGRATION ||
-    name?.toLowerCase().includes('agent');
+  const builtByCreateAgent = graph
+    ? graph.builtByCreateAgent
+    : strField(metadata, 'ls_integration') === CREATE_AGENT_INTEGRATION;
+  const isAgent = builtByCreateAgent || name?.toLowerCase().includes('agent');
   return isAgent ? 'agent' : 'workflow';
 }
 

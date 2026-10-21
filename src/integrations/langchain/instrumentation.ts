@@ -37,6 +37,12 @@
  * inheritable handler so nested runs pick it up. The handler is deduped by
  * name, so a caller that also passes it manually won't double-instrument.
  *
+ * When `@langchain/langgraph` is used, it also wraps `Pregel.prototype.toJSON`,
+ * which LangGraph calls to describe a graph to its run's start callback. The
+ * wrapper records what the graph says about itself (whether `createAgent` built
+ * it, and its name), which the run's metadata cannot tell reliably; see
+ * `./_graph.ts`.
+ *
  * ## CJS vs ESM
  *
  *  - **CJS** auto-patches with zero code: once `registerInstrumentations` runs
@@ -44,8 +50,9 @@
  *    intercepts the CommonJS build (`dist/callbacks/manager.cjs`) and we patch
  *    it. See {@link MANAGER_CJS}.
  *  - **ESM** is served by {@link LangChainInstrumentation.manuallyInstrument}:
- *    import the `@langchain/core/callbacks/manager` module and hand it over once
- *    at startup. Needs no launch flags.
+ *    import the `@langchain/core/callbacks/manager` module (and, with LangGraph,
+ *    `@langchain/langgraph/pregel`) and hand each over once at startup. Needs no
+ *    launch flags.
  *
  * We deliberately register only the concrete `.cjs` file, NOT the bare
  * `@langchain/core` package name. Registering the package name makes
@@ -66,6 +73,7 @@ import {
 
 import { Client } from '../../client.js';
 import { VERSION } from '../../version.js';
+import { type GraphLike, rememberGraphIdentity } from './_graph.js';
 import { GenAIOtelCallbackHandler, type GenAIOtelCallbackHandlerOptions } from './index.js';
 
 /**
@@ -77,10 +85,18 @@ import { GenAIOtelCallbackHandler, type GenAIOtelCallbackHandlerOptions } from '
 const MANAGER_CJS = '@langchain/core/dist/callbacks/manager.cjs';
 /** Covers `@langchain/core` 0.3.x and 1.x (the `_configureSync` layouts). */
 const SUPPORTED_VERSIONS = ['>=0.3.0 <2'];
+/** The CommonJS file that defines LangGraph's `Pregel`, registered for the same reason. */
+const PREGEL_CJS = '@langchain/langgraph/dist/pregel/index.cjs';
+const LANGGRAPH_VERSIONS = ['>=1.0.0 <2'];
 
 /** Shape of the module namespace exported by `@langchain/core/callbacks/manager`. */
 interface CallbackManagerModuleExports {
   CallbackManager?: CallbackManagerClass;
+}
+
+/** Shape of the module namespace exported by `@langchain/langgraph/pregel`. */
+interface PregelModuleExports {
+  Pregel?: { prototype: { toJSON: (this: GraphLike) => object } };
 }
 
 /**
@@ -124,7 +140,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
    */
   private ownedClient?: Client;
   /** Modules patched via {@link manuallyInstrument}; OTel's hook never saw them, so {@link disable} unpatches them itself. */
-  private readonly manualModules = new Set<CallbackManagerModuleExports>();
+  private readonly manualModules = new Set<CallbackManagerModuleExports & PregelModuleExports>();
 
   constructor(config: LangChainInstrumentationConfig = {}) {
     super('@genai-otel/instrumentation-langchain', VERSION, config);
@@ -138,36 +154,57 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
     return this.getHandler();
   }
 
-  protected init(): InstrumentationNodeModuleDefinition {
-    // Register the concrete CJS file as the module. The bare package name is
+  protected init(): InstrumentationNodeModuleDefinition[] {
+    // Register the concrete CJS files as the modules. The bare package names are
     // intentionally avoided so OTel doesn't hook the ESM namespace via
     // import-in-the-middle — see the class doc.
-    return new InstrumentationNodeModuleDefinition(
-      MANAGER_CJS,
-      SUPPORTED_VERSIONS,
-      (moduleExports: CallbackManagerModuleExports, moduleVersion?: string) =>
-        this.patchCallbackManager(moduleExports, moduleVersion),
-      (moduleExports?: CallbackManagerModuleExports) => this.unpatchCallbackManager(moduleExports),
-    );
+    return [
+      new InstrumentationNodeModuleDefinition(
+        MANAGER_CJS,
+        SUPPORTED_VERSIONS,
+        (moduleExports: CallbackManagerModuleExports, moduleVersion?: string) =>
+          this.patchCallbackManager(moduleExports, moduleVersion),
+        (moduleExports?: CallbackManagerModuleExports) =>
+          this.unpatchCallbackManager(moduleExports),
+      ),
+      new InstrumentationNodeModuleDefinition(
+        PREGEL_CJS,
+        LANGGRAPH_VERSIONS,
+        (moduleExports: PregelModuleExports) => this.patchPregel(moduleExports),
+        (moduleExports?: PregelModuleExports) => this.unpatchPregel(moduleExports),
+      ),
+    ];
   }
 
   /**
-   * Patch a `@langchain/core/callbacks/manager` module namespace directly.
+   * Patch `@langchain/core/callbacks/manager` and `@langchain/langgraph/pregel`
+   * module namespaces directly.
    *
    * Use this when the automatic require/import hook can't fire — most commonly
    * in ESM projects started without the OpenTelemetry loader hook. Import the
-   * module and hand it over once, before any runs execute:
+   * modules and hand them over once, before any runs execute:
    *
    *   import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
-   *   instrumentation.manuallyInstrument(CallbackManagerModule);
+   *   import * as PregelModule from '@langchain/langgraph/pregel';
+   *   instrumentation.manuallyInstrument(CallbackManagerModule, PregelModule);
    *
    * Idempotent: re-patching an already-patched module is a no-op.
    */
-  manuallyInstrument(moduleExports: { CallbackManager?: unknown }): void {
-    this._diag.debug('manually instrumenting @langchain/core CallbackManager');
-    const exports = moduleExports as CallbackManagerModuleExports;
-    this.patchCallbackManager(exports);
-    this.manualModules.add(exports);
+  manuallyInstrument(
+    ...moduleExports: Array<{ CallbackManager?: unknown } | { Pregel?: unknown }>
+  ): void {
+    for (const module of moduleExports) {
+      const exports = module as CallbackManagerModuleExports & PregelModuleExports;
+      if (exports.CallbackManager) {
+        this._diag.debug('manually instrumenting @langchain/core CallbackManager');
+        this.patchCallbackManager(exports);
+      }
+      if (exports.Pregel) {
+        this._diag.debug('manually instrumenting @langchain/langgraph Pregel');
+        this.patchPregel(exports);
+      }
+      this.manualModules.add(exports);
+    }
   }
 
   private getHandler(): GenAIOtelCallbackHandler {
@@ -214,6 +251,35 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
     if (CallbackManager && isWrapped(CallbackManager._configureSync)) {
       this._diag.debug('unpatching @langchain/core CallbackManager._configureSync');
       this._unwrap(CallbackManager, '_configureSync');
+    }
+  }
+
+  private patchPregel(moduleExports: PregelModuleExports): PregelModuleExports {
+    const prototype = moduleExports?.Pregel?.prototype;
+    if (!prototype || isWrapped(prototype.toJSON)) return moduleExports;
+    this._diag.debug('patching @langchain/langgraph Pregel.prototype.toJSON');
+    this._wrap(
+      prototype,
+      'toJSON',
+      (original) =>
+        function patchedToJSON(this: GraphLike) {
+          const serialized = original.call(this);
+          try {
+            rememberGraphIdentity(serialized, this);
+          } catch {
+            /* never let telemetry break serialization */
+          }
+          return serialized;
+        },
+    );
+    return moduleExports;
+  }
+
+  private unpatchPregel(moduleExports?: PregelModuleExports): void {
+    const prototype = moduleExports?.Pregel?.prototype;
+    if (prototype && isWrapped(prototype.toJSON)) {
+      this._diag.debug('unpatching @langchain/langgraph Pregel.prototype.toJSON');
+      this._unwrap(prototype, 'toJSON');
     }
   }
 
@@ -270,7 +336,10 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
   override disable(): void {
     super.disable();
     // OTel only unpatches modules its hook saw (CJS); undo our manual (ESM) ones.
-    for (const mod of this.manualModules) this.unpatchCallbackManager(mod);
+    for (const mod of this.manualModules) {
+      this.unpatchCallbackManager(mod);
+      this.unpatchPregel(mod);
+    }
     this.manualModules.clear();
     if (this.handlerInstance) {
       this.handlerInstance

@@ -7,6 +7,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- LangChain: `LangChainInstrumentation` also patches `@langchain/langgraph` (1.x):
+  it reads whether `createAgent` built a graph from the graph itself, not from the
+  run metadata, which runs started inside a `createAgent` tool inherit. A plain
+  graph run inside a `createAgent` tool with its own `callbacks` is now a workflow,
+  not an agent. A `createAgent` graph from `langchain` before 1.4.4, which marks
+  nothing on the graph, is known by its `model_request` node. Under ESM, also pass
+  `@langchain/langgraph/pregel` to `manuallyInstrument`, which now takes several
+  modules in one call.
 - LangChain: a top-level LangGraph graph is now recorded as `invoke_workflow`
   unless it is an agent, meaning it was built with `createAgent` or has "agent" in
   its name. Before, every top-level graph became `invoke_agent`, and an unnamed one
