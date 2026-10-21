@@ -82,6 +82,7 @@ export const CONTENT_ALLOW_LIST: ReadonlySet<string> = new Set([
   'gen_ai.usage.input_tokens',
   'gen_ai.usage.output_tokens',
   'gen_ai.usage.reasoning.output_tokens',
+  'gen_ai.workflow.name',
   'genai.conversation.turn_index',
   'genai.conversation.turn_role',
   'genai.generation.id',

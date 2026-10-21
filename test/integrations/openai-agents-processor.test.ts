@@ -860,6 +860,7 @@ describe('GenAIOtelTracingProcessor', () => {
     const root = only(h.spans.getFinishedSpans());
     expect(Object.keys(root.attributes).filter((k) => !CONTENT_ALLOW_LIST.has(k))).toEqual([]);
     expect(root.attributes[ATTR_CONVERSATION_ID]).toBe('conv-1');
+    expect(root.attributes[ATTR_WORKFLOW_NAME]).toBe('strict-run');
     expect(root.attributes['error.type']).toBe('Error');
     expect(root.status).toEqual({ code: SpanStatusCode.ERROR });
   });

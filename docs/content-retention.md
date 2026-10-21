@@ -60,7 +60,7 @@ In short, it covers:
   count, tool choice, thinking settings, streaming, output type, and embedding
   encoding formats;
 - response id, response model, and finish reasons;
-- agent name, id, version, and description;
+- agent name, id, version, and description, and workflow name;
 - tool name, call id, type, and description;
 - conversation id, turn index and role, user id, and generation ids;
 - error type, error category, and exception type.
@@ -83,8 +83,8 @@ In short, it covers:
   library emits that has not been through privacy review yet: time to first
   chunk, cost, partial-usage and compaction flags, reasoning level, embedding
   input and dimension counts, retrieval data source and top-k, the OpenAI Agents
-  workflow name and `genai.metadata.*` entries, and the `gen_ai.relationship`
-  attribute on span links.
+  `genai.metadata.*` entries, and the `gen_ai.relationship` attribute on span
+  links.
 
 The filter applies to span attributes, event attributes, and link attributes,
 on every span the library creates: `chat`, `embeddings`, `execute_tool`,
@@ -109,9 +109,9 @@ and needs a privacy review.
 - **Span names.** Names such as `chat gpt-4o`, `execute_tool search`,
   `invoke_agent planner`, `retrieval docs-index`, or `invoke_workflow
   support-flow` are built from the operation, model, tool, agent, data source,
-  and workflow names, and are not filtered. The data source and workflow names
-  stay in the span name even though their attributes are dropped. Do not put
-  user content in any of these names.
+  and workflow names, and are not filtered. The data source name stays in the
+  span name even though its attribute is dropped. Do not put user content in any
+  of these names.
 - **Resource attributes** such as `service.name`. Your OpenTelemetry setup
   sets these, not this library.
 - **Spans from other libraries**: HTTP or database instrumentation, or a

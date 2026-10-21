@@ -7,6 +7,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Core: `gen_ai.workflow.name` is now kept under the `allow_list` content mode. It
+  is a name the application gives its workflow (an OpenAI Agents trace name), like
+  the agent name, which the list already keeps. Before, it was dropped while the
+  span name still showed it.
 - License changed from MIT to Apache 2.0.
 
 ### Added
