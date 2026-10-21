@@ -135,7 +135,7 @@ Two ways in: the telemetry integration, registered once for the whole process, o
 
 ### Telemetry integration (recommended)
 
-`genaiTelemetryIntegration(client, options?)` is an AI SDK v7 telemetry integration. Register it once and every `generateText`, `streamText`, `generateObject` and `ToolLoopAgent` call in the process is traced:
+`genaiTelemetryIntegration(client, options?)` is an AI SDK v7 telemetry integration. Register it once and every `generateText`, `streamText`, `generateObject`, `ToolLoopAgent`, `embed` and `embedMany` call in the process is traced:
 
 ```ts
 import { openai } from '@ai-sdk/openai';
@@ -165,6 +165,7 @@ Options:
 What gets recorded:
 
 - One `invoke_agent` span per call, one `chat` span per step (`generate_content` for `generateObject`), and one `execute_tool` span per tool call.
+- One `embeddings` span per embedding model call of `embed` and `embedMany`, which splits large inputs into several calls. A call the AI SDK retries leaves no failed span; a failed call gets one. When one call of an `embedMany` fails, the AI SDK gives up on the others, so those still running are recorded as failed too.
 - `chat` and `execute_tool` spans sit side by side under `invoke_agent`. A `chat` span ends when the model replies, so its duration does not include the step's tools.
 - Each `chat` and `generate_content` span carries the request parameters its model call used (`temperature`, `maxOutputTokens` and the like), including any `prepareStep` set for that step. `chat` spans also carry the tool definitions sent to the model. Spans of `streamText` and `streamObject` carry time to first token.
 - Concurrent calls stay in separate trees.
@@ -172,7 +173,7 @@ What gets recorded:
 - A failed call marks the `invoke_agent` span as an error, whether the model call failed or something around it, such as `prepareStep`. A model call that fails and then succeeds on retry is not an error.
 - The AI SDK's `telemetry.recordInputs: false` and `recordOutputs: false` drop inputs and outputs, whatever the content capture mode.
 
-Limits: the integration does not trace `embed`, `embedMany` or `rerank`. Use `wrapEmbed` and `wrapEmbedMany` to trace embeddings; `rerank` has no wrapper.
+Limits: the integration does not trace `rerank`, since the GenAI conventions have no rerank span.
 
 ### Wrappers
 

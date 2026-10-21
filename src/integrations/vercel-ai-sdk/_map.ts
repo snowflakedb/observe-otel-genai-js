@@ -164,6 +164,23 @@ export interface AiLanguageModelCallEndEvent {
   performance?: { timeToFirstOutputMs?: number };
 }
 
+/** `onEmbedStart` event (AI SDK v7): one embedding model call of an `embed` or `embedMany`. */
+export interface AiEmbedStartEvent {
+  callId: string;
+  embedCallId: string;
+  provider: string;
+  modelId: string;
+  values: string[];
+}
+
+/** `onEmbedEnd` event (AI SDK v7): that model call's result. */
+export interface AiEmbedEndEvent {
+  callId: string;
+  embedCallId: string;
+  embeddings?: unknown[][];
+  usage?: { tokens?: number };
+}
+
 /** `onError` event (AI SDK v7). The SDK types it as `unknown` but passes `{ callId, error }`. */
 export interface AiErrorEvent {
   callId: string;

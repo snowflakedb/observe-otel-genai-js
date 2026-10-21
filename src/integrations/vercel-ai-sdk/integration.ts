@@ -19,8 +19,8 @@
  * AI SDK v7 `Telemetry` integration for genai-otel.
  *
  * Register once via `registerTelemetry(genaiTelemetryIntegration(client))` and
- * every `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call
- * in the process emits genai-otel spans — no per-call-site wiring.
+ * every `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` / `embed`
+ * / `embedMany` call in the process emits genai-otel spans — no per-call-site wiring.
  *
  * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) and
  * `execute_tool` (per tool), side by side. A `chat` span ends with its model call,
@@ -40,6 +40,7 @@
  * interfaces in `_map.ts`, so this module has no runtime dependency on `ai`.
  */
 
+import { type Context, context } from '@opentelemetry/api';
 import type { Telemetry } from 'ai';
 import type { Client } from '../../client.js';
 import { type Message, assistantTextMessage } from '../../models/message.js';
@@ -48,6 +49,8 @@ import { OP_CHAT, OP_GENERATE_CONTENT, type OperationName } from '../../semconv.
 import { toolDefinitions } from '../_common/tool-definitions.js';
 import {
   type AiAbortEvent,
+  type AiEmbedEndEvent,
+  type AiEmbedStartEvent,
   type AiErrorEvent,
   type AiLanguageModelCallEndEvent,
   type AiLanguageModelCallStartEvent,
@@ -75,6 +78,9 @@ import {
 
 type GenerationRec = ReturnType<Client['startGeneration']>;
 type ToolRec = ReturnType<Client['startToolExecution']>;
+
+/** AI SDK operations whose model calls each get an `embeddings` span. */
+const EMBED_OPERATIONS = new Set(['ai.embed', 'ai.embedMany']);
 
 /** AI SDK operations that get an `invoke_agent` span; `embed`, `embedMany` and `rerank` do not. */
 const TRACED_OPERATIONS = new Set([
@@ -154,11 +160,28 @@ interface OpState {
 }
 
 /**
+ * An `embed` or `embedMany` operation. Each model call's span is recorded when the
+ * call ends, so a call the AI SDK retried leaves no failed span behind.
+ */
+interface EmbedOpState {
+  options: VercelAdapterOptions;
+  calls: Map<string, PendingEmbed>;
+}
+
+interface PendingEmbed {
+  event: AiEmbedStartEvent;
+  startedAt: number;
+  /** The context the call started in, which its span parents under. */
+  context: Context;
+}
+
+/**
  * Owns the per-operation registry and translates AI SDK lifecycle events into
  * genai-otel recorder calls. One instance backs one registered integration.
  */
 class GenaiTelemetry {
   private readonly ops = new Map<string, OpState>();
+  private readonly embedOps = new Map<string, EmbedOpState>();
 
   constructor(
     private readonly client: Client,
@@ -167,7 +190,7 @@ class GenaiTelemetry {
   ) {}
 
   onStart(event: AiOperationStartEvent): void {
-    if (!event.operationId || !TRACED_OPERATIONS.has(event.operationId)) return;
+    if (!event.operationId) return;
     const deriveEvent: DeriveOptionsEvent = {
       functionId: (event as { functionId?: string }).functionId,
       runtimeContext: event.runtimeContext,
@@ -175,6 +198,14 @@ class GenaiTelemetry {
       provider: event.provider,
       modelId: event.modelId,
     };
+    if (EMBED_OPERATIONS.has(event.operationId)) {
+      this.embedOps.set(event.callId, {
+        options: this.deriveOptions(deriveEvent),
+        calls: new Map(),
+      });
+      return;
+    }
+    if (!TRACED_OPERATIONS.has(event.operationId)) return;
     const options = this.deriveOptions(deriveEvent);
     const wantAgent =
       typeof this.emitOperationSpan === 'function'
@@ -351,7 +382,30 @@ class GenaiTelemetry {
     await end(step.rec);
   }
 
+  onEmbedStart(event: AiEmbedStartEvent): void {
+    this.embedOps.get(event.callId)?.calls.set(event.embedCallId, {
+      event,
+      startedAt: this.client.now(),
+      context: context.active(),
+    });
+  }
+
+  async onEmbedEnd(event: AiEmbedEndEvent): Promise<void> {
+    const op = this.embedOps.get(event.callId);
+    const call = op?.calls.get(event.embedCallId);
+    if (!op || !call) return;
+    op.calls.delete(event.embedCallId);
+    const rec = this.startEmbedding(op, call);
+    rec.setResult({
+      inputTokens: event.usage?.tokens,
+      dimensions: event.embeddings?.[0]?.length,
+    });
+    await end(rec);
+  }
+
   async onEnd(event: AiOperationEndEvent): Promise<void> {
+    // Calls still open here were retried and replaced by a later call.
+    if (this.embedOps.delete(event.callId)) return;
     const op = this.get(event.callId);
     if (!op) return;
     if (op.agent && this.recordOutputs(event) && Array.isArray(event.content)) {
@@ -391,6 +445,22 @@ class GenaiTelemetry {
   }
 
   async onError(event: AiErrorEvent): Promise<void> {
+    const embedOp = this.embedOps.get(event.callId);
+    if (embedOp) {
+      this.embedOps.delete(event.callId);
+      // embedMany gives up on all its calls when one fails, so all still open fail.
+      // A retry sends the same values again, so its attempts make one failed span.
+      const lastAttempts = new Map<string, PendingEmbed>();
+      for (const call of embedOp.calls.values()) {
+        lastAttempts.set(JSON.stringify(call.event.values), call);
+      }
+      for (const call of lastAttempts.values()) {
+        const rec = this.startEmbedding(embedOp, call);
+        rec.setCallError(event.error);
+        await end(rec);
+      }
+      return;
+    }
     const op = this.get(event.callId);
     if (!op) return;
     await this.closeOp(event.callId, op, event.error);
@@ -428,6 +498,24 @@ class GenaiTelemetry {
     const step: StepState = { rec, closedToolCallIds: new Set() };
     op.steps.set(stepNumber, step);
     op.latestStep = step;
+  }
+
+  /** Starts the span of an embedding model call that has ended, dated from its start. */
+  private startEmbedding(op: EmbedOpState, call: PendingEmbed) {
+    const rec = context.with(call.context, () =>
+      this.client.startEmbedding({
+        model: modelRefFromAi(call.event),
+        ...identityFields(op.options),
+        tags: op.options.tags,
+        metadata: op.options.metadata,
+        startedAt: call.startedAt,
+      }),
+    );
+    rec.setResult({
+      inputCount: call.event.values.length,
+      inputTexts: this.recordInputs(call.event) ? call.event.values : undefined,
+    });
+    return rec;
   }
 
   /** Emits execute_tool spans for tool calls in the step not seen via onToolExecutionEnd. */
@@ -564,6 +652,10 @@ export function genaiTelemetryIntegration(
       impl.onObjectStepStart(e as unknown as AiObjectStepStartEvent);
     },
     onObjectStepEnd: (e) => impl.onObjectStepEnd(e as unknown as AiObjectStepEndEvent),
+    onEmbedStart: (e) => {
+      impl.onEmbedStart(e as unknown as AiEmbedStartEvent);
+    },
+    onEmbedEnd: (e) => impl.onEmbedEnd(e as unknown as AiEmbedEndEvent),
     onEnd: (e) => impl.onEnd(e as unknown as AiOperationEndEvent),
     onAbort: (e) => impl.onAbort(e as unknown as AiAbortEvent),
     onError: (e) => impl.onError(e as AiErrorEvent),

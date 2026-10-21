@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-import { trace } from '@opentelemetry/api';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   APICallError,
   embed,
+  embedMany,
   generateObject,
   generateText,
   registerTelemetry,
@@ -36,6 +37,9 @@ import {
   genaiTelemetryIntegration,
 } from '../../src/integrations/vercel-ai-sdk/index.js';
 import {
+  ATTR_EMBEDDING_DIMENSION_COUNT,
+  ATTR_EMBEDDING_INPUT_COUNT,
+  ATTR_EMBEDDING_INPUT_TEXTS,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
@@ -769,24 +773,163 @@ describe('genaiTelemetryIntegration', () => {
     expect(good?.status.code).not.toBe(2);
   });
 
-  it('leaves embed untraced, whether it succeeds or fails', async () => {
-    registerTelemetry(genaiTelemetryIntegration(h.client));
-    const model = (fail: boolean) =>
-      new MockEmbeddingModelV3({
-        provider: 'mock',
-        modelId: 'mock-embed',
-        doEmbed: async ({ values }: { values: string[] }) => {
-          if (fail) throw new Error('embed boom');
-          return { embeddings: values.map(() => [0.1]), usage: { tokens: 1 }, warnings: [] };
-        },
-      });
+  /** An embedding model that fails its first `failures` calls. */
+  const embedModel = (failures = 0) => {
+    let calls = 0;
+    return new MockEmbeddingModelV3({
+      provider: 'mock',
+      modelId: 'mock-embed',
+      maxEmbeddingsPerCall: 2,
+      doEmbed: async ({ values }: { values: string[] }) => {
+        if (calls++ < failures) {
+          throw new APICallError({
+            message: 'embed boom',
+            url: 'https://example.test',
+            requestBodyValues: {},
+            statusCode: 503,
+            isRetryable: true,
+          });
+        }
+        return { embeddings: values.map(() => [0.1, 0.2]), usage: { tokens: 3 }, warnings: [] };
+      },
+    });
+  };
+  const embeddingSpans = () =>
+    h.spans.getFinishedSpans().filter((s) => s.attributes[ATTR_OPERATION_NAME] === 'embeddings');
 
-    await embed({ model: model(false), value: 'hi' });
-    await expect(embed({ model: model(true), value: 'hi', maxRetries: 0 })).rejects.toThrow(
+  it('records one embeddings span per model call of embed and embedMany', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await embed({ model: embedModel(), value: 'hi' });
+    await embedMany({ model: embedModel(), values: ['a', 'b', 'c'] });
+
+    const spans = embeddingSpans();
+    // embedMany sends three values in two calls of at most two.
+    expect(spans.map((s) => s.attributes[ATTR_EMBEDDING_INPUT_COUNT])).toEqual([1, 2, 1]);
+    for (const span of spans) {
+      expect(span.name).toBe('embeddings mock-embed');
+      expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(3);
+      expect(span.attributes[ATTR_EMBEDDING_DIMENSION_COUNT]).toBe(2);
+    }
+    expect(h.spans.getFinishedSpans()).toHaveLength(3);
+  });
+
+  it('keeps every call of an embedMany whose parallel calls embed the same text', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockEmbeddingModelV3({
+      maxEmbeddingsPerCall: 1,
+      supportsParallelCalls: true,
+      doEmbed: async ({ values }: { values: string[] }) => ({
+        embeddings: values.map(() => [0.1]),
+        usage: { tokens: 1 },
+        warnings: [],
+      }),
+    });
+    await embedMany({ model, values: ['a', 'a', 'b'] });
+    expect(embeddingSpans()).toHaveLength(3);
+  });
+
+  it('records a failed embed as a failed embeddings span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await expect(embed({ model: embedModel(1), value: 'hi', maxRetries: 0 })).rejects.toThrow(
       'embed boom',
     );
+    const [span] = embeddingSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(h.spans.getFinishedSpans()).toHaveLength(1);
+  });
 
-    expect(h.spans.getFinishedSpans()).toEqual([]);
+  it('leaves no failed span for a call the AI SDK retried', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await embed({ model: embedModel(1), value: 'hi', maxRetries: 1 });
+    const spans = embeddingSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status.code).toBe(SpanStatusCode.UNSET);
+  });
+
+  it('records one failed span when every attempt fails', async () => {
+    // Driven by hand: the AI SDK waits seconds between real retries.
+    const telemetry = genaiTelemetryIntegration(h.client) as Record<
+      string,
+      (e: unknown) => unknown
+    >;
+    const call = { callId: 'e1', provider: 'mock', modelId: 'mock-embed', values: ['hi'] };
+    telemetry.onStart!({
+      callId: 'e1',
+      operationId: 'ai.embed',
+      provider: 'mock',
+      modelId: 'mock-embed',
+    });
+    telemetry.onEmbedStart!({ ...call, embedCallId: 'attempt-1' });
+    telemetry.onEmbedStart!({ ...call, embedCallId: 'attempt-2' });
+    await telemetry.onError!({ callId: 'e1', error: new Error('embed boom') });
+
+    const spans = embeddingSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('nests an embed made inside a tool under its execute_tool span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            inputSchema: z.object({}),
+            execute: async () => {
+              await embed({ model: embedModel(), value: 'hi' });
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(embeddingSpans()[0]?.parentSpanContext?.spanId).toBe(toolSpan?.spanContext().spanId);
+  });
+
+  it('gives an embeddings span the identity deriveOptions returns', async () => {
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, { deriveOptions: () => ({ agentName: 'indexer' }) }),
+    );
+    await embed({ model: embedModel(), value: 'hi' });
+    expect(embeddingSpans()[0]?.attributes['gen_ai.agent.name']).toBe('indexer');
+  });
+});
+
+describe('genaiTelemetryIntegration embed input texts', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({
+      contentCaptureMode: 'full',
+      embeddingCapture: { captureInput: true, maxInputItems: 10, maxTextLength: 100 },
+    });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const model = new MockEmbeddingModelV3({
+    doEmbed: async ({ values }: { values: string[] }) => ({
+      embeddings: values.map(() => [0.1]),
+      usage: { tokens: 1 },
+      warnings: [],
+    }),
+  });
+  const inputTexts = () => h.spans.getFinishedSpans()[0]?.attributes[ATTR_EMBEDDING_INPUT_TEXTS];
+
+  it('records the input texts by default', async () => {
+    await embed({ model, value: 'hi' });
+    expect(inputTexts()).toEqual(['hi']);
+  });
+
+  it('leaves them out when recordInputs is false', async () => {
+    await embed({ model, value: 'hi', telemetry: { recordInputs: false } });
+    expect(inputTexts()).toBeUndefined();
   });
 });
 

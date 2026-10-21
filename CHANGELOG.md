@@ -267,7 +267,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wrapper, `{ type: 'json', value: { answer: 42 } }`.
 - Vercel AI SDK: `embed`, `embedMany` and `rerank` no longer get an `invoke_agent`
   span from the telemetry integration. Before, each got one, and a failed `embed`
-  counted as a failed agent.
+  counted as a failed agent. `embed` and `embedMany` now get one `embeddings` span
+  per embedding model call instead, with the input count, token count, dimensions
+  and the identity from `deriveOptions`; a failed call gets a failed span, a
+  retried one leaves none.
 - Vercel AI SDK: a call that fails outside the model call, such as in `prepareStep`,
   now records the error's message, not `[object Object]`. Before, if another call
   was running at the same time, its span was never ended and never sent.
