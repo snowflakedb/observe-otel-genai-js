@@ -364,9 +364,15 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     this.runParent.set(runId, parentRunId);
 
     if (!this.captureChains) return;
-    const name = callerRunName(chain, runName);
-    const kind = chainKind(chain, name, parentRunId, metadata, graphIdentity(chain));
+    const graph = graphIdentity(chain);
+    // As in the Python library, a createAgent graph is named by createAgent, not by
+    // a run that renames it, so its spans and metrics stay together.
+    const name = graph?.builtByCreateAgent ? graph.name : callerRunName(chain, runName);
+    const kind = chainKind(chain, name, parentRunId, metadata, graph);
     if (!kind) return;
+    // A nested agent with no name is an unnamed createAgent graph (see chainKind),
+    // an agent of its own, so it must not take the outer agent's name.
+    const agentName = name ?? (parentRunId ? DEFAULT_AGENT_NAME : undefined);
 
     const seed = {
       input: chainInputToMessages(inputs),
@@ -377,7 +383,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       kind === 'workflow'
         ? this.client.invokeWorkflow({ workflowName: name, ...seed })
         : this.client.invokeAgent({
-            agentName: name,
+            agentName,
             fallbackAgentName: DEFAULT_AGENT_NAME,
             ...seed,
             tags: this.defaults.tags,
@@ -738,8 +744,8 @@ const DEFAULT_AGENT_NAME = 'langchain';
  *    `LangChainInstrumentation` recorded it, else from the run metadata, which a
  *    run started inside a `createAgent` tool inherits.
  *  - Any other top-level chain is an agent.
- *  - A nested chain is a step of its parent, unless it is a named graph: another
- *    agent, called from a tool or added as a node.
+ *  - A nested chain is a step of its parent, unless it is a named graph or a
+ *    `createAgent` graph: another agent, called from a tool or added as a node.
  */
 function chainKind(
   chain: Serialized,
@@ -748,7 +754,9 @@ function chainKind(
   metadata: Record<string, unknown> | undefined,
   graph: GraphIdentity | undefined,
 ): 'agent' | 'workflow' | undefined {
-  if (parentRunId) return isLangGraph(chain) && name ? 'agent' : undefined;
+  if (parentRunId) {
+    return isLangGraph(chain) && (name || graph?.builtByCreateAgent) ? 'agent' : undefined;
+  }
   if (!isLangGraph(chain)) return 'agent';
   const builtByCreateAgent = graph
     ? graph.builtByCreateAgent

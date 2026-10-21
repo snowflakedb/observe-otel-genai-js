@@ -589,7 +589,7 @@ All spans from one invocation form one trace:
 
 ### Identity
 
-- **Agent name**: the agent run's `runName`, set with `withConfig({ runName })`, `createAgent({ name })` or a compiled graph's name. Names LangChain fills in when you set none do not count: the runnable's class name, any `Runnable*` name, and `LangGraph` for an unnamed graph. A top-level graph recorded as a workflow uses its name as the workflow name instead, and has no agent name.
+- **Agent name**: the agent run's `runName`, set with `withConfig({ runName })`, `createAgent({ name })` or a compiled graph's name. Names LangChain fills in when you set none do not count: the runnable's class name, any `Runnable*` name, and `LangGraph` for an unnamed graph. With `LangChainInstrumentation`, a `createAgent` graph is named only by `createAgent({ name })`, as in the Python library: a `runName` given to one call does not rename it. An unnamed one inside another agent gets its own span, named `langchain`, not the outer agent's name. A top-level graph recorded as a workflow uses its name as the workflow name instead, and has no agent name.
 - **Conversation id**: the run's `thread_id`, from `configurable.thread_id` on a LangGraph graph or `metadata.thread_id` on any run. Every span in the run gets it, so all turns of a persisted conversation share one id.
 - **User id**: the run's `metadata.user_id`.
 

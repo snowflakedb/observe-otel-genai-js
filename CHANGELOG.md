@@ -7,6 +7,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- LangChain: with `LangChainInstrumentation`, a `createAgent` graph is named only by
+  `createAgent({ name })`, as in the Python library. A run that renames it, such as
+  `agent.invoke(input, { runName: 'step1' })`, no longer changes the agent name, so
+  one agent's spans and metrics are no longer split across run names. An unnamed
+  `createAgent` graph is named as any unnamed agent is, not by the run name. One
+  inside another agent, such as a subagent called from a tool, now gets its own
+  `invoke_agent langchain` span, and does not take the outer agent's name or an
+  enclosing `withAgent(...)` scope's; before, it had no span, and its model calls
+  carried the outer agent's name.
 - LangChain: `LangChainInstrumentation` also patches `@langchain/langgraph` (1.x):
   it reads whether `createAgent` built a graph from the graph itself, not from the
   run metadata, which runs started inside a `createAgent` tool inherit. A plain

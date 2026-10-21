@@ -305,6 +305,53 @@ describe('LangChainInstrumentation — what a LangGraph graph says about itself'
     expect(span.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
   });
 
+  it('names a createAgent graph by createAgent, not by a run that renames it', async () => {
+    const graph = new FakePregel({ name: 'planner', config: createAgentConfig });
+    expect((await runGraph(graph, {}, 'step1')).name).toBe('invoke_agent planner');
+  });
+
+  it("gives an unnamed createAgent graph the default name, not the run's", async () => {
+    const graph = new FakePregel({ name: 'LangGraph', config: createAgentConfig });
+    const span = await runGraph(graph, {}, 'step1');
+    expect(span.name).toBe('invoke_agent langchain');
+  });
+
+  it("gives an unnamed createAgent graph inside another agent its own span, not that agent's name", async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const supervisor = new FakePregel({ name: 'supervisor', config: createAgentConfig });
+    const helper = new FakePregel({ name: 'LangGraph', config: createAgentConfig });
+    await handler.handleChainStart(
+      supervisor.toJSON(),
+      {},
+      'outer',
+      undefined,
+      [],
+      {},
+      undefined,
+      'supervisor',
+    );
+    await handler.handleChainStart(
+      helper.toJSON(),
+      {},
+      'inner',
+      'outer',
+      [],
+      {},
+      undefined,
+      'LangGraph',
+    );
+    for (const run of ['inner', 'outer']) await handler.handleChainEnd({}, run);
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.name).sort()).toEqual([
+      'invoke_agent langchain',
+      'invoke_agent supervisor',
+    ]);
+    const inner = spans.find((s) => s.name === 'invoke_agent langchain')!;
+    const outer = spans.find((s) => s.name === 'invoke_agent supervisor')!;
+    expect(inner.parentSpanContext?.spanId).toBe(outer.spanContext().spanId);
+  });
+
   it('keeps a plain graph a workflow when its run inherits createAgent metadata', async () => {
     // A graph run started inside a createAgent tool carries the agent's metadata.
     const span = await runGraph(new FakePregel(), createAgentConfig.metadata, 'research_flow');
