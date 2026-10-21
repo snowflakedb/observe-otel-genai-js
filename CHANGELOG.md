@@ -22,6 +22,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Core: `invokeAgent` accepts `fallbackAgentName`, used only when the agent's own
+  name, the enclosing scope and the `Client` config give none. Spans inside the
+  agent take it too, but another agent inside it does not, so an unnamed agent from
+  one framework inside another keeps its own default. The LangChain, Vercel AI SDK
+  and Claude Agent SDK integrations pass their own name (`langchain`, `ai-sdk`,
+  `claude-agent-sdk`), so an agent nothing names still has a name on its spans and
+  metrics.
 - Core: `client.invokeWorkflow(seed)` and `client.invokeWorkflow(seed, fn)` record an
   `invoke_workflow` span, for steps chained together that decide nothing on their
   own. It works like `invokeAgent`, but has no agent name: it records
@@ -163,7 +170,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The handler no longer makes up agent names: the runnable's class name, other
   `Runnable*` names, `LangGraph` for an unnamed graph, and `langchain-chain` no
   longer count, so an unnamed chain takes the name of an enclosing `withAgent(...)`
-  scope or the `Client`'s `agentName`, or gets a plain `invoke_agent` span.
+  scope or the `Client`'s `agentName`, or is named `langchain`.
 - **LangChain: the `captureNestedChains` option is removed.** It turned every step
   inside a graph into an `invoke_agent` span named after the step (`__start__`,
   `model_request`, …), and the `chat` spans under a step then took the step's name
@@ -172,12 +179,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Vercel AI SDK telemetry: a call whose `deriveOptions` returns no agent name (by
   default: no `functionId` and no `runtimeContext.agent`) is no longer named
   `agent`. Its `invoke_agent` span takes the name from an enclosing
-  `withAgent(...)` scope or the `Client`'s `agentName`, and is named plain
-  `invoke_agent` when nothing names it.
+  `withAgent(...)` scope or the `Client`'s `agentName`, and is named `ai-sdk` when
+  nothing names it.
 - **Claude Agent SDK: `ClaudeAgentSdkInstrumentation` no longer takes identity
   options.** Pass them to `wrapQuery`, or wrap the call in a `withX(...)` scope.
-  An unnamed run is no longer named `claude-agent-sdk`: it takes the `Client`'s
-  `agentName`, or is named plain `invoke_agent`. The CLI session id is now the
+  An unnamed run now takes the `Client`'s `agentName`, and is named
+  `claude-agent-sdk` only when nothing names it. The CLI session id is now the
   conversation id only when neither `wrapQuery` nor an enclosing scope sets one,
   and subagent spans no longer carry the main agent's version.
 - Core: `withAgent`, `withConversationId` and the other scope helpers now keep

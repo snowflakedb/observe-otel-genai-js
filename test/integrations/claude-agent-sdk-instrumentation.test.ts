@@ -161,7 +161,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
 
-    const turn = h.spans.getFinishedSpans().find((s) => s.name === 'invoke_agent');
+    const turn = h.spans.getFinishedSpans().find((s) => s.name.startsWith('invoke_agent'));
     expect(turn).toBeDefined();
     expect(turn?.attributes['gen_ai.input.messages']).toBeUndefined();
   });

@@ -44,7 +44,7 @@ import type {
 import { type Harness, createHarness } from '../_harness.js';
 
 const MODEL = 'claude-sonnet-4-5';
-const ROOT = 'invoke_agent';
+const ROOT = 'invoke_agent claude-agent-sdk';
 const CHAT = `chat ${MODEL}`;
 
 // -----------------------------------------------------------------------------
@@ -1807,6 +1807,17 @@ describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
     expect(childrenOf(h, findSpan(h, ROOT), CHAT)).toHaveLength(2);
+  });
+});
+
+describe('Claude Agent SDK adapter: default agent name', () => {
+  const harness = useHarness();
+
+  it('names the run claude-agent-sdk when nothing names it, and its chat spans too', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()]);
+    expect(attr(findSpan(h, ROOT), 'gen_ai.agent.name')).toBe('claude-agent-sdk');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('claude-agent-sdk');
   });
 });
 

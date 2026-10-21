@@ -29,7 +29,7 @@ import {
   applyContentAttribute,
   omitsContent,
 } from '../content/capture.js';
-import type { IdentityFields } from '../models/identity.js';
+import type { HandedDown } from '../context.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
   ATTR_CONVERSATION_TITLE,
@@ -51,7 +51,7 @@ export class ToolExecutionRecorder extends RecorderBase {
     seed: ToolExecutionStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown?: IdentityFields,
+    handedDown?: HandedDown,
   ) {
     super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;

@@ -83,6 +83,9 @@ const TRACED_OPERATIONS = new Set([
 /** Operations whose steps are recorded as streamed (`gen_ai.request.stream: true`). */
 const STREAMED_OPERATIONS = new Set(['ai.streamText', 'ai.streamObject']);
 
+/** An agent's name when nothing names it, such as a call with no `functionId`. */
+const DEFAULT_AGENT_NAME = 'ai-sdk';
+
 /** Event fields the {@link DeriveOptions} mapper reads to build per-turn identity. */
 export interface DeriveOptionsEvent {
   /** `telemetry.functionId` for the call, if set. */
@@ -177,6 +180,7 @@ class GenaiTelemetry {
       const input = this.recordInputs(event) ? mapModelMessages(event.messages ?? []) : undefined;
       agent = this.client.invokeAgent({
         agentName: options.agentName,
+        fallbackAgentName: DEFAULT_AGENT_NAME,
         agentVersion: options.agentVersion,
         conversationId: options.conversationId,
         userId: options.userId,

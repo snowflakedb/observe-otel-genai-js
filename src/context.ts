@@ -34,21 +34,35 @@ interface ContextValues extends IdentityFields {
   contentCaptureMode?: ContentCaptureMode;
 }
 
+/** What a span hands down to the spans started inside it. */
+export interface HandedDown extends IdentityFields {
+  /**
+   * The default name of the agent the spans run in, set only by agent spans. It
+   * names the spans inside that agent, but not another agent inside it.
+   */
+  fallbackAgentName?: string;
+}
+
+type Scope = ContextValues & HandedDown;
+
 const SCOPE_KEY = createContextKey('@genai-otel/scope');
 
-function getScope(ctx: Context = context.active()): ContextValues | undefined {
-  return ctx.getValue(SCOPE_KEY) as ContextValues | undefined;
+function getScope(ctx: Context = context.active()): Scope | undefined {
+  return ctx.getValue(SCOPE_KEY) as Scope | undefined;
 }
 
 /**
  * Returns `ctx` with `patch` laid over its scope. Empty values keep the outer
  * value. An agent version is kept only with the agent name set in the same patch,
- * so naming an agent drops the outer agent's version.
+ * so naming an agent drops the outer agent's version. Agent spans always pass
+ * `fallbackAgentName`, even empty, so each agent replaces the outer default; other
+ * spans pass the default they started under, if any.
  */
-export function setScope(ctx: Context, patch: ContextValues): Context {
-  const { agentVersion, ...rest } = patch;
-  const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v)) as ContextValues;
+export function setScope(ctx: Context, patch: Scope): Context {
+  const { agentVersion, fallbackAgentName, ...rest } = patch;
+  const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v)) as Scope;
   if (set.agentName) set.agentVersion = agentVersion || undefined;
+  if ('fallbackAgentName' in patch) set.fallbackAgentName = fallbackAgentName || undefined;
   return ctx.setValue(SCOPE_KEY, { ...getScope(ctx), ...set });
 }
 
@@ -132,16 +146,39 @@ export function contentCaptureModeFromContext(): ContentCaptureMode | undefined 
  * `handedDown` is the same without the client config: what spans started inside
  * this one inherit (see `RecorderBase.withActiveContext`). They fall back to the
  * client config themselves.
+ *
+ * When none of these names the agent, the span takes the default name of the agent
+ * it runs in. Agent spans use {@link resolveAgentIdentity} instead.
  */
 export function resolveIdentity(
   own: IdentityFields,
   clientConfig: IdentityFields,
-): { identity: IdentityFields; handedDown: IdentityFields } {
+): { identity: IdentityFields; handedDown: HandedDown } {
   const scope = getScope();
-  return {
-    identity: firstSet([own, scope, clientConfig]),
-    handedDown: firstSet([own, scope]),
-  };
+  const identity = firstSet([own, scope, clientConfig]);
+  identity.agentName ||= scope?.fallbackAgentName;
+  const handedDown: HandedDown = firstSet([own, scope]);
+  // Kept for spans started from this one outside the agent's context, such as a
+  // tool's own calls.
+  if (scope?.fallbackAgentName) handedDown.fallbackAgentName = scope.fallbackAgentName;
+  return { identity, handedDown };
+}
+
+/**
+ * {@link resolveIdentity} for an agent span. The enclosing agent's default name is
+ * not this agent's name, so it is skipped; this agent's own `fallbackAgentName`
+ * comes last instead. The spans inside take this agent's default, or none.
+ */
+export function resolveAgentIdentity(
+  own: IdentityFields,
+  clientConfig: IdentityFields,
+  fallbackAgentName: string | undefined,
+): { identity: IdentityFields; handedDown: HandedDown } {
+  const scope = getScope();
+  const identity = firstSet([own, scope, clientConfig]);
+  const fallback = identity.agentName ? undefined : fallbackAgentName;
+  identity.agentName ||= fallback;
+  return { identity, handedDown: { ...firstSet([own, scope]), fallbackAgentName: fallback } };
 }
 
 function firstSet(sources: (IdentityFields | undefined)[]): IdentityFields {

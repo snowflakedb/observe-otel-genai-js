@@ -25,8 +25,15 @@ import type { Message } from './message.js';
  * context.
  */
 export interface AgentInvocationStart {
-  /** When unset, taken from the enclosing scope or the client config. */
+  /** When unset, taken from the enclosing scope or the client config, then `fallbackAgentName`. */
   agentName?: string;
+  /**
+   * The name to use when `agentName`, the enclosing scope and the client config all
+   * give none, such as an integration's own name (`claude-agent-sdk`). Spans
+   * started inside the agent take it too, but another agent inside it does not:
+   * that one takes its own `fallbackAgentName`, or stays unnamed.
+   */
+  fallbackAgentName?: string;
   agentId?: string;
   agentVersion?: string;
   agentDescription?: string;

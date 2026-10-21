@@ -37,11 +37,10 @@ import {
   type ContentCaptureMode,
   resolveContentCaptureMode,
 } from '../content/capture.js';
-import { contentCaptureModeFromContext, setScope } from '../context.js';
+import { type HandedDown, contentCaptureModeFromContext, setScope } from '../context.js';
 import type { ErrorClassifier } from '../errors/classify.js';
 import { classifyError } from '../errors/classify.js';
 import type { GenAIMetrics } from '../metrics/histograms.js';
-import type { IdentityFields } from '../models/identity.js';
 import {
   ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
@@ -77,7 +76,7 @@ export abstract class RecorderBase {
   /** The mode from the `withContentCaptureMode` scope the span started in. */
   private readonly scopeContentCapture: ContentCaptureMode | undefined;
   /** The identity spans started inside {@link withActiveContext} inherit. */
-  private readonly handedDown: IdentityFields;
+  private readonly handedDown: HandedDown;
 
   // Mutable state
   protected callError: unknown | undefined;
@@ -95,7 +94,7 @@ export abstract class RecorderBase {
     span: Span,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown: IdentityFields = {},
+    handedDown: HandedDown = {},
   ) {
     this.host = host;
     this.span = span;

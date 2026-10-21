@@ -372,6 +372,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         ? this.client.invokeWorkflow({ workflowName: name, ...seed })
         : this.client.invokeAgent({
             agentName: name,
+            fallbackAgentName: DEFAULT_AGENT_NAME,
             ...seed,
             tags: this.defaults.tags,
             metadata: this.defaults.metadata,
@@ -721,6 +722,9 @@ function callerRunName(chain: Serialized, runName: string | undefined): string |
   if (id[0] === 'langgraph' && runName === LANGGRAPH_DEFAULT_NAME) return undefined;
   return runName;
 }
+
+/** An agent's name when nothing names it. */
+const DEFAULT_AGENT_NAME = 'langchain';
 
 /** The run metadata `createAgent` (from `langchain`) sets on its graph. */
 const CREATE_AGENT_INTEGRATION = 'langchain_create_agent';

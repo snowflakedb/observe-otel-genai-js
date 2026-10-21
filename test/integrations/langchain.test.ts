@@ -2513,14 +2513,19 @@ describe('LangChain adapter — identity', () => {
     expect(agents.map((s) => s.attributes[ATTR_AGENT_NAME])).toEqual(['shop-bot', 'shop-bot']);
   });
 
-  it('gives a chain nothing names the bare span name and no agent name', async () => {
+  it('names an agent nothing names langchain, and the spans under it too', async () => {
     h = createHarness();
-    const { agent } = await chainAndChat(
+    const { agent, chat } = await chainAndChat(
       new GenAIOtelCallbackHandler({ client: h.client }),
       'RetrievalQA',
     );
-    expect(agent.name).toBe('invoke_agent');
-    expect(agent.attributes[ATTR_AGENT_NAME]).toBeUndefined();
+    expect(agent.name).toBe('invoke_agent langchain');
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('langchain');
+  });
+
+  it('names an unnamed createAgent graph langchain', async () => {
+    h = createHarness();
+    expect((await agentGraph('LangGraph')).name).toBe('invoke_agent langchain');
   });
 
   it("treats LangGraph's default graph name as no name, and keeps a graph's own", async () => {

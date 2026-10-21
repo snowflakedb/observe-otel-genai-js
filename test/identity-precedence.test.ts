@@ -19,7 +19,7 @@ import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ClientConfig } from '../src/config.js';
-import { withAgent, withContext } from '../src/context.js';
+import { withAgent, withContext, withConversationId } from '../src/context.js';
 import type { GenerationStart } from '../src/models/generation.js';
 import {
   ATTR_AGENT_NAME,
@@ -151,6 +151,108 @@ describe('agent version follows the agent name', () => {
 
     const config = await generation({}, { agentVersion: '2' });
     expect(config[ATTR_AGENT_VERSION]).toBeUndefined();
+  });
+});
+
+describe('fallback agent name', () => {
+  const fallback = { fallbackAgentName: 'framework' };
+
+  async function agentAndTool(config: ClientConfig, wrap = <T>(fn: () => T) => fn()) {
+    h = createHarness(config);
+    const { client } = h;
+    await wrap(() =>
+      client.invokeAgent(fallback, () => client.startToolExecution({ toolName: 't' }).end()),
+    );
+    const spans = h.spans.getFinishedSpans();
+    return {
+      agent: identity(spans.find((s) => s.name.startsWith('invoke_agent'))!.attributes),
+      tool: identity(spans.find((s) => s.name.startsWith('execute_tool'))!.attributes),
+    };
+  }
+
+  it('names the agent, and the spans inside it, when nothing else does', async () => {
+    const { agent, tool } = await agentAndTool({});
+    expect(agent.agentName).toBe('framework');
+    expect(agent.agentVersion).toBeUndefined();
+    expect(tool.agentName).toBe('framework');
+  });
+
+  it('loses to the enclosing scope', async () => {
+    const scoped = await agentAndTool({}, (fn) => withAgent('scoped', fn));
+    expect([scoped.agent.agentName, scoped.tool.agentName]).toEqual(['scoped', 'scoped']);
+  });
+
+  it('loses to the client config', async () => {
+    const configured = await agentAndTool(client);
+    expect(configured.agent).toMatchObject({ agentName: 'client-agent', agentVersion: 'client-v' });
+    expect(configured.tool.agentName).toBe('client-agent');
+  });
+
+  it('does not name another agent inside it, which takes its own default', async () => {
+    h = createHarness();
+    const { client } = h;
+    await client.invokeAgent({ fallbackAgentName: 'outer-framework' }, async () => {
+      await client.startToolExecution({ toolName: 'outer-tool' }).end();
+      await client.invokeAgent({ fallbackAgentName: 'inner-framework' }, () =>
+        client.startToolExecution({ toolName: 'inner-tool' }).end(),
+      );
+    });
+
+    const nameOf = (prefix: string) =>
+      identity(h!.spans.getFinishedSpans().find((s) => s.name.startsWith(prefix))!.attributes)
+        .agentName;
+    expect(nameOf('invoke_agent outer')).toBe('outer-framework');
+    expect(nameOf('execute_tool outer-tool')).toBe('outer-framework');
+    expect(nameOf('invoke_agent inner')).toBe('inner-framework');
+    expect(nameOf('execute_tool inner-tool')).toBe('inner-framework');
+  });
+
+  it('stops at an agent inside it that has no name at all', async () => {
+    h = createHarness();
+    const { client } = h;
+    await client.invokeAgent(fallback, () =>
+      client.invokeAgent({}, () => client.startToolExecution({ toolName: 't' }).end()),
+    );
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.name).sort()).toEqual([
+      'execute_tool t',
+      'invoke_agent',
+      'invoke_agent framework',
+    ]);
+    const tool = spans.find((s) => s.name.startsWith('execute_tool'))!;
+    expect(identity(tool.attributes).agentName).toBeUndefined();
+  });
+
+  it("reaches a span started from a tool's context outside the agent's", async () => {
+    h = createHarness();
+    const agent = h.client.invokeAgent(fallback);
+    const tool = agent.withActiveContext(() => h!.client.startToolExecution({ toolName: 't' }));
+    // Started from the tool, under a scope that sets other fields, not from the agent.
+    const generation = await withConversationId('c', () =>
+      tool.withActiveContext(() => recordGeneration({})),
+    );
+    await tool.end();
+    await agent.end();
+    expect(identity(generation).agentName).toBe('framework');
+  });
+
+  it("still gives way to an outer agent's real name", async () => {
+    h = createHarness();
+    const { client } = h;
+    await client.invokeAgent({ agentName: 'planner' }, () => client.invokeAgent(fallback).end());
+    expect(
+      h.spans
+        .getFinishedSpans()
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(['invoke_agent planner', 'invoke_agent planner']);
+  });
+
+  it("loses to the agent's own name", async () => {
+    h = createHarness();
+    await h.client.invokeAgent({ agentName: 'own', ...fallback }).end();
+    expect(h.spans.getFinishedSpans()[0]!.name).toBe('invoke_agent own');
   });
 });
 

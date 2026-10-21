@@ -25,9 +25,9 @@
 
 import type { Span } from '@opentelemetry/api';
 import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
+import type { HandedDown } from '../context.js';
 import { ValidationError } from '../errors.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
-import type { IdentityFields } from '../models/identity.js';
 import {
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
@@ -48,7 +48,7 @@ export class EmbeddingRecorder extends RecorderBase {
     seed: EmbeddingStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown?: IdentityFields,
+    handedDown?: HandedDown,
   ) {
     super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;

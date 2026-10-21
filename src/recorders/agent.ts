@@ -38,8 +38,8 @@
 import type { Span } from '@opentelemetry/api';
 import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitAgentContent } from '../content/sink.js';
+import type { HandedDown } from '../context.js';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
-import type { IdentityFields } from '../models/identity.js';
 import type { Message } from '../models/message.js';
 import {
   ERR_TYPE_PROVIDER_CALL,
@@ -63,7 +63,7 @@ export class AgentInvocationRecorder extends RecorderBase {
     seed: AgentInvocationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown?: IdentityFields,
+    handedDown?: HandedDown,
   ) {
     super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
@@ -171,7 +171,7 @@ export class AgentCreationRecorder extends RecorderBase {
     seed: AgentCreationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown?: IdentityFields,
+    handedDown?: HandedDown,
   ) {
     super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;

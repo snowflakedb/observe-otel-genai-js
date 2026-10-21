@@ -71,6 +71,7 @@ tool spans also carry a conversation title. Each takes the first value set by:
    `client.invokeWorkflow(seed, fn)` or a recorder's
    `withActiveContext(fn)`). The innermost scope that sets a value wins.
 3. **The `Client` config**: `agentName`, `agentVersion`, `userId`.
+4. **The integration's own name**, for an agent span's name only (see below).
 
 Empty strings count as unset, at every level.
 
@@ -100,9 +101,16 @@ and restores a context restores both. Like span nesting, they need a registered
 context manager (`bootstrapOtel` and `NodeTracerProvider.register()` install one);
 without it, scopes do nothing.
 
-Integrations never make up a name, so an agent nothing names gets a plain
-`invoke_agent` span. Instrumentations take no identity options; use a scope or the
-`Client`.
+An agent span that the first three levels leave unnamed takes its integration's
+name: `langchain` for a LangChain agent, `ai-sdk` for a Vercel AI SDK call, and
+`claude-agent-sdk` for the Claude Agent SDK main agent (subagents always have their
+own name). The spans under it take the name too, but another agent under it does
+not: an unnamed Claude Agent SDK run inside a Vercel AI SDK tool is still named
+`claude-agent-sdk`, not `ai-sdk`. A real name, from the framework, a scope or the
+`Client`, passes to agents inside it. With the `Client` directly,
+pass `invokeAgent({ fallbackAgentName })`. Workflow spans never get a default.
+
+Instrumentations take no identity options; use a scope or the `Client`.
 
 The table shows where each integration reads the span's own value. A `withX(...)`
 scope and the `Client` work everywhere, and are the only way to set a field marked
@@ -650,7 +658,7 @@ Without `forwardSubagentText`, a delegation still gets its `execute_tool` span a
 Each `query()` call gets one `invoke_agent` span, under whatever OpenTelemetry context you call from. Several user turns means several `query()` calls, linked by `gen_ai.conversation.id`.
 
 ```
-invoke_agent <agentName>          one per query() call
+invoke_agent <agentName>          one per query() call; claude-agent-sdk when nothing names it
   chat <model>                    one per API call
   execute_tool Read
   execute_tool Agent              the delegation tool (called Task on older CLIs)

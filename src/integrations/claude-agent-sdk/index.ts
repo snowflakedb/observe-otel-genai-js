@@ -73,6 +73,9 @@ import type {
 /** The model the CLI puts on the assistant message it makes up for a failed API call. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
+/** The main agent's name when nothing names it, as in the Python library. */
+const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
+
 /**
  * How many messages each chat span replays as its input. Every span re-sends the
  * whole conversation, so without a bound a long tool loop outgrows what an exporter
@@ -597,6 +600,7 @@ class AgentRun {
     this.root = context.with(this.callerContext, () =>
       this.client.invokeAgent({
         ...this.sharedSeed(),
+        fallbackAgentName: DEFAULT_AGENT_NAME,
         requestProvider: this.provider,
         requestModel: this.queryOptions.model ?? this.model,
         input: [...this.promptInput],

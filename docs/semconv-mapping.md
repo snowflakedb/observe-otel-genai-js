@@ -26,7 +26,7 @@ Every span attribute, event, and metric this library emits, and when each is set
 
 ### Identity resolution
 
-The agent name, conversation id, conversation title, and user id each take the first value set by: the span's own value, then the enclosing scope (a `withX(...)` helper, or the span it runs under), then the `Client` config. The agent version comes only with the agent name it belongs to. The full rules, and where each integration reads these values, are in [Identity](integrations.md#identity).
+The agent name, conversation id, conversation title, and user id each take the first value set by: the span's own value, then the enclosing scope (a `withX(...)` helper, or the span it runs under), then the `Client` config. An `invoke_agent` span that none of these names takes its `fallbackAgentName`, which each integration sets to its own name. Spans inside it take the same name; another agent inside it does not. The agent version comes only with the agent name it belongs to. The full rules, and where each integration reads these values, are in [Identity](integrations.md#identity).
 
 ### Model
 

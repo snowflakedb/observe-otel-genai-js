@@ -28,8 +28,8 @@
 import type { Span } from '@opentelemetry/api';
 import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitAgentContent } from '../content/sink.js';
+import type { HandedDown } from '../context.js';
 import { errorClassName } from '../errors/classify.js';
-import type { IdentityFields } from '../models/identity.js';
 import type { Message } from '../models/message.js';
 import type { WorkflowInvocationStart } from '../models/workflow.js';
 import { applyWorkflowAttributes } from '../spans/attributes.js';
@@ -47,7 +47,7 @@ export class WorkflowInvocationRecorder extends RecorderBase {
     seed: WorkflowInvocationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
-    handedDown?: IdentityFields,
+    handedDown?: HandedDown,
   ) {
     super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;

@@ -60,7 +60,7 @@ import {
 } from './config.js';
 import { AllowListSpan, allowListSpanOptions } from './content/allow-list.js';
 import { type ContentCaptureMode, resolveContentCaptureMode } from './content/capture.js';
-import { contentCaptureModeFromContext, resolveIdentity } from './context.js';
+import { contentCaptureModeFromContext, resolveAgentIdentity, resolveIdentity } from './context.js';
 import { ClientShutdownError, FlushTimeoutError } from './errors.js';
 import { GenAIMetrics } from './metrics/histograms.js';
 import type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
@@ -296,7 +296,11 @@ export class Client implements RecorderHostContext {
     fn?: (recorder: AgentInvocationRecorder) => Promise<T> | T,
   ): AgentInvocationRecorder | Promise<T> {
     this.assertOpen();
-    const { identity, handedDown } = resolveIdentity(start, this.config);
+    const { identity, handedDown } = resolveAgentIdentity(
+      start,
+      this.config,
+      start.fallbackAgentName,
+    );
     const seed = this.normalizeAgentSeed(start, identity);
     const startedAtMs = toMs(seed.startedAt) ?? this.now();
     seed.startedAt = startedAtMs;

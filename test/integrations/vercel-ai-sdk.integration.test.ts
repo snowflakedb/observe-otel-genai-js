@@ -784,13 +784,12 @@ describe('genaiTelemetryIntegration identity', () => {
     expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent scoped');
   });
 
-  it('gives an unnamed call a plain invoke_agent span and no agent name', async () => {
+  it('names a call nothing names ai-sdk, and its chat span too', async () => {
     h = createHarness();
     registerTelemetry(genaiTelemetryIntegration(h.client));
     await run();
-    const agent = oneByName(h, 'invoke_agent');
-    expect(agent?.name).toBe('invoke_agent');
-    expect(agent?.attributes['gen_ai.agent.name']).toBeUndefined();
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent ai-sdk');
+    expect(oneByName(h, 'chat')?.attributes['gen_ai.agent.name']).toBe('ai-sdk');
   });
 
   it('lets functionId beat the enclosing scope and the client', async () => {
