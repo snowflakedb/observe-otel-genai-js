@@ -7,6 +7,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- LangChain: a top-level LangGraph graph is now recorded as `invoke_workflow`
+  unless it is an agent, meaning it was built with `createAgent` or has "agent" in
+  its name. Before, every top-level graph became `invoke_agent`, and an unnamed one
+  had no agent name, nor did any span or metric under it. The graph's name, if any,
+  is now `gen_ai.workflow.name`, and spans under a workflow get no agent name from
+  it. Nested graphs, and top-level chains that are not graphs, are recorded as
+  before. `createReactAgent` graphs leave no sign that they are agents, so they now
+  become workflows unless named as above; `createAgent` graphs stay agents.
 - Core: `gen_ai.workflow.name` is now kept under the `allow_list` content mode. It
   is a name the application gives its workflow (an OpenAI Agents trace name), like
   the agent name, which the list already keeps. Before, it was dropped while the

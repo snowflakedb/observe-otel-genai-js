@@ -27,7 +27,7 @@ Messages and tool definitions appear only once [content capture](#content-captur
 | `execute_tool` spans | telemetry integration only | no, tool calls stay in the messages | yes | no, tool calls stay in the messages | yes | yes |
 | Time to first token on streams | `wrapStreamText` only | yes | yes | yes | yes | with `includePartialMessages` |
 | Per-call tags and metadata | `deriveOptions` or wrapper options | `withMetadata` | `Trace.metadata` | `withMetadata` | handler options | `wrapQuery` options or instrumentation config |
-| `invoke_agent` spans | telemetry integration | — | yes | — | top-level chains, named graphs | yes |
+| `invoke_agent` spans | telemetry integration | — | yes | — | top-level chains, agent graphs, named nested graphs | yes |
 | Nested `invoke_agent` for subagents | a call made inside a tool | — | agents used as tools | — | named LangGraph graphs | yes |
 | OpenTelemetry instrumentation class | — | yes | yes | — | yes | yes |
 
@@ -106,14 +106,14 @@ Integrations never make up a name, so an agent nothing names gets a plain
 
 The table shows where each integration reads the span's own value. A `withX(...)`
 scope and the `Client` work everywhere, and are the only way to set a field marked
-"–". The one exception is the OpenAI Agents `invoke_workflow` span, which has no agent
-name or conversation title, and takes its conversation id only from the run's
-`conversationId` or `groupId`. Its user id comes from the scope the trace opens in: for
+"–". The exceptions are `invoke_workflow` spans, which have no agent name. The OpenAI
+Agents one also has no conversation title, and takes its conversation id only from
+the run's `conversationId` or `groupId`. Its user id comes from the scope the trace opens in: for
 `withTrace(...)`, the scope around that call, not one inside it.
 
 | Integration | Agent name | Agent version | Conversation id | Conversation title | User id |
 |---|---|---|---|---|---|
-| LangChain / LangGraph | `runName`, `createAgent({ name })`, a compiled graph's name | – | `thread_id` | – | `metadata.user_id` |
+| LangChain / LangGraph | `runName`, `createAgent({ name })`, a compiled graph's name (not on a workflow, see [LangChain](#langchainjs--langgraph)) | – | `thread_id` | – | `metadata.user_id` |
 | OpenAI Agents | `Agent.name` | – | `conversationId` passed to `run()`, else `groupId` | – | – |
 | Vercel AI SDK telemetry | `deriveOptions` (by default `functionId`, then `runtimeContext.agent`) | `deriveOptions` | `deriveOptions` (by default `runtimeContext.conversationId`) | `deriveOptions` | `deriveOptions` (by default `runtimeContext.userId`) |
 | Vercel AI SDK wrappers | wrapper options | wrapper options | wrapper options | wrapper options | wrapper options |
@@ -522,7 +522,7 @@ await graph.invoke(input, {
 
 Handler options:
 
-- `captureChains` (default `true`): set `false` to skip `invoke_agent` spans and record only model, tool and retriever spans.
+- `captureChains` (default `true`): set `false` to skip `invoke_agent` and `invoke_workflow` spans and record only model, tool and retriever spans.
 - `contentCapture`, `tags`, `metadata`, `turnIndex`, `turnRole`.
 
 When one handler is reused across many requests, call `await handler.dispose()` on shutdown. It ends runs whose end or error callback never fired, such as abandoned streams.
@@ -561,14 +561,16 @@ All spans from one invocation form one trace:
 
 | LangChain run | Span |
 |---|---|
-| top-level chain or graph | `invoke_agent [<name>]` |
+| top-level graph that is an agent: built with `createAgent`, or with "agent" in its name | `invoke_agent [<name>]` |
+| any other top-level graph, such as a `StateGraph` that chains steps, or a `createReactAgent` graph whose name has no "agent" in it | `invoke_workflow [<name>]`, with `gen_ai.workflow.name` set to the graph's name |
+| any other top-level chain | `invoke_agent [<name>]` |
 | nested LangGraph graph with a name (`createAgent({ name })`, `compile({ name })`, `entrypoint(name, …)`) | its own `invoke_agent <name>`; the spans under it take its name |
 | any other nested chain | none; its children nest under the nearest span |
 | chat model or LLM call | `chat <model>` |
 | tool | `execute_tool <name>` |
 | retriever | `retrieval`, with any query rewrite nested under it |
 
-- `invoke_agent` input: a `messages` array maps message by message; a string, or a string `input`, `question` or `text` field, becomes one user message; any other shape is JSON-encoded. The output is the last message of a `messages` array, else a string, `output` or `text` field, else the JSON-encoded result.
+- `invoke_agent` and `invoke_workflow` input: a `messages` array maps message by message; a string, or a string `input`, `question` or `text` field, becomes one user message; any other shape is JSON-encoded. The output is the last message of a `messages` array, else a string, `output` or `text` field, else the JSON-encoded result.
 - `chat` spans carry input and output messages, the model's bound tools as `gen_ai.tool.definitions`, usage including cache-read and cache-write tokens, the finish reason, response id and served model (`gen_ai.response.model`, for example `gpt-4o-2024-11-20` for a `gpt-4o` request). Streaming calls record time to first token.
 - `gen_ai.provider.name` uses the well-known values (`openai`, `anthropic`, `aws.bedrock`, `gcp.gemini`, …). A hosting platform wins over the vendor it hosts, so a Bedrock-hosted Anthropic model reports `aws.bedrock`.
 - The tool name is the run's `runName`, else the tool's class name; on success, the name on the returned `ToolMessage` replaces it.
@@ -576,7 +578,7 @@ All spans from one invocation form one trace:
 
 ### Identity
 
-- **Agent name**: the agent run's `runName`, set with `withConfig({ runName })`, `createAgent({ name })` or a compiled graph's name. Names LangChain fills in when you set none do not count: the runnable's class name, any `Runnable*` name, and `LangGraph` for an unnamed graph.
+- **Agent name**: the agent run's `runName`, set with `withConfig({ runName })`, `createAgent({ name })` or a compiled graph's name. Names LangChain fills in when you set none do not count: the runnable's class name, any `Runnable*` name, and `LangGraph` for an unnamed graph. A top-level graph recorded as a workflow uses its name as the workflow name instead, and has no agent name.
 - **Conversation id**: the run's `thread_id`, from `configurable.thread_id` on a LangGraph graph or `metadata.thread_id` on any run. Every span in the run gets it, so all turns of a persisted conversation share one id.
 - **User id**: the run's `metadata.user_id`.
 

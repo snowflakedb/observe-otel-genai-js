@@ -58,9 +58,11 @@ import {
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USER_ID,
+  ATTR_WORKFLOW_NAME,
   OP_CHAT,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
@@ -85,6 +87,9 @@ const graphSerialized = {
   type: 'not_implemented',
   id: ['langgraph', 'pregel', 'CompiledStateGraph'],
 };
+
+/** The run metadata `createAgent` (from `langchain`) puts on its graph. */
+const createAgentMetadata = { ls_integration: 'langchain_create_agent' };
 
 /** A step inside a graph, such as a node. */
 const sequenceSerialized = {
@@ -1516,6 +1521,110 @@ describe('LangChain adapter — chain lifecycle (invoke_agent)', () => {
   });
 });
 
+describe('LangChain adapter — graph as agent or workflow', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ agentName: 'shop-bot' });
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  async function topLevelGraph(runName: string, metadata: Record<string, unknown> = {}) {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      {} as never,
+      'g1',
+      undefined,
+      [],
+      metadata,
+      undefined,
+      runName,
+    );
+    await handler.handleChatModelStart!(llmSerialized as never, [[]] as never, 'l1', 'g1');
+    await handler.handleLLMEnd!({ generations: [[{ text: 'hi' }]] } as never, 'l1');
+    await handler.handleChainEnd!({} as never, 'g1');
+    const spans = h.spans.getFinishedSpans();
+    return {
+      graph: spans.find((s) => s.attributes[ATTR_OPERATION_NAME] !== OP_CHAT)!,
+      chat: spans.find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_CHAT)!,
+    };
+  }
+
+  it('records an unnamed plain graph as a workflow with no agent name', async () => {
+    const { graph, chat } = await topLevelGraph('LangGraph');
+    expect(graph.name).toBe('invoke_workflow');
+    expect(graph.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
+    expect(graph.attributes).not.toHaveProperty(ATTR_AGENT_NAME);
+    expect(graph.attributes).not.toHaveProperty(ATTR_WORKFLOW_NAME);
+    expect(chat.parentSpanContext?.spanId).toBe(graph.spanContext().spanId);
+    // Spans under a workflow fall back to the client's agent name, as anywhere else.
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
+  });
+
+  it('names the workflow after a named plain graph', async () => {
+    const { graph } = await topLevelGraph('rag');
+    expect(graph.name).toBe('invoke_workflow rag');
+    expect(graph.attributes[ATTR_WORKFLOW_NAME]).toBe('rag');
+  });
+
+  it('records a createAgent graph as an agent', async () => {
+    const { graph, chat } = await topLevelGraph('support', createAgentMetadata);
+    expect(graph.name).toBe('invoke_agent support');
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('support');
+  });
+
+  it('records a graph with "agent" in its name as an agent', async () => {
+    const { graph } = await topLevelGraph('Research_Agent');
+    expect(graph.name).toBe('invoke_agent Research_Agent');
+  });
+
+  it("gives a workflow and the spans under it the run's thread and user", async () => {
+    const { graph, chat } = await topLevelGraph('rag', { thread_id: 't1', user_id: 'u1' });
+    for (const span of [graph, chat]) {
+      expect(span.attributes[ATTR_CONVERSATION_ID], span.name).toBe('t1');
+      expect(span.attributes[ATTR_USER_ID], span.name).toBe('u1');
+    }
+  });
+
+  it('records the graph input and output on the workflow span', async () => {
+    await h.shutdown();
+    h = createHarness({ contentCaptureMode: 'full' });
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(
+      graphSerialized as never,
+      { question: 'what is otel?' } as never,
+      'g1',
+      undefined,
+      [],
+      {},
+      undefined,
+      'LangGraph',
+    );
+    await handler.handleChainEnd!({ output: 'an answer' } as never, 'g1');
+
+    const [graph] = h.spans.getFinishedSpans();
+    expect(JSON.parse(graph!.attributes[ATTR_INPUT_MESSAGES] as string)).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: 'what is otel?' }] },
+    ]);
+    expect(JSON.parse(graph!.attributes[ATTR_OUTPUT_MESSAGES] as string)).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'an answer' }], finish_reason: 'stop' },
+    ]);
+  });
+
+  it('records a failed graph on the workflow span', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart!(graphSerialized as never, {} as never, 'g1');
+    await handler.handleChainError!(new TypeError('bad state'), 'g1');
+
+    const [graph] = h.spans.getFinishedSpans();
+    expect(graph!.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
+    expect(graph!.attributes['error.type']).toBe('TypeError');
+    expect(h.openSpanCount()).toBe(0);
+  });
+});
+
 describe('LangChain adapter — span nesting', () => {
   let h: Harness;
   beforeEach(() => {
@@ -1598,7 +1707,7 @@ describe('LangChain adapter — span nesting', () => {
       'outer',
       undefined,
       [],
-      {},
+      createAgentMetadata,
       undefined,
       'supervisor',
     );
@@ -1688,11 +1797,13 @@ describe('LangChain adapter — span nesting', () => {
     for (const run of ['inner', 'node', 'outer']) await handler.handleChainEnd!({} as never, run);
 
     const map = byName();
-    expect([...map.keys()].sort()).toEqual(['invoke_agent pipeline', 'invoke_agent researcher']);
-    expect(map.get('invoke_agent researcher')!.parent).toBe(map.get('invoke_agent pipeline')!.id);
+    expect([...map.keys()].sort()).toEqual(['invoke_agent researcher', 'invoke_workflow pipeline']);
+    expect(map.get('invoke_agent researcher')!.parent).toBe(
+      map.get('invoke_workflow pipeline')!.id,
+    );
   });
 
-  it('keeps an unnamed nested graph as a step of the outer agent', async () => {
+  it('keeps an unnamed nested graph as a step of the outer graph', async () => {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(
       graphSerialized as never,
@@ -1719,8 +1830,8 @@ describe('LangChain adapter — span nesting', () => {
     for (const run of ['inner', 'outer']) await handler.handleChainEnd!({} as never, run);
 
     const map = byName();
-    expect([...map.keys()].sort()).toEqual(['chat gpt-4o', 'invoke_agent pipeline']);
-    expect(map.get('chat gpt-4o')!.parent).toBe(map.get('invoke_agent pipeline')!.id);
+    expect([...map.keys()].sort()).toEqual(['chat gpt-4o', 'invoke_workflow pipeline']);
+    expect(map.get('chat gpt-4o')!.parent).toBe(map.get('invoke_workflow pipeline')!.id);
   });
 
   it('leaves a span with no ancestor as a root', async () => {
@@ -2369,7 +2480,7 @@ describe('LangChain adapter — identity', () => {
     };
   }
 
-  async function graph(runName: string) {
+  async function agentGraph(runName: string) {
     const handler = new GenAIOtelCallbackHandler({ client: h.client });
     await handler.handleChainStart!(
       graphSerialized as never,
@@ -2377,7 +2488,7 @@ describe('LangChain adapter — identity', () => {
       'g1',
       undefined,
       [],
-      {},
+      createAgentMetadata,
       undefined,
       runName,
     );
@@ -2414,11 +2525,11 @@ describe('LangChain adapter — identity', () => {
 
   it("treats LangGraph's default graph name as no name, and keeps a graph's own", async () => {
     h = createHarness({ agentName: 'shop-bot' });
-    expect((await graph('LangGraph')).attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
+    expect((await agentGraph('LangGraph')).attributes[ATTR_AGENT_NAME]).toBe('shop-bot');
     await h.shutdown();
 
     h = createHarness({ agentName: 'shop-bot' });
-    expect((await graph('support-graph')).name).toBe('invoke_agent support-graph');
+    expect((await agentGraph('support-graph')).name).toBe('invoke_agent support-graph');
   });
 
   it("gives chat and tool spans under a chain the chain's identity", async () => {

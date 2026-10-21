@@ -33,7 +33,8 @@
  *  - `handleToolStart` → `client.startToolExecution({...})`.
  *  - `handleToolEnd`   → `recorder.setResult({ result })` + `recorder.end()`.
  *  - `handleToolError` → `recorder.setExecError(err)` + `recorder.end()`.
- *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` lifecycle.
+ *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` or `invokeWorkflow`
+ *                        lifecycle (see `chainKind`).
  *  - `handleRetrieverStart` → `client.startRetrieval({...})`. The retrieval span
  *                        becomes the active parent, so an in-retriever query
  *                        rewrite (`chat`) and any descendants nest under it.
@@ -68,6 +69,7 @@ import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { RetrievalRecorder } from '../../recorders/retrieval.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
+import type { WorkflowInvocationRecorder } from '../../recorders/workflow.js';
 import { matchProvider } from '../_common/provider.js';
 import { toolDefinitions } from '../_common/tool-definitions.js';
 
@@ -80,8 +82,9 @@ export interface GenAIOtelCallbackHandlerOptions {
   metadata?: Record<string, unknown>;
   /**
    * When `true` (default), every top-level chain, and every named LangGraph
-   * graph nested inside one, becomes an `invoke_agent` span. Set to `false` to skip chain instrumentation and
-   * only capture LLM + tool spans.
+   * graph nested inside one, gets a span: `invoke_workflow` for a top-level graph
+   * that is not an agent, `invoke_agent` otherwise. Set to `false` to skip chain
+   * instrumentation and only capture LLM + tool spans.
    */
   captureChains?: boolean;
 }
@@ -110,7 +113,10 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     { rec: GenerationRecorder; firstTokenSeen: boolean }
   >();
   private readonly toolRunMap = new Map<string, ToolExecutionRecorder>();
-  private readonly chainRunMap = new Map<string, AgentInvocationRecorder>();
+  private readonly chainRunMap = new Map<
+    string,
+    AgentInvocationRecorder | WorkflowInvocationRecorder
+  >();
   private readonly retrieverRunMap = new Map<string, RetrievalRecorder>();
 
   /** runId → parentRunId for the whole run tree, including suppressed chains, so
@@ -334,7 +340,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   // ---------------------------------------------------------------------------
-  // Chain lifecycle (mapped to invoke_agent)
+  // Chain lifecycle (mapped to invoke_agent or invoke_workflow)
   // ---------------------------------------------------------------------------
 
   override async handleChainStart(
@@ -351,22 +357,25 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // can walk up to a real ancestor (see nearestRecorder).
     this.runParent.set(runId, parentRunId);
 
-    // Top-level chains become invoke_agent spans. A nested chain is a step inside
-    // one, unless it is a named LangGraph graph: another agent, called from a tool
-    // or added as a node.
     if (!this.captureChains) return;
-    const agentName = callerRunName(chain, runName);
-    if (parentRunId && !(isLangGraph(chain) && agentName)) return;
+    const name = callerRunName(chain, runName);
+    const kind = chainKind(chain, name, parentRunId, metadata);
+    if (!kind) return;
 
+    const seed = {
+      input: chainInputToMessages(inputs),
+      ...this.runIdentity(metadata),
+      contentCapture: this.defaults.contentCapture,
+    };
     const rec = this.nested(parentRunId, () =>
-      this.client.invokeAgent({
-        agentName,
-        input: chainInputToMessages(inputs),
-        ...this.runIdentity(metadata),
-        contentCapture: this.defaults.contentCapture,
-        tags: this.defaults.tags,
-        metadata: this.defaults.metadata,
-      }),
+      kind === 'workflow'
+        ? this.client.invokeWorkflow({ workflowName: name, ...seed })
+        : this.client.invokeAgent({
+            agentName: name,
+            ...seed,
+            tags: this.defaults.tags,
+            metadata: this.defaults.metadata,
+          }),
     );
     this.chainRunMap.set(runId, rec);
   }
@@ -711,6 +720,32 @@ function callerRunName(chain: Serialized, runName: string | undefined): string |
   if (!runName || runName === id[id.length - 1] || runName.startsWith('Runnable')) return undefined;
   if (id[0] === 'langgraph' && runName === LANGGRAPH_DEFAULT_NAME) return undefined;
   return runName;
+}
+
+/** The run metadata `createAgent` (from `langchain`) sets on its graph. */
+const CREATE_AGENT_INTEGRATION = 'langchain_create_agent';
+
+/**
+ * What a chain run is recorded as, if anything:
+ *  - A top-level graph is an agent when it shows it is one: a `createAgent` graph,
+ *    or a name with "agent" in it (the fill-in name `LangGraph` is no name). Any
+ *    other top-level graph chains steps together and is a workflow.
+ *  - Any other top-level chain is an agent.
+ *  - A nested chain is a step of its parent, unless it is a named graph: another
+ *    agent, called from a tool or added as a node.
+ */
+function chainKind(
+  chain: Serialized,
+  name: string | undefined,
+  parentRunId: string | undefined,
+  metadata: Record<string, unknown> | undefined,
+): 'agent' | 'workflow' | undefined {
+  if (parentRunId) return isLangGraph(chain) && name ? 'agent' : undefined;
+  if (!isLangGraph(chain)) return 'agent';
+  const isAgent =
+    strField(metadata, 'ls_integration') === CREATE_AGENT_INTEGRATION ||
+    name?.toLowerCase().includes('agent');
+  return isAgent ? 'agent' : 'workflow';
 }
 
 /** A compiled LangGraph graph: `createAgent`, `StateGraph.compile()` or `entrypoint`. */
