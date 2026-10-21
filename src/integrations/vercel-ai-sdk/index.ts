@@ -57,7 +57,7 @@ import {
 
 import type { Client } from '../../client.js';
 import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
-import { toAgentInputMessages } from './_map.js';
+import { mapCallPrompt, mapStepContent, toAgentInputMessages } from './_map.js';
 import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
@@ -101,17 +101,19 @@ export async function wrapGenerateText(
     operationName: OP_CHAT,
     ...identityFields(options),
     ...requestParams(params),
-    systemPrompt: typeof params.system === 'string' ? params.system : undefined,
+    systemPrompt: recording(params).inputs ? systemPromptOf(params) : undefined,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   });
+  if (recording(params).inputs) rec.setResult({ input: mapCallPrompt(params) });
 
   try {
     const result = (await aiGenerateText(
       params as unknown as Parameters<typeof aiGenerateText>[0],
     )) as GenerateTextResult;
     rec.setResult({
+      output: recording(params).outputs ? finalReply(result.steps) : undefined,
       responseId: result.response?.id,
       responseModel: result.response?.modelId,
       stopReason: result.finishReason,
@@ -148,11 +150,13 @@ export function wrapStreamText(
     operationName: OP_CHAT,
     ...identityFields(options),
     ...requestParams(params),
-    systemPrompt: typeof params.system === 'string' ? params.system : undefined,
+    systemPrompt: recording(params).inputs ? systemPromptOf(params) : undefined,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   });
+
+  if (recording(params).inputs) rec.setResult({ input: mapCallPrompt(params) });
 
   let firstTokenRecorded = false;
   const userOnChunk = params.onChunk;
@@ -179,6 +183,7 @@ export function wrapStreamText(
     },
     onEnd: async (event) => {
       rec.setResult({
+        output: recording(params).outputs ? finalReply(event.steps) : undefined,
         responseId: event.response?.id,
         responseModel: event.response?.modelId,
         stopReason: event.finishReason,
@@ -319,4 +324,27 @@ export async function wrapEmbedMany(
     rec.setCallError(err);
     throw err;
   }
+}
+
+/** The AI SDK's per-call `recordInputs` / `recordOutputs` switches, on by default. */
+function recording(params: GenerateTextParams | StreamTextParams): {
+  inputs: boolean;
+  outputs: boolean;
+} {
+  const telemetry = params.telemetry ?? params.experimental_telemetry;
+  return {
+    inputs: telemetry?.recordInputs !== false,
+    outputs: telemetry?.recordOutputs !== false,
+  };
+}
+
+/** The call's system prompt, from `instructions` (AI SDK v7) or `system`, when it is text. */
+function systemPromptOf(params: GenerateTextParams | StreamTextParams): string | undefined {
+  const system = params.instructions ?? params.system;
+  return typeof system === 'string' ? system : undefined;
+}
+
+/** The reply of the call's last step; earlier steps' tool calls led up to it. */
+function finalReply(steps: ReadonlyArray<{ content: Parameters<typeof mapStepContent>[0] }>) {
+  return mapStepContent(steps.at(-1)?.content ?? []);
 }

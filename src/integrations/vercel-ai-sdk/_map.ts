@@ -38,6 +38,7 @@ import {
   thinkingPart,
   toolCallPart,
   toolResultPart,
+  userTextMessage,
 } from '../../models/message.js';
 import type { AiCallSettings } from './_model.js';
 
@@ -296,6 +297,16 @@ export function mapModelMessages(messages: AiModelMessage[]): Message[] {
  */
 export function toAgentInputMessages(messages: ModelMessage[]): Message[] {
   return mapModelMessages(messages as unknown as AiModelMessage[]);
+}
+
+/** Maps a call's `prompt` (text or messages) or `messages` to input messages. */
+export function mapCallPrompt(params: {
+  prompt?: string | ModelMessage[];
+  messages?: ModelMessage[];
+}): Message[] {
+  const prompt = params.messages ?? params.prompt;
+  if (typeof prompt === 'string') return [userTextMessage(prompt)];
+  return prompt ? toAgentInputMessages(prompt) : [];
 }
 
 /**

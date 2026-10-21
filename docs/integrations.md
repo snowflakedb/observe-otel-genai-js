@@ -21,7 +21,7 @@ Messages and tool definitions appear only once [content capture](#content-captur
 
 | Capability | Vercel AI SDK | OpenAI | OpenAI Agents | Anthropic | LangChain | Claude Agent SDK |
 |---|---|---|---|---|---|---|
-| Input and output messages | telemetry integration only | yes | yes | yes | yes | yes, rebuilt from the message stream |
+| Input and output messages | yes, except `wrapGenerateObject` | yes | yes | yes | yes | yes, rebuilt from the message stream |
 | Tool definitions (`gen_ai.tool.definitions`) | telemetry integration only | yes | OpenAI model paths, from `OpenAIInstrumentation` | — | yes | — |
 | Request parameters (`temperature`, `top_p`, …) | yes | yes | OpenAI model paths, from `OpenAIInstrumentation` | yes | — | partial: system prompt, effort, thinking |
 | `execute_tool` spans | telemetry integration only | no, tool calls stay in the messages | yes | no, tool calls stay in the messages | yes | yes |
@@ -201,7 +201,9 @@ for await (const chunk of stream.textStream) {
 
 Each wrapper emits one `chat`, `generate_content` or `embeddings` span with the model, request parameters, usage, finish reason and response id. `wrapStreamText` also records time to first token.
 
-Limits: wrappers record the `system` prompt but not the input or output messages, and emit no `invoke_agent` or `execute_tool` spans.
+`wrapGenerateText` and `wrapStreamText` also record the system prompt (`instructions` or `system`), the input messages (`prompt` or `messages`) and the final reply, and follow the AI SDK's `telemetry.recordInputs` / `recordOutputs`.
+
+Limits: `wrapGenerateObject` records no messages, and wrappers emit no `invoke_agent` or `execute_tool` spans.
 
 ## OpenAI SDK
 

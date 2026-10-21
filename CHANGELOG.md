@@ -220,6 +220,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: `wrapGenerateText` and `wrapStreamText` record the call's `prompt`
+  or `messages` as `gen_ai.input.messages`, also when the call fails, and the final
+  reply as `gen_ai.output.messages`, when content capture is on. They also take the
+  system prompt from v7's `instructions`, not only from `system`, and follow the AI
+  SDK's `recordInputs` / `recordOutputs` like the telemetry integration. Before,
+  they recorded no messages.
 - Vercel AI SDK: `streamText` and `streamObject` spans from the telemetry
   integration record the time to first token the AI SDK measures, which also feeds
   the `gen_ai.client.time_to_first_token` metric. Before, only `wrapStreamText` did.

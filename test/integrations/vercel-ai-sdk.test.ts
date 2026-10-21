@@ -18,6 +18,7 @@
 import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { tool } from 'ai';
 import { z } from 'zod';
 
 import {
@@ -27,13 +28,16 @@ import {
   wrapStreamText,
 } from '../../src/integrations/vercel-ai-sdk/index.js';
 import {
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_REQUEST_PRESENCE_PENALTY,
   ATTR_REQUEST_SEED,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
+  ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
@@ -103,6 +107,8 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('aim-resp-1');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
+    // Content capture is off by default.
+    expect(span?.attributes).not.toHaveProperty(ATTR_INPUT_MESSAGES);
   });
 
   it('records call errors via setCallError when the provider throws', async () => {
@@ -169,6 +175,143 @@ describe('Vercel AI SDK adapter — wrapStreamText', () => {
     expect(span?.name).toBe('chat mock-stream');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
+  });
+});
+
+describe('Vercel AI SDK adapter — wrapper messages', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  const messagesOf = (key: string) =>
+    JSON.parse(String(h.spans.getFinishedSpans()[0]?.attributes[key]));
+
+  it('wrapGenerateText records the prompt and the reply', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'hello' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(1, 1),
+        warnings: [],
+      }),
+    });
+    await wrapGenerateText(h.client, { model, prompt: 'hi' });
+
+    expect(messagesOf(ATTR_INPUT_MESSAGES)).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: 'hi' }] },
+    ]);
+    expect(messagesOf(ATTR_OUTPUT_MESSAGES)).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'hello' }], finish_reason: 'stop' },
+    ]);
+  });
+
+  it("wrapGenerateText records only the last step's reply of a tool loop", async () => {
+    let step = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () =>
+        step++ === 0
+          ? {
+              content: [{ type: 'tool-call', toolCallId: 't1', toolName: 'ping', input: '{}' }],
+              finishReason: v7Finish('tool-calls'),
+              usage: v7Usage(1, 1),
+              warnings: [],
+            }
+          : {
+              content: [{ type: 'text', text: 'pong' }],
+              finishReason: v7Finish('stop'),
+              usage: v7Usage(1, 1),
+              warnings: [],
+            },
+    });
+    await wrapGenerateText(h.client, {
+      model,
+      prompt: 'ping',
+      tools: { ping: tool({ inputSchema: z.object({}), execute: async () => 'pong' }) },
+      stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+    });
+
+    expect(messagesOf(ATTR_OUTPUT_MESSAGES)).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'pong' }], finish_reason: 'stop' },
+    ]);
+  });
+
+  it('wrapGenerateText records the input of a call that fails', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        throw new Error('boom');
+      },
+    });
+    await expect(
+      wrapGenerateText(h.client, { model, prompt: 'hi', maxRetries: 0 }),
+    ).rejects.toThrow('boom');
+    expect(messagesOf(ATTR_INPUT_MESSAGES)).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: 'hi' }] },
+    ]);
+  });
+
+  it('records instructions as the system prompt, and nothing with recordInputs: false', async () => {
+    const model = () =>
+      new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [{ type: 'text', text: 'ok' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        }),
+      });
+    await wrapGenerateText(h.client, { model: model(), instructions: 'be terse', prompt: 'hi' });
+    await wrapGenerateText(h.client, {
+      model: model(),
+      instructions: 'be terse',
+      prompt: 'hi',
+      telemetry: { recordInputs: false, recordOutputs: false },
+    });
+
+    const [recorded, withheld] = h.spans.getFinishedSpans();
+    expect(recorded?.attributes[ATTR_SYSTEM_INSTRUCTIONS]).toBeDefined();
+    for (const key of [ATTR_SYSTEM_INSTRUCTIONS, ATTR_INPUT_MESSAGES, ATTR_OUTPUT_MESSAGES]) {
+      expect(withheld?.attributes, key).not.toHaveProperty(key);
+    }
+  });
+
+  it('wrapStreamText records the messages and the streamed reply', async () => {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            controller.enqueue({ type: 'text-start', id: '0' });
+            controller.enqueue({ type: 'text-delta', id: '0', delta: 'hi there' });
+            controller.enqueue({ type: 'text-end', id: '0' });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: v7Finish('stop'),
+              usage: v7Usage(1, 1),
+            });
+            controller.close();
+          },
+        }),
+      }),
+    });
+    const stream = wrapStreamText(h.client, {
+      model,
+      messages: [{ role: 'user', content: 'say hi' }],
+    });
+    for await (const _chunk of stream.textStream) {
+      /* drain */
+    }
+    await stream.usage;
+
+    expect(messagesOf(ATTR_INPUT_MESSAGES)).toEqual([
+      { role: 'user', parts: [{ type: 'text', content: 'say hi' }] },
+    ]);
+    expect(messagesOf(ATTR_OUTPUT_MESSAGES)).toEqual([
+      { role: 'assistant', parts: [{ type: 'text', content: 'hi there' }], finish_reason: 'stop' },
+    ]);
   });
 });
 
