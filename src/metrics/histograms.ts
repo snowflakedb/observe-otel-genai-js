@@ -140,8 +140,7 @@ export class GenAIMetrics {
       [ATTR_PROVIDER_NAME]: labels.providerName,
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_AGENT_NAME]: labels.agentName,
-      [ATTR_ERROR_TYPE]: labels.errorType,
-      [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...errorAttributes(labels),
       ...this.optionalAttributes(labels),
     });
   }
@@ -156,8 +155,7 @@ export class GenAIMetrics {
     const labels = trimmed(given);
     this.invokeWorkflowDuration.record(durationSeconds, {
       ...(labels.workflowName ? { [ATTR_WORKFLOW_NAME]: labels.workflowName } : {}),
-      [ATTR_ERROR_TYPE]: labels.errorType,
-      [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...errorAttributes(labels),
       ...this.optionalAttributes(labels),
     });
   }
@@ -175,8 +173,7 @@ export class GenAIMetrics {
       [ATTR_REQUEST_MODEL]: labels.requestModel,
       [ATTR_TOOL_NAME]: labels.toolName,
       [ATTR_AGENT_NAME]: labels.agentName,
-      [ATTR_ERROR_TYPE]: labels.errorType,
-      [ATTR_ERROR_CATEGORY]: labels.errorCategory,
+      ...errorAttributes(labels),
       ...this.optionalAttributes(labels),
     });
   }
@@ -227,6 +224,15 @@ export class GenAIMetrics {
     }
     return attributes;
   }
+}
+
+/**
+ * `error.type` and `error.category`, only when the operation failed: the
+ * conventions ask that a successful operation leave `error.type` unset.
+ */
+function errorAttributes(labels: { errorType: string; errorCategory: string }): Attributes {
+  if (!labels.errorType) return {};
+  return { [ATTR_ERROR_TYPE]: labels.errorType, [ATTR_ERROR_CATEGORY]: labels.errorCategory };
 }
 
 /** A copy of `labels` with every string value trimmed. */

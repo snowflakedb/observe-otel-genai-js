@@ -207,14 +207,14 @@ Attributes on each data point:
 | Attribute | On |
 |---|---|
 | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.agent.name` | every metric except `invoke_workflow.duration`: a workflow has none of these |
-| `error.type`, `error.category` | `operation.duration`, `tool_execution.duration` and `invoke_workflow.duration` |
+| `error.type`, `error.category` | `operation.duration`, `tool_execution.duration` and `invoke_workflow.duration`, when the operation failed |
 | `gen_ai.tool.name` | `tool_execution.duration` |
 | `gen_ai.workflow.name` | `invoke_workflow.duration`, when the workflow has a name |
 | `gen_ai.token.type` | `token.usage`: `input`, `output`, `cache_read`, `cache_write`, or `reasoning` |
 | `gen_ai.conversation.id` | opt-in, see below |
 | `user.id` | opt-in, see below |
 
-The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. String values are trimmed, as they are on spans. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
+The always-present attributes are written as empty strings when unknown. `error.type` and `error.category` are set only when the operation failed, as the GenAI conventions ask; a successful data point has neither. String values are trimmed, as they are on spans. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
 
 `gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose span has a value that is not blank: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points can carry the user id, but never the conversation id.
 

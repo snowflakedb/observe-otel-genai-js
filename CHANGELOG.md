@@ -7,6 +7,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Metrics: `error.type` and `error.category` are now left off a data point when
+  the operation succeeded, as the GenAI conventions ask, instead of being written
+  as empty strings. To count successes, filter on `error.type` not being set
+  rather than on `error.type = ""`. Success data points change attribute set, so
+  their time series start anew at the upgrade; error rates are unaffected.
 - LangChain: with `LangChainInstrumentation`, a `createAgent` graph is named only by
   `createAgent({ name })`, as in the Python library. A run that renames it, such as
   `agent.invoke(input, { runName: 'step1' })`, no longer changes the agent name, so

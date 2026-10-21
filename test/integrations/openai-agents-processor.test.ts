@@ -391,7 +391,7 @@ describe('GenAIOtelTracingProcessor', () => {
 
     const workflow = only(await workflowPoints());
     expect(workflow.value.count).toBe(1);
-    expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('');
+    expect(workflow.attributes).not.toHaveProperty(ATTR_ERROR_TYPE);
     expect(workflow.attributes).not.toHaveProperty(ATTR_AGENT_NAME);
     expect(workflow.attributes[ATTR_WORKFLOW_NAME]).toBe('timed-run');
     expect(await durationPoints(OP_INVOKE_WORKFLOW)).toEqual([]);

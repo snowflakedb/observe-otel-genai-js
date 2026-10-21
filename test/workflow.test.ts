@@ -23,7 +23,6 @@ import { assistantTextMessage, userTextMessage } from '../src/models/message.js'
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
-  ATTR_ERROR_CATEGORY,
   ATTR_ERROR_TYPE,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
@@ -89,7 +88,7 @@ describe('WorkflowInvocationRecorder', () => {
     const metrics = (await collectMetrics())[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
     expect(metrics.map((m) => m.descriptor.name)).toEqual([METRIC_INVOKE_WORKFLOW_DURATION]);
     expect(metrics[0]!.dataPoints.map((p) => p.attributes)).toEqual([
-      { [ATTR_WORKFLOW_NAME]: 'rag', [ATTR_ERROR_TYPE]: '', [ATTR_ERROR_CATEGORY]: '' },
+      { [ATTR_WORKFLOW_NAME]: 'rag' },
     ]);
     const point = metrics[0]!.dataPoints[0]!.value as { buckets: { boundaries: number[] } };
     expect(point.buckets.boundaries).toEqual([1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200]);

@@ -22,6 +22,7 @@
  *  - tool_calls_per_operation includes gen_ai.operation.name
  *  - gen_ai.conversation.id is added only when the client opts in
  *  - string labels are trimmed, as span attributes are
+ *  - error.type and error.category are left off when the operation succeeded
  */
 
 import {
@@ -353,5 +354,57 @@ describe('label trimming', () => {
     const attrs = tool!.dataPoints[0]!.attributes;
     expect(attrs).not.toHaveProperty('gen_ai.conversation.id');
     expect(attrs).not.toHaveProperty('user.id');
+  });
+});
+
+describe('error labels', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.shutdown();
+    h = undefined;
+  });
+
+  async function recordOneOfEach(fail: boolean) {
+    h = createHarness();
+    const generation = h.client.startGeneration({ model: { provider: 'openai', name: 'gpt-4o' } });
+    const tool = h.client.startToolExecution({ toolName: 'search' });
+    const workflow = h.client.invokeWorkflow({ workflowName: 'rag' });
+    if (fail) {
+      generation.setCallError(new Error('boom'));
+      tool.setExecError(new Error('boom'));
+      workflow.setCallError(new Error('boom'));
+    }
+    await generation.end();
+    await tool.end();
+    await workflow.end();
+
+    const metrics = await h.collectMetrics();
+    const attributesOf = (name: string) => findMetric(metrics[0]!, name)!.dataPoints[0]!.attributes;
+    return {
+      'gen_ai.client.operation.duration': attributesOf('gen_ai.client.operation.duration'),
+      'gen_ai.client.tool_execution.duration': attributesOf(
+        'gen_ai.client.tool_execution.duration',
+      ),
+      'gen_ai.invoke_workflow.duration': attributesOf('gen_ai.invoke_workflow.duration'),
+    };
+  }
+
+  it('are left off when the operation succeeded, as the conventions ask', async () => {
+    for (const [name, attrs] of Object.entries(await recordOneOfEach(false))) {
+      expect(attrs, name).not.toHaveProperty('error.type');
+      expect(attrs, name).not.toHaveProperty('error.category');
+    }
+  });
+
+  it('are set when the operation failed', async () => {
+    const points = await recordOneOfEach(true);
+    expect(points['gen_ai.client.operation.duration']['error.type']).toBe('provider_call_error');
+    expect(points['gen_ai.client.tool_execution.duration']['error.type']).toBe(
+      'tool_execution_error',
+    );
+    expect(points['gen_ai.invoke_workflow.duration']['error.type']).toBe('Error');
+    for (const [name, attrs] of Object.entries(points)) {
+      expect(attrs['error.category'], name).toBe('sdk_error');
+    }
   });
 });
