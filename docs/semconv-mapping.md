@@ -207,9 +207,9 @@ Attributes on each data point:
 | `gen_ai.conversation.id` | opt-in, see below |
 | `user.id` | opt-in, see below |
 
-The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
+The always-present attributes are written as empty strings when unknown, and `error.type` / `error.category` are empty strings on success. String values are trimmed, as they are on spans. Only `input` and `output` are well-known `gen_ai.token.type` values in the spec; the others are library extensions.
 
-`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points can carry the user id, but never the conversation id.
+`gen_ai.conversation.id` and `user.id` are off by default, because each adds one time series per conversation or per user. Turn them on with `new Client({ metricAttributes: { conversationId: true, userId: true } })` (either one alone works). They are then added to every data point whose operation has a value that is not blank: generation, `embeddings`, `invoke_agent`, `invoke_workflow`, `execute_tool`, and `retrieval`. `create_agent` data points can carry the user id, but never the conversation id.
 
 ## Span kinds and names
 

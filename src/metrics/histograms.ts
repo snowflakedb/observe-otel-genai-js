@@ -27,6 +27,9 @@
  *
  * `gen_ai.conversation.id` and `user.id` are added only when the client opts in
  * through `metricAttributes.conversationId` and `metricAttributes.userId`.
+ *
+ * String labels are trimmed, as span attributes are (`setStr`), so a filter on a
+ * span's value also matches its metric series.
  */
 
 import type { Attributes, Histogram, Meter } from '@opentelemetry/api';
@@ -111,8 +114,9 @@ export class GenAIMetrics {
     });
   }
 
-  recordOperationDuration(durationSeconds: number, labels: DurationLabels): void {
+  recordOperationDuration(durationSeconds: number, given: DurationLabels): void {
     if (durationSeconds < 0 || !Number.isFinite(durationSeconds)) return;
+    const labels = trimmed(given);
     this.operationDuration.record(durationSeconds, {
       [ATTR_OPERATION_NAME]: labels.operationName,
       [ATTR_PROVIDER_NAME]: labels.providerName,
@@ -128,8 +132,9 @@ export class GenAIMetrics {
    * Records into the dedicated `gen_ai.client.tool_execution.duration` histogram
    * so `gen_ai.tool.name` cardinality is isolated from chat/embedding durations.
    */
-  recordToolExecutionDuration(durationSeconds: number, labels: ToolDurationLabels): void {
+  recordToolExecutionDuration(durationSeconds: number, given: ToolDurationLabels): void {
     if (durationSeconds < 0 || !Number.isFinite(durationSeconds)) return;
+    const labels = trimmed(given);
     this.toolExecutionDuration.record(durationSeconds, {
       [ATTR_OPERATION_NAME]: 'execute_tool',
       [ATTR_PROVIDER_NAME]: labels.providerName,
@@ -142,8 +147,9 @@ export class GenAIMetrics {
     });
   }
 
-  recordTokenUsage(value: number, type: TokenType, labels: OperationLabels): void {
+  recordTokenUsage(value: number, type: TokenType, given: OperationLabels): void {
     if (!value || value <= 0) return;
+    const labels = trimmed(given);
     this.tokenUsage.record(value, {
       [ATTR_OPERATION_NAME]: labels.operationName,
       [ATTR_PROVIDER_NAME]: labels.providerName,
@@ -154,8 +160,9 @@ export class GenAIMetrics {
     });
   }
 
-  recordTimeToFirstToken(seconds: number, labels: OperationLabels): void {
+  recordTimeToFirstToken(seconds: number, given: OperationLabels): void {
     if (seconds < 0 || !Number.isFinite(seconds)) return;
+    const labels = trimmed(given);
     this.timeToFirstToken.record(seconds, {
       [ATTR_OPERATION_NAME]: labels.operationName,
       [ATTR_PROVIDER_NAME]: labels.providerName,
@@ -165,7 +172,8 @@ export class GenAIMetrics {
     });
   }
 
-  recordToolCalls(count: number, labels: OperationLabels): void {
+  recordToolCalls(count: number, given: OperationLabels): void {
+    const labels = trimmed(given);
     this.toolCallsPerOperation.record(count, {
       [ATTR_OPERATION_NAME]: labels.operationName,
       [ATTR_PROVIDER_NAME]: labels.providerName,
@@ -185,4 +193,14 @@ export class GenAIMetrics {
     }
     return attributes;
   }
+}
+
+/** A copy of `labels` with every string value trimmed. */
+function trimmed<T extends object>(labels: T): T {
+  return Object.fromEntries(
+    Object.entries(labels).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? value.trim() : value,
+    ]),
+  ) as T;
 }

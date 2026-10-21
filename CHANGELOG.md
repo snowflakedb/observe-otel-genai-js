@@ -170,6 +170,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Core: metric labels are trimmed, as span attributes already were. Before, a
+  value with leading or trailing spaces, such as an agent name `" planner "`, was
+  trimmed on the span but kept its spaces on the metric, so filtering on the span's
+  value missed the metric series. A `gen_ai.conversation.id` or `user.id` that the
+  client opted into and that is only spaces is now left off the metric, as it is on
+  the span. An error type passed to `setErrorType` is trimmed too, on both.
 - Core: a `withContentCaptureMode` scope now applies to every span started inside
   it, even one that ends after the scope exits, such as a call whose promise is
   returned from the scope rather than awaited in it. Before, the mode was read when

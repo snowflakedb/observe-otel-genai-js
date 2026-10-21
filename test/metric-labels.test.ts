@@ -21,6 +21,7 @@
  *  - tool execution duration is on its own histogram (gen_ai.client.tool_execution.duration)
  *  - tool_calls_per_operation includes gen_ai.operation.name
  *  - gen_ai.conversation.id is added only when the client opts in
+ *  - string labels are trimmed, as span attributes are
  */
 
 import {
@@ -262,5 +263,76 @@ describe('user id on metrics', () => {
       'from-agent': 'agent-user',
       'from-client': 'client-user',
     });
+  });
+});
+
+describe('label trimming', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.shutdown();
+    h = undefined;
+  });
+
+  it('trims every string label', async () => {
+    h = createHarness({ metricAttributes: { conversationId: true, userId: true } });
+    const identity = { agentName: ' planner ', conversationId: ' conv-1 ', userId: ' user-1 ' };
+    const gen = h.client.startStreamingGeneration({
+      model: { provider: ' openai ', name: ' gpt-4o ' },
+      ...identity,
+    });
+    gen.setFirstTokenAt(Date.now() + 5);
+    gen.setResult({ usage: { inputTokens: 10, outputTokens: 5 } });
+    await gen.end();
+    await h.client.startToolExecution({ toolName: ' search ', ...identity }).end();
+    await h.client.invokeAgent(identity).end();
+
+    const metrics = await h.collectMetrics();
+    const all = metrics[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
+    expect(all.map((m) => m.descriptor.name).sort()).toEqual([
+      'gen_ai.client.operation.duration',
+      'gen_ai.client.time_to_first_token',
+      'gen_ai.client.token.usage',
+      'gen_ai.client.tool_calls_per_operation',
+      'gen_ai.client.tool_execution.duration',
+    ]);
+    for (const m of all) {
+      for (const { attributes } of m.dataPoints) {
+        for (const value of Object.values(attributes)) {
+          if (typeof value === 'string') expect(value, m.descriptor.name).toBe(value.trim());
+        }
+        expect(attributes['gen_ai.agent.name'], m.descriptor.name).toBe('planner');
+        expect(attributes['gen_ai.conversation.id'], m.descriptor.name).toBe('conv-1');
+        expect(attributes['user.id'], m.descriptor.name).toBe('user-1');
+      }
+    }
+    const tool = findMetric(metrics[0]!, 'gen_ai.client.tool_execution.duration');
+    expect(tool!.dataPoints[0]!.attributes['gen_ai.tool.name']).toBe('search');
+  });
+
+  it('gives a padded error type the same trimmed value on the span and the metric', async () => {
+    h = createHarness();
+    const rec = h.client.startToolExecution({ toolName: 'search' });
+    rec.setExecError(new Error('boom'));
+    rec.setErrorType(' Timeout ');
+    await rec.end();
+
+    const span = h.spans.getFinishedSpans()[0]!;
+    expect(span.attributes['error.type']).toBe('Timeout');
+    const metrics = await h.collectMetrics();
+    const tool = findMetric(metrics[0]!, 'gen_ai.client.tool_execution.duration');
+    expect(tool!.dataPoints[0]!.attributes['error.type']).toBe('Timeout');
+  });
+
+  it('leaves off an opted-in label that is only spaces', async () => {
+    h = createHarness({ metricAttributes: { conversationId: true, userId: true } });
+    await h.client
+      .startToolExecution({ toolName: 'search', conversationId: ' ', userId: ' ' })
+      .end();
+
+    const metrics = await h.collectMetrics();
+    const tool = findMetric(metrics[0]!, 'gen_ai.client.tool_execution.duration');
+    const attrs = tool!.dataPoints[0]!.attributes;
+    expect(attrs).not.toHaveProperty('gen_ai.conversation.id');
+    expect(attrs).not.toHaveProperty('user.id');
   });
 });

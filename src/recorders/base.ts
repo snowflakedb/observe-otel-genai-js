@@ -162,8 +162,9 @@ export abstract class RecorderBase {
    * a cardinality problem.
    */
   setErrorType(errorType: string | undefined): void {
-    if (!errorType) return;
-    this.errorTypeOverride = errorType;
+    const trimmed = errorType?.trim();
+    if (!trimmed) return;
+    this.errorTypeOverride = trimmed;
   }
 
   /** Stores a provider/runtime call error to surface on the span at end(). */
