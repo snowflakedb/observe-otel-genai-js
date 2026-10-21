@@ -46,6 +46,7 @@ import {
   ATTR_REQUEST_STREAM,
   ATTR_REQUEST_TEMPERATURE,
   ATTR_REQUEST_TOP_P,
+  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
@@ -201,6 +202,48 @@ describe('genaiTelemetryIntegration', () => {
     expect(out.text).toBe('hello');
     expect(oneByName(h, 'invoke_agent')).toBeDefined();
     expect(oneByName(h, 'chat')?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
+  });
+
+  it('records time to first token on streamText chat spans only', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(streamText({ model: textStreamModel('hi'), prompt: 'hi' }));
+    const streamed = oneByName(h, 'chat');
+    expect(streamed?.attributes[ATTR_RESPONSE_TIME_TO_FIRST_CHUNK]).toEqual(expect.any(Number));
+    h.resetSpans();
+
+    await generateText({
+      model: new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [{ type: 'text', text: 'hi' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        }),
+      }),
+      prompt: 'hi',
+    });
+    expect(oneByName(h, 'chat')?.attributes).not.toHaveProperty(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK);
+
+    const metrics = (await h.collectMetrics())[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
+    const ttft = metrics.find((m) => m.descriptor.name === 'gen_ai.client.time_to_first_token');
+    expect(ttft?.dataPoints).toHaveLength(1);
+  });
+
+  it('records time to first token on streamObject spans', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const result = streamObject({
+      model: textStreamModel('{"ok":true}'),
+      schema: z.object({ ok: z.boolean() }),
+      prompt: 'hi',
+    });
+    for await (const _ of result.partialObjectStream) {
+      /* drain */
+    }
+    await result.object;
+    const span = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_GENERATE_CONTENT);
+    expect(span?.attributes[ATTR_RESPONSE_TIME_TO_FIRST_CHUNK]).toEqual(expect.any(Number));
   });
 
   it("records the call's request parameters on each model call's span", async () => {

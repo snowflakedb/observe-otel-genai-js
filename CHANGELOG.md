@@ -220,6 +220,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: `streamText` and `streamObject` spans from the telemetry
+  integration record the time to first token the AI SDK measures, which also feeds
+  the `gen_ai.client.time_to_first_token` metric. Before, only `wrapStreamText` did.
 - Vercel AI SDK: chat spans from the telemetry integration now record the tools
   each model call is sent as `gen_ai.tool.definitions`: names only under
   `no_tool_content`, with descriptions and parameters under `full`. Before, they

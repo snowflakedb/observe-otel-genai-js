@@ -25,7 +25,7 @@ Messages and tool definitions appear only once [content capture](#content-captur
 | Tool definitions (`gen_ai.tool.definitions`) | telemetry integration only | yes | OpenAI model paths, from `OpenAIInstrumentation` | — | yes | — |
 | Request parameters (`temperature`, `top_p`, …) | yes | yes | OpenAI model paths, from `OpenAIInstrumentation` | yes | — | partial: system prompt, effort, thinking |
 | `execute_tool` spans | telemetry integration only | no, tool calls stay in the messages | yes | no, tool calls stay in the messages | yes | yes |
-| Time to first token on streams | `wrapStreamText` only | yes | yes | yes | yes | with `includePartialMessages` |
+| Time to first token on streams | `streamText`, `streamObject` and `wrapStreamText` | yes | yes | yes | yes | with `includePartialMessages` |
 | Per-call tags and metadata | `deriveOptions` or wrapper options | `withMetadata` | `Trace.metadata` | `withMetadata` | handler options | `wrapQuery` options or instrumentation config |
 | `invoke_agent` spans | telemetry integration | — | yes | — | top-level chains, agent graphs, named nested graphs | yes |
 | Nested `invoke_agent` for subagents | a call made inside a tool | — | agents used as tools | — | named LangGraph graphs | yes |
@@ -166,13 +166,13 @@ What gets recorded:
 
 - One `invoke_agent` span per call, one `chat` span per step (`generate_content` for `generateObject`), and one `execute_tool` span per tool call.
 - `chat` and `execute_tool` spans sit side by side under `invoke_agent`. A `chat` span ends when the model replies, so its duration does not include the step's tools.
-- Each `chat` and `generate_content` span carries the request parameters its model call used (`temperature`, `maxOutputTokens` and the like), including any `prepareStep` set for that step. `chat` spans also carry the tool definitions sent to the model.
+- Each `chat` and `generate_content` span carries the request parameters its model call used (`temperature`, `maxOutputTokens` and the like), including any `prepareStep` set for that step. `chat` spans also carry the tool definitions sent to the model. Spans of `streamText` and `streamObject` carry time to first token.
 - Concurrent calls stay in separate trees.
 - Work inside a tool, such as HTTP calls or a nested `generateText`, nests under that tool's `execute_tool` span. A nested `generateText` gets its own `invoke_agent` span there.
 - A failed call marks the `invoke_agent` span as an error, whether the model call failed or something around it, such as `prepareStep`. A model call that fails and then succeeds on retry is not an error.
 - The AI SDK's `telemetry.recordInputs: false` and `recordOutputs: false` drop inputs and outputs, whatever the content capture mode.
 
-Limits: the integration records no time to first token, and does not trace `embed`, `embedMany` or `rerank`. Use `wrapEmbed` and `wrapEmbedMany` to trace embeddings; `rerank` has no wrapper.
+Limits: the integration does not trace `embed`, `embedMany` or `rerank`. Use `wrapEmbed` and `wrapEmbedMany` to trace embeddings; `rerank` has no wrapper.
 
 ### Wrappers
 

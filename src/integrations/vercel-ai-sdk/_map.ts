@@ -155,9 +155,13 @@ export interface AiLanguageModelCallStartEvent extends AiCallSettings {
   tools?: unknown;
 }
 
-/** `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before its tools run. */
+/**
+ * `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before
+ * its tools run. `timeToFirstOutputMs` is set for streamed calls.
+ */
 export interface AiLanguageModelCallEndEvent {
   callId: string;
+  performance?: { timeToFirstOutputMs?: number };
 }
 
 /** `onError` event (AI SDK v7). The SDK types it as `unknown` but passes `{ callId, error }`. */
@@ -239,6 +243,7 @@ export interface AiObjectStepEndEvent {
   finishReason?: string;
   usage?: unknown;
   response?: { id?: string; modelId?: string };
+  msToFirstChunk?: number;
 }
 
 // ---------------------------------------------------------------------------

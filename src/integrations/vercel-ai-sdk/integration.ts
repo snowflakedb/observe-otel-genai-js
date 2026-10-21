@@ -263,11 +263,17 @@ class GenaiTelemetry {
 
   /**
    * Stamps the step's `chat` span with the model call's end time, so it leaves out
-   * tool time. The span ends later, in onStepEnd, which carries the output and usage.
-   * The event has no step number; steps run one at a time, so it is the latest step.
+   * tool time, and with the time to first token the AI SDK measured, which it sets
+   * only for a streamed call. The span ends later, in onStepEnd, which carries the
+   * output and usage. The event has no step number; steps run one at a time, so it
+   * is the latest step.
    */
   onLanguageModelCallEnd(event: AiLanguageModelCallEndEvent): void {
-    this.get(event.callId)?.latestStep?.rec.setEndedAt(this.client.now());
+    const rec = this.get(event.callId)?.latestStep?.rec;
+    if (!rec) return;
+    rec.setEndedAt(this.client.now());
+    const firstOutputMs = event.performance?.timeToFirstOutputMs;
+    if (firstOutputMs !== undefined) rec.setTimeToFirstToken(firstOutputMs / 1000);
   }
 
   onToolExecutionStart(event: AiToolExecutionStartEvent): void {
@@ -339,6 +345,9 @@ class GenaiTelemetry {
       responseId: event.response?.id,
       responseModel: event.response?.modelId,
     });
+    // streamObject sends no model call events; it reports the time here.
+    if (event.msToFirstChunk !== undefined)
+      step.rec.setTimeToFirstToken(event.msToFirstChunk / 1000);
     await end(step.rec);
   }
 
