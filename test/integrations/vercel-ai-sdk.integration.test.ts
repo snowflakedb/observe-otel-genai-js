@@ -40,7 +40,12 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
+  ATTR_REQUEST_MAX_TOKENS,
+  ATTR_REQUEST_SEED,
+  ATTR_REQUEST_STOP_SEQUENCES,
   ATTR_REQUEST_STREAM,
+  ATTR_REQUEST_TEMPERATURE,
+  ATTR_REQUEST_TOP_P,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
@@ -195,6 +200,80 @@ describe('genaiTelemetryIntegration', () => {
     expect(out.text).toBe('hello');
     expect(oneByName(h, 'invoke_agent')).toBeDefined();
     expect(oneByName(h, 'chat')?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
+  });
+
+  it("records the call's request parameters on each model call's span", async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const jsonModel = () =>
+      new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [{ type: 'text', text: '{"ok":true}' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        }),
+      });
+    const settings = {
+      temperature: 0.3,
+      maxOutputTokens: 50,
+      topP: 0.9,
+      seed: 7,
+      stopSequences: ['END'],
+    };
+    await generateText({ model: jsonModel(), prompt: 'hi', ...settings });
+    await drain(streamText({ model: textStreamModel('hi'), prompt: 'hi', ...settings }));
+    await generateObject({
+      model: jsonModel(),
+      schema: z.object({ ok: z.boolean() }),
+      prompt: 'hi',
+      ...settings,
+    });
+
+    const calls = h.spans
+      .getFinishedSpans()
+      .filter((s) => s.attributes[ATTR_OPERATION_NAME] !== 'invoke_agent');
+    expect(calls).toHaveLength(3);
+    for (const span of calls) {
+      expect(span.attributes, span.name).toMatchObject({
+        [ATTR_REQUEST_TEMPERATURE]: 0.3,
+        [ATTR_REQUEST_MAX_TOKENS]: 50,
+        [ATTR_REQUEST_TOP_P]: 0.9,
+        [ATTR_REQUEST_SEED]: 7,
+      });
+    }
+    // generateObject does not report its stop sequences to telemetry.
+    for (const span of calls.filter((s) => s.name.startsWith('chat'))) {
+      expect(span.attributes[ATTR_REQUEST_STOP_SEQUENCES], span.name).toEqual(['END']);
+    }
+  });
+
+  it("records a step's own settings when prepareStep changes them", async () => {
+    // AI SDK versions after 7.0.18 let prepareStep change a step's settings; the
+    // model call's start event then carries them. Driven by hand to cover that.
+    const telemetry = genaiTelemetryIntegration(h.client) as Record<
+      string,
+      (e: unknown) => unknown
+    >;
+    const model = { provider: 'mock', modelId: 'mock-1' };
+    telemetry.onStart!({
+      callId: 'c1',
+      operationId: 'ai.generateText',
+      ...model,
+      temperature: 0.3,
+    });
+    telemetry.onStepStart!({ callId: 'c1', stepNumber: 0, ...model, messages: [] });
+    telemetry.onLanguageModelCallStart!({ callId: 'c1', ...model, temperature: 0 });
+    await telemetry.onStepEnd!({
+      callId: 'c1',
+      stepNumber: 0,
+      content: [],
+      toolCalls: [],
+      toolResults: [],
+      finishReason: 'stop',
+    });
+    await telemetry.onEnd!({ callId: 'c1' });
+
+    expect(oneByName(h, 'chat')?.attributes[ATTR_REQUEST_TEMPERATURE]).toBe(0);
   });
 
   it('normalizes provider names on operation and generation spans', async () => {

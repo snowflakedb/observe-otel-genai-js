@@ -18,8 +18,11 @@
 import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { z } from 'zod';
+
 import {
   wrapEmbed,
+  wrapGenerateObject,
   wrapGenerateText,
   wrapStreamText,
 } from '../../src/integrations/vercel-ai-sdk/index.js';
@@ -27,6 +30,8 @@ import {
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
+  ATTR_REQUEST_PRESENCE_PENALTY,
+  ATTR_REQUEST_SEED,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_USAGE_INPUT_TOKENS,
@@ -164,6 +169,38 @@ describe('Vercel AI SDK adapter — wrapStreamText', () => {
     expect(span?.name).toBe('chat mock-stream');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
+  });
+});
+
+describe('Vercel AI SDK adapter — wrapGenerateObject', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('records all the request parameters', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(1, 1),
+        warnings: [],
+      }),
+    });
+    await wrapGenerateObject(h.client, {
+      model,
+      schema: z.object({ ok: z.boolean() }),
+      prompt: 'hi',
+      seed: 7,
+      presencePenalty: 0.5,
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_REQUEST_SEED]).toBe(7);
+    expect(span?.attributes[ATTR_REQUEST_PRESENCE_PENALTY]).toBe(0.5);
   });
 });
 

@@ -111,3 +111,43 @@ export function mapAiUsage(usage: unknown):
     reasoningTokens: u.reasoningTokens,
   };
 }
+
+/** The AI SDK call settings a model call's span records. */
+export interface AiCallSettings {
+  maxOutputTokens?: number;
+  /** Before AI SDK v7. */
+  maxTokens?: number;
+  temperature?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stopSequences?: unknown;
+  seed?: number;
+}
+
+/** A generation's request parameters. */
+export type RequestParams = Pick<
+  GenerationStart,
+  | 'maxTokens'
+  | 'temperature'
+  | 'topP'
+  | 'frequencyPenalty'
+  | 'presencePenalty'
+  | 'stopSequences'
+  | 'seed'
+>;
+
+/** Maps AI SDK call settings to a generation's request parameters. */
+export function requestParams(settings: AiCallSettings): RequestParams {
+  return {
+    maxTokens: settings.maxOutputTokens ?? settings.maxTokens,
+    temperature: settings.temperature,
+    topP: settings.topP,
+    frequencyPenalty: settings.frequencyPenalty,
+    presencePenalty: settings.presencePenalty,
+    stopSequences: Array.isArray(settings.stopSequences)
+      ? settings.stopSequences.filter((x): x is string => typeof x === 'string')
+      : undefined,
+    seed: settings.seed,
+  };
+}

@@ -220,6 +220,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: chat and `generate_content` spans from the telemetry integration
+  record the request parameters each model call used (`temperature`,
+  `maxOutputTokens`, `topP`, penalties and seed; stop sequences on `chat` spans only),
+  including those `prepareStep` sets for one step, as the wrappers do. Before, they
+  recorded none. `wrapGenerateObject` now records all of them too, not only the
+  first three.
 - Core: metric labels are trimmed, as span attributes already were. Before, a
   value with leading or trailing spaces, such as an agent name `" planner "`, was
   trimmed on the span but kept its spaces on the metric, so filtering on the span's

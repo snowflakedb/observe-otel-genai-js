@@ -49,6 +49,7 @@ import {
   type AiAbortEvent,
   type AiErrorEvent,
   type AiLanguageModelCallEndEvent,
+  type AiLanguageModelCallStartEvent,
   type AiObjectStepEndEvent,
   type AiObjectStepStartEvent,
   type AiOperationEndEvent,
@@ -62,11 +63,13 @@ import {
   mapStepContent,
 } from './_map.js';
 import {
+  type RequestParams,
   type VercelAdapterOptions,
   identityFields,
   mapAiUsage,
   modelRefFromAi,
   normalizeAiSdkProviderName,
+  requestParams,
 } from './_model.js';
 
 type GenerationRec = ReturnType<Client['startGeneration']>;
@@ -140,6 +143,8 @@ interface StepState {
 interface OpState {
   agent?: AgentInvocationRecorder;
   options: VercelAdapterOptions;
+  /** Request parameters from the start event; each step's span opens with them. */
+  request: RequestParams;
   streamed: boolean;
   steps: Map<number, StepState>;
   latestStep?: StepState;
@@ -197,6 +202,7 @@ class GenaiTelemetry {
     this.ops.set(event.callId, {
       agent,
       options,
+      request: requestParams(event),
       streamed: STREAMED_OPERATIONS.has(event.operationId),
       steps: new Map(),
       tools: new Map(),
@@ -238,6 +244,15 @@ class GenaiTelemetry {
         input: recordInputs ? messages : [],
       },
     );
+  }
+
+  /**
+   * Records the settings the step's model call uses, which `prepareStep` can change
+   * from step to step. generateObject sends no such event, so its span keeps the
+   * operation's. Like onLanguageModelCallEnd, it applies to the latest step.
+   */
+  onLanguageModelCallStart(event: AiLanguageModelCallStartEvent): void {
+    this.get(event.callId)?.latestStep?.rec.setResult(requestParams(event));
   }
 
   /**
@@ -383,6 +398,7 @@ class GenaiTelemetry {
     const seed = {
       model: modelRefFromAi(model),
       operationName: extra.operationName,
+      ...op.request,
       ...identityFields(op.options),
       startedAt: this.client.now(),
       systemPrompt: extra.systemPrompt,
@@ -517,6 +533,9 @@ export function genaiTelemetryIntegration(
     },
     onStepStart: (e) => {
       impl.onStepStart(e as unknown as AiStepStartEvent);
+    },
+    onLanguageModelCallStart: (e) => {
+      impl.onLanguageModelCallStart(e as unknown as AiLanguageModelCallStartEvent);
     },
     onLanguageModelCallEnd: (e) => {
       impl.onLanguageModelCallEnd(e as unknown as AiLanguageModelCallEndEvent);

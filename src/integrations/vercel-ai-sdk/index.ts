@@ -64,6 +64,7 @@ import {
   identityFields,
   mapAiUsage,
   modelRefFromAi,
+  requestParams,
 } from './_model.js';
 
 export type { VercelAdapterOptions };
@@ -99,13 +100,7 @@ export async function wrapGenerateText(
     model,
     operationName: OP_CHAT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params),
-    temperature: params.temperature,
-    topP: params.topP,
-    frequencyPenalty: params.frequencyPenalty,
-    presencePenalty: params.presencePenalty,
-    stopSequences: normalizeStopSequences(params.stopSequences),
-    seed: params.seed,
+    ...requestParams(params),
     systemPrompt: typeof params.system === 'string' ? params.system : undefined,
     tags: options.tags,
     metadata: options.metadata,
@@ -152,13 +147,7 @@ export function wrapStreamText(
     model,
     operationName: OP_CHAT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params),
-    temperature: params.temperature,
-    topP: params.topP,
-    frequencyPenalty: params.frequencyPenalty,
-    presencePenalty: params.presencePenalty,
-    stopSequences: normalizeStopSequences(params.stopSequences),
-    seed: params.seed,
+    ...requestParams(params),
     systemPrompt: typeof params.system === 'string' ? params.system : undefined,
     tags: options.tags,
     metadata: options.metadata,
@@ -231,9 +220,7 @@ export async function wrapGenerateObject(
     model,
     operationName: OP_GENERATE_CONTENT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params as unknown as { maxTokens?: number; maxOutputTokens?: number }),
-    temperature: (params as { temperature?: number }).temperature,
-    topP: (params as { topP?: number }).topP,
+    ...requestParams(params),
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -332,21 +319,4 @@ export async function wrapEmbedMany(
     rec.setCallError(err);
     throw err;
   }
-}
-
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-function normalizeStopSequences(s: unknown): string[] | undefined {
-  if (Array.isArray(s)) return s.filter((x): x is string => typeof x === 'string');
-  return undefined;
-}
-
-/** Reads `maxOutputTokens` (AI SDK v7) or legacy `maxTokens`. */
-function readMaxTokens(p: {
-  maxTokens?: number;
-  maxOutputTokens?: number;
-}): number | undefined {
-  return p.maxOutputTokens ?? p.maxTokens;
 }

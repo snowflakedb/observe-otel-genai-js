@@ -39,6 +39,7 @@ import {
   toolCallPart,
   toolResultPart,
 } from '../../models/message.js';
+import type { AiCallSettings } from './_model.js';
 
 // ---------------------------------------------------------------------------
 // Duck-typed AI SDK event shapes — we only read what we need
@@ -145,6 +146,11 @@ export interface AiChunkEvent {
   chunk: { type: string; text?: string };
 }
 
+/** `onLanguageModelCallStart` event (AI SDK v7), with the settings this model call uses. */
+export interface AiLanguageModelCallStartEvent extends AiCallSettings {
+  callId: string;
+}
+
 /** `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before its tools run. */
 export interface AiLanguageModelCallEndEvent {
   callId: string;
@@ -161,7 +167,7 @@ export interface AiErrorEvent {
  * model info, the initial prompt `messages`, `instructions`, and the
  * user-defined `runtimeContext`. Used to open the `invoke_agent` span.
  */
-export interface AiOperationStartEvent {
+export interface AiOperationStartEvent extends AiCallSettings {
   callId: string;
   operationId?: string;
   provider?: string;
