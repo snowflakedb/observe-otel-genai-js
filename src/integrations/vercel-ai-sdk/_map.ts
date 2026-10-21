@@ -146,9 +146,13 @@ export interface AiChunkEvent {
   chunk: { type: string; text?: string };
 }
 
-/** `onLanguageModelCallStart` event (AI SDK v7), with the settings this model call uses. */
+/**
+ * `onLanguageModelCallStart` event (AI SDK v7): the settings this model call uses,
+ * and `tools`, the definitions it is sent.
+ */
 export interface AiLanguageModelCallStartEvent extends AiCallSettings {
   callId: string;
+  tools?: unknown;
 }
 
 /** `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before its tools run. */

@@ -49,6 +49,7 @@ import {
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
+  ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_GENERATE_CONTENT,
@@ -293,6 +294,29 @@ describe('genaiTelemetryIntegration', () => {
 
     expect(oneByName(h, 'invoke_agent')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
     expect(oneByName(h, 'chat')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
+  });
+
+  it('records only the tool names under no_tool_content', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => 'pong',
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+    for (const chat of byName(h, 'chat')) {
+      expect(JSON.parse(String(chat.attributes[ATTR_TOOL_DEFINITIONS]))).toEqual([
+        { type: 'function', name: 'ping' },
+      ]);
+    }
   });
 
   it('puts execute_tool next to chat under invoke_agent in a 2-step tool loop', async () => {
@@ -1087,12 +1111,29 @@ describe('genaiTelemetryIntegration recordInputs / recordOutputs', () => {
     expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
   });
 
-  it('omits the system prompt and tool arguments when recordInputs is false', async () => {
+  it('records the tool definitions each model call is sent', async () => {
+    await runToolLoop();
+    const chats = byName(h, 'chat');
+    expect(chats).toHaveLength(2);
+    for (const chat of chats) {
+      expect(JSON.parse(String(chat.attributes[ATTR_TOOL_DEFINITIONS]))).toEqual([
+        {
+          type: 'function',
+          name: 'ping',
+          description: 'ping',
+          parameters: expect.objectContaining({ type: 'object' }),
+        },
+      ]);
+    }
+  });
+
+  it('omits the system prompt, tool definitions and tool arguments when recordInputs is false', async () => {
     await runToolLoop({ recordInputs: false });
     const toolSpan = oneByName(h, 'execute_tool');
-    expect(
-      byName(h, 'chat').every((c) => c.attributes[ATTR_SYSTEM_INSTRUCTIONS] === undefined),
-    ).toBe(true);
+    for (const chat of byName(h, 'chat')) {
+      expect(chat.attributes[ATTR_SYSTEM_INSTRUCTIONS]).toBeUndefined();
+      expect(chat.attributes[ATTR_TOOL_DEFINITIONS]).toBeUndefined();
+    }
     expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeUndefined();
     expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
   });

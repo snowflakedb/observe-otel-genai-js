@@ -220,6 +220,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: chat spans from the telemetry integration now record the tools
+  each model call is sent as `gen_ai.tool.definitions`: names only under
+  `no_tool_content`, with descriptions and parameters under `full`. Before, they
+  recorded none. With the AI SDK's `recordInputs: false` they are left out, as
+  the system prompt is.
 - Vercel AI SDK: chat and `generate_content` spans from the telemetry integration
   record the request parameters each model call used (`temperature`,
   `maxOutputTokens`, `topP`, penalties and seed; stop sequences on `chat` spans only),

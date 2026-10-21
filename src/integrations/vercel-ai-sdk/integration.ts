@@ -45,6 +45,7 @@ import type { Client } from '../../client.js';
 import { type Message, assistantTextMessage } from '../../models/message.js';
 import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import { OP_CHAT, OP_GENERATE_CONTENT, type OperationName } from '../../semconv.js';
+import { toolDefinitions } from '../_common/tool-definitions.js';
 import {
   type AiAbortEvent,
   type AiErrorEvent,
@@ -247,12 +248,17 @@ class GenaiTelemetry {
   }
 
   /**
-   * Records the settings the step's model call uses, which `prepareStep` can change
-   * from step to step. generateObject sends no such event, so its span keeps the
-   * operation's. Like onLanguageModelCallEnd, it applies to the latest step.
+   * Records what the step's model call is sent: its settings and tool
+   * definitions, which `prepareStep` can change from step to step. generateObject
+   * sends no such event, so its span keeps the operation's settings. Like
+   * onLanguageModelCallEnd, it applies to the latest step.
    */
   onLanguageModelCallStart(event: AiLanguageModelCallStartEvent): void {
-    this.get(event.callId)?.latestStep?.rec.setResult(requestParams(event));
+    const step = this.get(event.callId)?.latestStep;
+    if (!step) return;
+    step.rec.setResult(requestParams(event));
+    const tools = this.recordInputs(event) ? toolDefinitions(event.tools) : undefined;
+    if (tools) step.rec.setResult({ tools });
   }
 
   /**
