@@ -43,6 +43,8 @@
  */
 
 import {
+  type TextStreamPart,
+  type ToolSet,
   embed as aiEmbed,
   embedMany as aiEmbedMany,
   generateObject as aiGenerateObject,
@@ -166,7 +168,7 @@ export function wrapStreamText(
   return aiStreamText({
     ...params,
     onChunk: (...args) => {
-      if (!firstTokenRecorded) {
+      if (!firstTokenRecorded && isOutputChunk(args[0].chunk)) {
         firstTokenRecorded = true;
         rec.setFirstTokenAt(Date.now());
       }
@@ -347,4 +349,24 @@ function systemPromptOf(params: GenerateTextParams | StreamTextParams): string |
 /** The reply of the call's last step; earlier steps' tool calls led up to it. */
 function finalReply(steps: ReadonlyArray<{ content: Parameters<typeof mapStepContent>[0] }>) {
   return mapStepContent(steps.at(-1)?.content ?? []);
+}
+
+/**
+ * Whether a stream chunk carries output, as the AI SDK counts it for its own time
+ * to first output. The stream opens with chunks such as `start` that carry none.
+ */
+function isOutputChunk(chunk: TextStreamPart<ToolSet>): boolean {
+  switch (chunk.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return chunk.text.length > 0;
+    case 'tool-input-delta':
+      return chunk.delta.length > 0;
+    case 'file':
+    case 'reasoning-file':
+    case 'tool-call':
+      return true;
+    default:
+      return false;
+  }
 }

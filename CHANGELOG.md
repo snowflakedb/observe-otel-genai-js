@@ -220,6 +220,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: `wrapStreamText` now stops the time to first token at the first
+  chunk that carries output, as the AI SDK does. Before, it stopped at the stream's
+  opening `start` chunk, which arrives before the model answers, so it reported
+  close to zero.
 - Vercel AI SDK: `wrapGenerateText` and `wrapStreamText` record the call's `prompt`
   or `messages` as `gen_ai.input.messages`, also when the call fails, and the final
   reply as `gen_ai.output.messages`, when content capture is on. They also take the

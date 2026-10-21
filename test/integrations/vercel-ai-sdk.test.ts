@@ -37,6 +37,7 @@ import {
   ATTR_REQUEST_SEED,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
+  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
@@ -344,6 +345,46 @@ describe('Vercel AI SDK adapter — wrapGenerateObject', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_REQUEST_SEED]).toBe(7);
     expect(span?.attributes[ATTR_REQUEST_PRESENCE_PENALTY]).toBe(0.5);
+  });
+});
+
+describe('Vercel AI SDK adapter — wrapStreamText time to first token', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  it('measures it to the first output, not to the stream opening', async () => {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          async start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            controller.enqueue({ type: 'text-start', id: '0' });
+            controller.enqueue({ type: 'text-delta', id: '0', delta: 'hi' });
+            controller.enqueue({ type: 'text-end', id: '0' });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: v7Finish('stop'),
+              usage: v7Usage(1, 1),
+            });
+            controller.close();
+          },
+        }),
+      }),
+    });
+    const stream = wrapStreamText(h.client, { model, prompt: 'hi' });
+    for await (const _chunk of stream.textStream) {
+      /* drain */
+    }
+    await stream.usage;
+
+    const ttft = h.spans.getFinishedSpans()[0]?.attributes[ATTR_RESPONSE_TIME_TO_FIRST_CHUNK];
+    expect(ttft).toBeGreaterThanOrEqual(0.09);
   });
 });
 
