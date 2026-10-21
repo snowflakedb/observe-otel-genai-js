@@ -280,10 +280,16 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
         const token = processor.beginRun(options?.stream === true, conversationId, agent?.name);
         const ctx = otelContext.active().setValue(RUN_TOKEN_KEY, token);
         const result = otelContext.with(ctx, () => original.apply(this, args)) as Promise<unknown>;
-        return result.catch((err: unknown) => {
-          void processor.onRunError(token, err);
-          throw err;
-        });
+        return result.then(
+          (value) => {
+            processor.setRunResult(token, value);
+            return value;
+          },
+          (err: unknown) => {
+            void processor.onRunError(token, err);
+            throw err;
+          },
+        );
       };
     });
   }

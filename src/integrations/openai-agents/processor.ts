@@ -177,7 +177,7 @@ interface TraceRecord {
   /** Spans already ended, so a start delivered after its end does not open the span again. */
   readonly endedSpanIds: Set<string>;
   readonly runTokens: Set<object>;
-  /** Error of a top-level span in a run-owned trace. A streamed run reports failures only there. */
+  /** Error of a top-level span in a run-owned trace. */
   error?: unknown;
 }
 
@@ -194,6 +194,8 @@ interface RunState {
   /** The agent passed to `run()`, which names a workflow given no name of its own. */
   readonly startingAgent?: string;
   readonly traceIds: Set<string>;
+  /** A streamed run's result, until its trace closes. Its `error` is set before then. */
+  result?: { readonly error?: unknown };
 }
 
 const DEFAULT_MAX_TRACES = 1000;
@@ -389,6 +391,12 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
     const token = {};
     this.runs.set(token, { streaming, conversationId, startingAgent, traceIds: new Set() });
     return token;
+  }
+
+  /** Keeps a streamed run's result, so its trace closes with the run's error object. */
+  setRunResult(token: object, result: unknown): void {
+    const run = this.runs.get(token);
+    if (run?.streaming) run.result = result as RunState['result'];
   }
 
   /**
@@ -627,7 +635,24 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
       else await this.abandonSpan(record, error);
     }
 
-    this.endWorkflowSpan(trace, error ?? trace.error);
+    this.endWorkflowSpan(trace, error ?? this.streamedRunError(trace) ?? trace.error);
+  }
+
+  /**
+   * The error a streamed run kept on its result, which the SDK's own record gives
+   * only as text. Only the run that opened the trace counts: a nested run that
+   * fails, such as an agent used as a tool, does not fail the run it is part of.
+   */
+  private streamedRunError(trace: TraceRecord): unknown {
+    for (const token of trace.runTokens) {
+      const run = this.runs.get(token);
+      if (!run?.result || !run.traceIds.has(trace.sdkTrace.traceId)) continue;
+      const { error } = run.result;
+      // The result holds the whole run; closed traces keep the token alive.
+      run.result = undefined;
+      if (error != null) return error;
+    }
+    return undefined;
   }
 
   private endWorkflowSpan(trace: TraceRecord, error: unknown): void {

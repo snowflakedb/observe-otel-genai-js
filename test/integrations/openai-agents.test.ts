@@ -345,6 +345,34 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     );
   });
 
+  it('names an openai API error by its class on the workflow span of a streamed run', async () => {
+    // A streamed run does not reject, and the SDK's error record names no class; the
+    // streamed result keeps the error object.
+    const setupResult = await setup(() => ({
+      status: 401,
+      body: { error: { message: 'bad key' } },
+    }));
+    const agent = new A.Agent({
+      name: 'denied-streamer',
+      instructions: 'x',
+      model: setupResult.model,
+    });
+    const stream = await new A.Runner().run(agent, 'hi', { stream: true });
+    await expect(
+      (async () => {
+        for await (const _event of stream.toStream()) {
+          // drain
+        }
+        await stream.completed;
+      })(),
+    ).rejects.toThrow();
+
+    await vi.waitFor(() => expect(spansNamed(OP_INVOKE_WORKFLOW)).toHaveLength(1));
+    expect(only(spansNamed(OP_INVOKE_WORKFLOW), 'workflow span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'AuthenticationError',
+    );
+  });
+
   it('records trace metadata on the workflow span', async () => {
     const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
     const agent = new A.Agent({ name: 'meta-agent', instructions: 'x', model: setupResult.model });

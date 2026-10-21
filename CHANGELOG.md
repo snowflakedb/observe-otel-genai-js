@@ -176,6 +176,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   value missed the metric series. A `gen_ai.conversation.id` or `user.id` that the
   client opted into and that is only spaces is now left off the metric, as it is on
   the span. An error type passed to `setErrorType` is trimmed too, on both.
+- OpenAI Agents: a streamed run that fails now records the error's class name, such
+  as `AuthenticationError`, as `error.type` on its workflow span, as a non-streamed
+  run does. Before, it recorded `_OTHER`, because the SDK reports a
+  streamed run's failure only as text that names no class.
 - Core: a `withContentCaptureMode` scope now applies to every span started inside
   it, even one that ends after the scope exits, such as a call whose promise is
   returned from the scope rather than awaited in it. Before, the mode was read when

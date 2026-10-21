@@ -634,8 +634,8 @@ describe('GenAIOtelTracingProcessor', () => {
   });
 
   it('puts a top-level task error on the workflow span of the run that owns it', async () => {
-    // A streamed run that fails reports the error only on its task span; the run
-    // itself does not reject.
+    // A streamed run that fails reports the error on its task span; the run itself
+    // does not reject.
     const failedTask = (traceId: string) =>
       makeSpan(
         traceId,
@@ -657,6 +657,50 @@ describe('GenAIOtelTracingProcessor', () => {
     const byName = (name: string) => h.spans.getFinishedSpans().find((s) => s.name === name);
     expect(byName('invoke_workflow owned-run')?.attributes['error.type']).toBe('BadRequestError');
     expect(byName('invoke_workflow user-block')?.status.code).toBe(SpanStatusCode.UNSET);
+  });
+
+  it("takes a failed streamed run's error class from its result, not the SDK's error text", async () => {
+    // The SDK's record often holds only text naming no class; the streamed result keeps the error.
+    class BadRequestError extends Error {}
+    const trace = makeTrace({ name: 'streamed-run' });
+    const token = processor.beginRun(true);
+    await otelContext.with(otelContext.active().setValue(RUN_TOKEN_KEY, token), () =>
+      processor.onTraceStart(trace),
+    );
+    processor.setRunResult(token, { error: new BadRequestError('400 bad model') });
+    await runSpan(
+      processor,
+      makeSpan(
+        trace.traceId,
+        { type: 'task', name: 'run' },
+        { error: { message: 'Error in agent run', data: { error: 'Error: 400 bad model' } } },
+      ),
+    );
+    await processor.onTraceEnd(trace);
+
+    const workflow = only(spansWithOp(OP_INVOKE_WORKFLOW));
+    expect(workflow.attributes[ATTR_ERROR_TYPE]).toBe('BadRequestError');
+    expect(workflow.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('does not fail the workflow when only a nested streamed run fails', async () => {
+    // An agent used as a tool runs as a nested run in the outer run's trace; the outer run recovers.
+    const trace = makeTrace({ name: 'outer-run' });
+    const outer = processor.beginRun(true);
+    const nested = processor.beginRun(true);
+    await otelContext.with(otelContext.active().setValue(RUN_TOKEN_KEY, outer), () =>
+      processor.onTraceStart(trace),
+    );
+    await otelContext.with(otelContext.active().setValue(RUN_TOKEN_KEY, nested), () =>
+      runSpan(processor, makeSpan(trace.traceId, { type: 'agent', name: 'helper' })),
+    );
+    processor.setRunResult(nested, { error: new Error('helper failed') });
+    processor.setRunResult(outer, {});
+    await processor.onTraceEnd(trace);
+
+    const workflow = only(spansWithOp(OP_INVOKE_WORKFLOW));
+    expect(workflow.attributes[ATTR_ERROR_TYPE]).toBeUndefined();
+    expect(workflow.status.code).toBe(SpanStatusCode.UNSET);
   });
 
   it('records a span it only hears about when the span ends', async () => {
