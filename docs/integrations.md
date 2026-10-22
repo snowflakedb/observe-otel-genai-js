@@ -647,6 +647,8 @@ registerInstrumentations({
 node --import ./preload.mjs app.mjs
 ```
 
+It patches both the package root and the `@anthropic-ai/claude-agent-sdk/core` entry, which the SDK ships from 0.3.282.
+
 The config takes the `wrapQuery` options except identity (`contentCapture`, `tags`, …), plus an optional `client`; without one, a client is built from the registered providers.
 
 Without the hook, or if the SDK was imported before the hook was registered, nothing is traced and nothing is logged. An app that loads the SDK with `require()` is not patched either; the instrumentation logs a warning then. In either case, or to avoid the hook, wrap the call site instead:

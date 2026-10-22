@@ -111,12 +111,30 @@ function patchModule(
   mod: unknown,
   version = '0.3.239',
 ): void {
-  const def = (
+  definition(instrumentation).patch?.(mod, version);
+}
+
+/** Runs the patch for the `/core` entry, which the hook applies as a file of the package. */
+function patchCoreEntry(
+  instrumentation: ClaudeAgentSdkInstrumentation,
+  mod: unknown,
+  version = '0.3.239',
+): void {
+  const core = definition(instrumentation).files.find(
+    (f) => f.name === '@anthropic-ai/claude-agent-sdk/core.mjs',
+  );
+  if (!core) throw new Error('no file entry for the /core entry');
+  core.patch(mod, version);
+}
+
+type Patch = (m: unknown, v?: string) => unknown;
+
+function definition(instrumentation: ClaudeAgentSdkInstrumentation) {
+  return (
     instrumentation as unknown as {
-      init(): { patch?: (m: unknown, v?: string) => unknown };
+      init(): { patch?: Patch; files: { name: string; patch: Patch }[] };
     }
   ).init();
-  def.patch?.(mod, version);
 }
 
 async function drain(it: AsyncIterable<AgentMessage>): Promise<AgentMessage[]> {
@@ -148,6 +166,26 @@ describe('ClaudeAgentSdkInstrumentation', () => {
     const names = h.spans.getFinishedSpans().map((s) => s.name);
     expect(names).toContain('invoke_agent auto');
     expect(names).toContain(`chat ${MODEL}`);
+  });
+
+  it('patches the query export of the /core entry', async () => {
+    const mod = mutableModule();
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchCoreEntry(instrumentation, mod);
+
+    await withAgent('core', () => drain(mod.query({ prompt: 'hello', options: { model: MODEL } })));
+    expect(agentSpans(h).map((s) => s.name)).toEqual(['invoke_agent core']);
+  });
+
+  it('restores the /core entry on disable', () => {
+    const mod = mutableModule();
+    const before = mod.query;
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchCoreEntry(instrumentation, mod);
+    expect(mod.query).not.toBe(before);
+
+    instrumentation.disable();
+    expect(mod.query).toBe(before);
   });
 
   it('passes adapter options through to the adapter', async () => {

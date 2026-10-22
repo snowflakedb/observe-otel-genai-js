@@ -226,6 +226,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Claude Agent SDK: `ClaudeAgentSdkInstrumentation` now also patches the
+  `@anthropic-ai/claude-agent-sdk/core` entry, which the SDK ships from 0.3.282.
+  Before, a `query()` imported from `/core` was not traced.
 - Vercel AI SDK: `wrapStreamText` now stops the time to first token at the first
   chunk that carries output, as the AI SDK does. Before, it stopped at the stream's
   opening `start` chunk, which arrives before the model answers, so it reported
