@@ -4,7 +4,7 @@
 
 | Framework | Subpath | Peer dependency |
 |---|---|---|
-| Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk` | `ai` ^7.0.0 |
+| Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk`, `@genai-otel/core/vercel-ai-sdk/instrumentation` | `ai` ^7.0.0 |
 | OpenAI SDK | `@genai-otel/core/openai`, `@genai-otel/core/openai/instrumentation` | `openai` ^4, ^5, ^6 or ^7 |
 | OpenAI Agents SDK | `@genai-otel/core/openai-agents/instrumentation` (processor only: `@genai-otel/core/openai-agents`) | `@openai/agents` >=0.14.0 <1 |
 | Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30.0 <1 |
@@ -29,7 +29,7 @@ Messages and tool definitions appear only once [content capture](#content-captur
 | Per-call tags and metadata | `deriveOptions` or wrapper options | `withMetadata` | `Trace.metadata` | `withMetadata` | handler options | `wrapQuery` options or instrumentation config |
 | `invoke_agent` spans | telemetry integration | — | yes | — | top-level chains, agent graphs, named nested graphs | yes |
 | Nested `invoke_agent` for subagents | a call made inside a tool | — | agents used as tools | — | named LangGraph graphs | yes |
-| OpenTelemetry instrumentation class | — | yes | yes | — | yes | yes |
+| OpenTelemetry instrumentation class | yes | yes | yes | — | yes | yes |
 
 For identity (agent name, conversation id, user id), see [Identity](#identity).
 
@@ -131,7 +131,7 @@ the run's `conversationId` or `groupId`. Its user id comes from the scope the tr
 
 ## Vercel AI SDK
 
-Two ways in: the telemetry integration, registered once for the whole process, or wrappers around single calls. Use one or the other for a given call; both on the same call trace it twice.
+Two ways in: the telemetry integration, registered once for the whole process (directly, or through `VercelAiSdkInstrumentation`), or wrappers around single calls. Use one or the other for a given call; both on the same call trace it twice.
 
 ### Telemetry integration (recommended)
 
@@ -161,6 +161,22 @@ Options:
 
 - `deriveOptions(event)`: returns the identity, `tags` and `metadata` for one call, from its `functionId` and `runtimeContext`. The default reads `functionId` (or `runtimeContext.agent`) as the agent name, and `runtimeContext.conversationId` and `runtimeContext.userId`. The AI SDK passes on only the `runtimeContext` fields you list in `telemetry.includeRuntimeContext`.
 - `emitOperationSpan` (`boolean | (event) => boolean`, default `true`): whether each call gets an `invoke_agent` span above its steps. Pass a function to keep it for real agents and drop it for one-shot calls. Without it, `execute_tool` spans sit under the `chat` span that asked for them.
+
+The integration sees every AI SDK v7 call, except one that sets its own `telemetry.integrations` (which replace the registered ones) or `telemetry.isEnabled: false`. Calls through AI SDK v6 or older are not traced.
+
+The same integration also comes as an OpenTelemetry instrumentation, for setups that list their instrumentations in one place:
+
+```ts
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { VercelAiSdkInstrumentation } from '@genai-otel/core/vercel-ai-sdk/instrumentation';
+
+registerInstrumentations({ instrumentations: [new VercelAiSdkInstrumentation()] });
+```
+
+- It takes the same options, plus an optional `client`. The options are read when it is enabled. Without a `client`, one is built from the tracer and meter providers the instrumentation is given, on the first AI SDK call, and its spans carry the scope name `@genai-otel/instrumentation-vercel-ai-sdk`. Providers set after that first call are not picked up.
+- Nothing is patched, so it works the same under CommonJS and ESM, with no loader hook and no `manuallyInstrument` step, whenever `ai` is loaded.
+- `disable()` stops tracing; `await instrumentation.shutdown()` also shuts down a `Client` it built.
+- Use it instead of `registerTelemetry(genaiTelemetryIntegration(...))`, not with it: both together trace every call twice.
 
 What gets recorded:
 

@@ -30,6 +30,9 @@
  *    single top-level AI SDK call and emit one generation span per invocation,
  *    without global registration.
  *
+ * `VercelAiSdkInstrumentation` (`./instrumentation`) registers the integration for
+ * setups that list their OpenTelemetry instrumentations in one place.
+ *
  * Usage (integration):
  *   import { registerTelemetry } from 'ai';
  *   import { genaiTelemetryIntegration } from '@genai-otel/core/vercel-ai-sdk';

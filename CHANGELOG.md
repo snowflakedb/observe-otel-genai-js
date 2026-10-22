@@ -44,6 +44,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Vercel AI SDK: `VercelAiSdkInstrumentation`
+  (`@genai-otel/core/vercel-ai-sdk/instrumentation`), an OpenTelemetry
+  instrumentation that registers `genaiTelemetryIntegration` with the AI SDK, so the
+  AI SDK can be set up with `registerInstrumentations` like the other integrations.
+  It patches nothing, works under CommonJS and ESM without a loader hook, and
+  `disable()` takes the integration off the AI SDK's list again.
 - Core: `invokeAgent` accepts `fallbackAgentName`, used only when the agent's own
   name, the enclosing scope and the `Client` config give none. Spans inside the
   agent take it too, but another agent inside it does not, so an unnamed agent from

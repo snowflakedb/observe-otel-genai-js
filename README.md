@@ -72,7 +72,7 @@ Add the instrumentation for each framework you use to the `instrumentations` lis
 | [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) | `new OpenAIAgentsInstrumentation()` from `@genai-otel/core/openai-agents/instrumentation`, together with `OpenAIInstrumentation` for the model calls |
 | [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) | `new LangChainInstrumentation()` from `@genai-otel/core/langchain/instrumentation`. Under ESM, also call its `manuallyInstrument(...)` (see the link) |
 | [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) | `new ClaudeAgentSdkInstrumentation()` from `@genai-otel/core/claude-agent-sdk/instrumentation` |
-| [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) | No instrumentation: call `registerTelemetry(genaiTelemetryIntegration(client))` once, from `@genai-otel/core/vercel-ai-sdk` |
+| [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) | `new VercelAiSdkInstrumentation()` from `@genai-otel/core/vercel-ai-sdk/instrumentation`, or `registerTelemetry(genaiTelemetryIntegration(client))` from `@genai-otel/core/vercel-ai-sdk` |
 | [Anthropic SDK](docs/integrations.md#anthropic-sdk) | No instrumentation: wrap the client with `wrapAnthropic(client, new Anthropic())` from `@genai-otel/core/anthropic` |
 
 ### Without auto-instrumentation

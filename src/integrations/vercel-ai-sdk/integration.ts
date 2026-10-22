@@ -184,10 +184,15 @@ class GenaiTelemetry {
   private readonly embedOps = new Map<string, EmbedOpState>();
 
   constructor(
-    private readonly client: Client,
+    /** Called whenever the `Client` is needed, so an instrumentation can build it late. */
+    private readonly getClient: () => Client,
     private readonly deriveOptions: DeriveOptions,
     private readonly emitOperationSpan: boolean | ((event: DeriveOptionsEvent) => boolean),
   ) {}
+
+  private get client(): Client {
+    return this.getClient();
+  }
 
   onStart(event: AiOperationStartEvent): void {
     if (!event.operationId) return;
@@ -625,8 +630,16 @@ export function genaiTelemetryIntegration(
   client: Client,
   options: GenaiTelemetryOptions = {},
 ): Telemetry {
+  return lazyTelemetryIntegration(() => client, options);
+}
+
+/** {@link genaiTelemetryIntegration} with a `Client` that is built on the first event. */
+export function lazyTelemetryIntegration(
+  getClient: () => Client,
+  options: GenaiTelemetryOptions = {},
+): Telemetry {
   const impl = new GenaiTelemetry(
-    client,
+    getClient,
     options.deriveOptions ?? defaultDeriveOptions,
     options.emitOperationSpan ?? true,
   );

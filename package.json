@@ -31,6 +31,11 @@
       "import": "./dist/integrations/vercel-ai-sdk/index.js",
       "require": "./dist/cjs/integrations/vercel-ai-sdk/index.js"
     },
+    "./vercel-ai-sdk/instrumentation": {
+      "types": "./dist/integrations/vercel-ai-sdk/instrumentation.d.ts",
+      "import": "./dist/integrations/vercel-ai-sdk/instrumentation.js",
+      "require": "./dist/cjs/integrations/vercel-ai-sdk/instrumentation.js"
+    },
     "./openai-agents": {
       "types": "./dist/integrations/openai-agents/index.d.ts",
       "import": "./dist/integrations/openai-agents/index.js",
