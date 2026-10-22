@@ -44,6 +44,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - License changed from MIT to Apache 2.0.
 
 ### Added
+- Claude Agent SDK: the main thread's `chat` spans carry `gen_ai.tool.definitions`,
+  listing the tools the CLI reports at the start of each turn. The CLI gives only
+  tool names, so the definitions have no description or parameters.
 - Vercel AI SDK: `VercelAiSdkInstrumentation`
   (`@genai-otel/core/vercel-ai-sdk/instrumentation`), an OpenTelemetry
   instrumentation that registers `genaiTelemetryIntegration` with the AI SDK, so the

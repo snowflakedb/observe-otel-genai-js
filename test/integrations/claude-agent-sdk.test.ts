@@ -416,6 +416,43 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, ROOT), 'gen_ai.request.reasoning.level')).toBe('high');
   });
 
+  it('lists the tools from init on main thread chat spans only, by the names the model calls', async () => {
+    const h = harness();
+    await run(h, [
+      { ...init(), tools: ['Bash', 'Task', 'mcp__docs__search'] },
+      assistant('msg_1', [delegate('task_1', 'helper')]),
+      assistant('msg_s1', [text('sub')], { parent: 'task_1' }),
+      taskNotification('task_1', 'ok'),
+      result(),
+    ]);
+
+    const mainChat = childrenOf(h, findSpan(h, ROOT), CHAT)[0];
+    const subChat = childrenOf(h, findSpan(h, 'invoke_agent helper'), CHAT)[0];
+    expect(JSON.parse(String(attr(mainChat!, 'gen_ai.tool.definitions')))).toEqual([
+      { type: 'function', name: 'Bash' },
+      { type: 'function', name: 'Agent' },
+      { type: 'extension', name: 'mcp__docs__search' },
+    ]);
+    expect(attr(subChat!, 'gen_ai.tool.definitions')).toBeUndefined();
+  });
+
+  it('takes the tools from the latest init, which starts each turn', async () => {
+    const h = harness();
+    await run(h, [
+      { ...init(), tools: ['Bash'] },
+      assistant('msg_1', [text('one')]),
+      result(),
+      { ...init(), tools: ['Bash', 'mcp__docs__search'] },
+      assistant('msg_2', [text('two')]),
+      result(),
+    ]);
+
+    const names = allSpans(h, CHAT).map((s) =>
+      JSON.parse(String(attr(s, 'gen_ai.tool.definitions'))).map((t: { name: string }) => t.name),
+    );
+    expect(names).toEqual([['Bash'], ['Bash', 'mcp__docs__search']]);
+  });
+
   it('records a custom system prompt, but not a preset', async () => {
     const h = harness();
     const custom = { type: 'custom', prompt: 'you are a release bot' };
@@ -1203,7 +1240,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
 
 describe('Claude Agent SDK adapter: content capture', () => {
   const messages = [
-    init(),
+    { ...init(), tools: ['Bash', 'Agent'] },
     assistant('msg_1', [delegate('task_1', 'worker', 'secret prompt')]),
     assistant('msg_s1', [toolUse('tu_9', 'Bash', { command: 'cat secret' })], { parent: 'task_1' }),
     toolResult('tu_9', 'secret file', { parent: 'task_1' }),
@@ -1237,6 +1274,7 @@ describe('Claude Agent SDK adapter: content capture', () => {
       for (const span of h.spans.getFinishedSpans()) {
         expect(attr(span, 'gen_ai.input.messages')).toBeUndefined();
         expect(attr(span, 'gen_ai.output.messages')).toBeUndefined();
+        expect(attr(span, 'gen_ai.tool.definitions')).toBeUndefined();
         expect(attr(span, 'gen_ai.tool.call.arguments')).toBeUndefined();
         expect(attr(span, 'gen_ai.tool.call.result')).toBeUndefined();
       }

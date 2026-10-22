@@ -176,7 +176,7 @@ Content is written as span attributes in the OTel GenAI 1.37+ structured message
 | `gen_ai.system_instructions` | generation | yes | yes |
 | `gen_ai.input.messages` | generation, `invoke_agent`, `invoke_workflow` | yes, with tool arguments and results removed | yes |
 | `gen_ai.output.messages` | generation, `invoke_agent`, `invoke_workflow` | yes, with tool arguments and results removed | yes |
-| `gen_ai.tool.definitions` | generation, when the request lists tools (OpenAI Chat Completions and Responses, LangChain, the Vercel AI SDK telemetry integration) | `type` and `name` only | adds `description` and `parameters` |
+| `gen_ai.tool.definitions` | generation, when the request lists tools (OpenAI Chat Completions and Responses, LangChain, the Vercel AI SDK telemetry integration, the Claude Agent SDK main thread with names only) | `type` and `name` only | adds `description` and `parameters` |
 | `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | `execute_tool` | no | yes |
 | `gen_ai.retrieval.query.text`, `gen_ai.retrieval.documents` | `retrieval` | no | yes |
 | `gen_ai.embeddings.input_texts` | `embeddings` | yes, if `embeddingCapture.captureInput` is on | same |

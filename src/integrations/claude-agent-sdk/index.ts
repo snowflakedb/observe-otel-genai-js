@@ -41,7 +41,7 @@ import { type Context, context, diag } from '@opentelemetry/api';
 import type { Client } from '../../client.js';
 import { resolveContentCaptureMode } from '../../content/capture.js';
 import { contentCaptureModeFromContext, conversationIdFromContext } from '../../context.js';
-import type { GenerationStart } from '../../models/generation.js';
+import type { GenerationStart, ToolDefinition } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart } from '../../models/message.js';
 import type { TokenUsage } from '../../models/usage.js';
@@ -301,6 +301,8 @@ class AgentRun {
 
   private sessionId: string | undefined;
   private model: string | undefined;
+  /** The main agent's tools, from `init`. The CLI reports names only. */
+  private toolDefinitions: ToolDefinition[] | undefined;
   private compacted = false;
   /** The latest result's cumulative totals, and what earlier resets zeroed. */
   private latestTotals: RunTotals | undefined;
@@ -510,6 +512,7 @@ class AgentRun {
       case 'init':
         this.sessionId = msg.session_id;
         this.model = msg.model;
+        this.toolDefinitions = msg.tools?.map(initToolDefinition);
         // A new turn: an interrupt sent while idle has no result to excuse.
         this.interrupted = false;
         // The CLI is up; the first request goes out now.
@@ -748,7 +751,7 @@ class AgentRun {
       this.client.startToolExecution({
         toolName: name,
         toolCallId: id,
-        toolType: name.startsWith('mcp__') ? 'extension' : 'function',
+        toolType: toolType(name),
         requestProvider: this.provider,
         requestModel: thread.call?.model,
         ...this.identity(thread.subagentName),
@@ -842,10 +845,11 @@ class AgentRun {
     };
   }
 
-  /** Request settings from the caller's options, which only the main thread uses. */
+  /** Request settings that only the main thread uses: subagents have their own. */
   private mainRequestSettings(): Partial<GenerationStart> {
     const { systemPrompt, thinking } = this.queryOptions;
     return {
+      tools: this.toolDefinitions,
       systemPrompt: callerSystemPrompt(systemPrompt),
       thinkingEnabled: thinking?.type === 'enabled' ? true : undefined,
       thinkingBudgetTokens: thinking?.budgetTokens,
@@ -875,6 +879,16 @@ class AgentRun {
 // -----------------------------------------------------------------------------
 // Mapping
 // -----------------------------------------------------------------------------
+
+function toolType(name: string): string {
+  return name.startsWith('mcp__') ? 'extension' : 'function';
+}
+
+/** `init` lists the delegation tool by its old name, `Task`; the model calls it `Agent`. */
+function initToolDefinition(name: string): ToolDefinition {
+  const callName = name === 'Task' ? 'Agent' : name;
+  return { name: callName, type: toolType(callName) };
+}
 
 /**
  * The system prompt the caller wrote in full: a string, or the custom form. A preset

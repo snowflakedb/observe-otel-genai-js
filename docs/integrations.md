@@ -22,7 +22,7 @@ Messages and tool definitions appear only once [content capture](#content-captur
 | Capability | Vercel AI SDK | OpenAI | OpenAI Agents | Anthropic | LangChain | Claude Agent SDK |
 |---|---|---|---|---|---|---|
 | Input and output messages | yes, except `wrapGenerateObject` | yes | yes | yes | yes | yes, rebuilt from the message stream |
-| Tool definitions (`gen_ai.tool.definitions`) | telemetry integration only | yes | OpenAI model paths, from `OpenAIInstrumentation` | — | yes | — |
+| Tool definitions (`gen_ai.tool.definitions`) | telemetry integration only | yes | OpenAI model paths, from `OpenAIInstrumentation` | — | yes | names only, main thread |
 | Request parameters (`temperature`, `top_p`, …) | yes | yes | OpenAI model paths, from `OpenAIInstrumentation` | yes | — | partial: system prompt, effort, thinking |
 | `execute_tool` spans | telemetry integration only | no, tool calls stay in the messages | yes | no, tool calls stay in the messages | yes | yes |
 | Time to first token on streams | `streamText`, `streamObject` and `wrapStreamText` | yes | yes | yes | yes | with `includePartialMessages` |
@@ -705,6 +705,7 @@ invoke_agent <agentName>          one per query() call; claude-agent-sdk when no
 - `gen_ai.provider.name` follows the platform the CLI is told to use: `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_MANTLE` (`aws.bedrock`), `CLAUDE_CODE_USE_VERTEX` (`gcp.vertex_ai`) or `CLAUDE_CODE_USE_FOUNDRY` (`azure.ai.inference`), else `anthropic`. They are read from `options.env` when you set it (it replaces the CLI's environment), and from the process environment otherwise. As in the CLI, only `1`, `true`, `yes` or `on` count as on.
 - `options.effort` becomes `gen_ai.request.reasoning.level` on the run's `invoke_agent` span and the main thread's `chat` spans.
 - A string or custom (`{ type: 'custom', prompt }`) `options.systemPrompt`, and `options.thinking`, go on the main thread's `chat` spans only; subagents have their own. A preset system prompt is not recorded, since the CLI renders it.
+- The main thread's `chat` spans list the tools the CLI reports at the start of each turn as `gen_ai.tool.definitions`. The CLI gives only their names, so there are no descriptions or parameters. MCP tools have type `extension`, as on their `execute_tool` spans. The list is fixed for the turn: it includes tools the CLI holds back behind its tool search, and leaves out MCP tools from a server that connects mid-turn until the next turn.
 - A streamed prompt (an async iterable of user messages, passed to `query()` or `streamInput()`) is passed to the SDK unchanged, and the run's input lists every user message. A user message shows up in the `chat` spans' conversation once the SDK has read it, which can be before the call that answers it.
 - After the CLI compacts the conversation, the run and every later `chat` span carry `gen_ai.conversation.compacted`. Later `chat` inputs start after the compaction, since the summary never reaches the process. A `/clear` also starts them over, and ends the compacted flag.
 

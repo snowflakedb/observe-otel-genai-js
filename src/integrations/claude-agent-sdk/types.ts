@@ -77,6 +77,8 @@ export interface AgentMessage {
   // system/init
   session_id?: string;
   model?: string;
+  /** The tools the main agent can call this turn, MCP tools included. */
+  tools?: string[];
 
   // stream_event
   /** Carried on `message_start`. */
