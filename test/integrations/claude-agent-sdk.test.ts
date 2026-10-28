@@ -1435,6 +1435,23 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(findSpan(h, ROOT).status.message).toBe('cli died');
   });
 
+  it('serializes a plain-object stream error instead of [object Object]', async () => {
+    const h = harness();
+    const failure = {
+      type: 'api_error',
+      message: 'An error occurred while streaming the response',
+    };
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield init();
+        throw failure;
+      })();
+
+    await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toBe(failure);
+    expect(findSpan(h, ROOT).status.message).toBe(failure.message);
+    expect(findSpan(h, ROOT).status.message).not.toContain('[object Object]');
+  });
+
   it('fails a call cut off mid-stream when the stream breaks', async () => {
     const h = harness();
     const query = (_params: AgentQueryParams) =>

@@ -35,6 +35,7 @@ import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitGenerationContent } from '../content/sink.js';
 import type { HandedDown } from '../context.js';
 import { ValidationError } from '../errors.js';
+import { serializeError } from '../errors/serialize.js';
 import type { Generation, GenerationStart, ModelRef } from '../models/generation.js';
 import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
@@ -237,7 +238,7 @@ export class GenerationRecorder extends RecorderBase {
       completedAt: completedAtMs,
       tags,
       metadata,
-      callError: this.callError != null ? stringifyForCallError(this.callError) : '',
+      callError: this.callError != null ? serializeError(this.callError) : '',
       parentGenerationIds: this.normalizeParentIds(seed.parentGenerationIds),
       effectiveVersion: result.effectiveVersion ?? seed.effectiveVersion ?? '',
     };
@@ -323,14 +324,4 @@ function countToolCalls(messages: Message[]): number {
     }
   }
   return n;
-}
-
-function stringifyForCallError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  try {
-    return String(err);
-  } catch {
-    return '';
-  }
 }
