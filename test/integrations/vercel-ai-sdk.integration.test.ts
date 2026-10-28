@@ -18,10 +18,12 @@
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   APICallError,
+  type Tool,
   embed,
   embedMany,
   generateObject,
   generateText,
+  jsonSchema,
   registerTelemetry,
   streamObject,
   streamText,
@@ -1329,5 +1331,264 @@ describe('genaiTelemetryIntegration recordInputs / recordOutputs', () => {
     const toolSpan = oneByName(h, 'execute_tool');
     expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
     expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gen_ai.output.messages carries only what the model returned
+// ---------------------------------------------------------------------------
+
+// The two-step tool loop seen in a bug-bash trace: step 0 calls `lookup_order`,
+// the AI SDK runs the tool, step 1 answers in text.
+const TOOL_CALL_ID = 'toolu_bdrk_013vjehTnYdzZGbFW3u8zrn4';
+const ORDER = { item: 'Ethiopia Yirgacheffe, 1 kg', status: 'delivered', total: 38 };
+const ANSWER =
+  'Your order 1001 has been delivered! It was for 1 kg of Ethiopia Yirgacheffe coffee beans totaling $38.';
+
+const lookupOrderTools = (execute: () => Promise<unknown> = async () => ORDER) => ({
+  lookup_order: tool({
+    description: 'Look up an order by id',
+    inputSchema: z.object({ order_id: z.string() }),
+    execute,
+  }),
+});
+
+const LOOKUP_CALL = {
+  type: 'tool-call',
+  toolCallId: TOOL_CALL_ID,
+  toolName: 'lookup_order',
+  input: '{"order_id":"1001"}',
+} as const;
+
+/** Streaming two-step model: step 0 calls lookup_order, step 1 answers. */
+function lookupOrderStreamModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'amazon-bedrock',
+    modelId: 'claude-haiku-4-5',
+    doStream: async () => {
+      call += 1;
+      const parts: unknown[] =
+        call === 1
+          ? [
+              { type: 'stream-start', warnings: [] },
+              LOOKUP_CALL,
+              { type: 'finish', finishReason: v7Finish('tool-calls'), usage: v7Usage(40, 10) },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: '0' },
+              { type: 'text-delta', id: '0', delta: ANSWER },
+              { type: 'text-end', id: '0' },
+              { type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(60, 20) },
+            ];
+      return {
+        stream: new ReadableStream({
+          start(c) {
+            for (const p of parts) c.enqueue(p as never);
+            c.close();
+          },
+        }),
+      };
+    },
+  });
+}
+
+/** Non-streaming equivalent of {@link lookupOrderStreamModel}. */
+function lookupOrderGenerateModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'amazon-bedrock',
+    modelId: 'claude-haiku-4-5',
+    doGenerate: async () => {
+      call += 1;
+      return call === 1
+        ? {
+            content: [LOOKUP_CALL],
+            finishReason: v7Finish('tool-calls'),
+            usage: v7Usage(40, 10),
+            warnings: [],
+          }
+        : {
+            content: [{ type: 'text', text: ANSWER }],
+            finishReason: v7Finish('stop'),
+            usage: v7Usage(60, 20),
+            warnings: [],
+          };
+    },
+  });
+}
+
+interface ParsedMessage {
+  role: string;
+  parts: Array<Record<string, unknown>>;
+  finish_reason?: string;
+}
+
+const parseMessages = (raw: unknown): ParsedMessage[] | undefined =>
+  raw === undefined ? undefined : (JSON.parse(raw as string) as ParsedMessage[]);
+
+const LOOKUP_CALL_PART = {
+  type: 'tool_call',
+  name: 'lookup_order',
+  id: TOOL_CALL_ID,
+  arguments: { order_id: '1001' },
+};
+const TOOL_CALL_OUTPUT: ParsedMessage[] = [
+  { role: 'assistant', parts: [LOOKUP_CALL_PART], finish_reason: 'tool-calls' },
+];
+const ANSWER_OUTPUT: ParsedMessage[] = [
+  { role: 'assistant', parts: [{ type: 'text', content: ANSWER }], finish_reason: 'stop' },
+];
+
+const twoSteps = (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never;
+const oneStep = (({ steps }: { steps: unknown[] }) => steps.length >= 1) as never;
+
+describe('genaiTelemetryIntegration output messages are model output only', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const outputOf = (span: ReturnType<typeof oneByName>) =>
+    parseMessages(span?.attributes[ATTR_OUTPUT_MESSAGES]);
+
+  function expectTwoStepToolLoop(): void {
+    const [step0, step1] = byStart(byName(h, 'chat'));
+
+    // Step 0: only the tool call. The tool ran after this model call ended.
+    expect(outputOf(step0)).toEqual(TOOL_CALL_OUTPUT);
+    // Step 1: only the final text answer.
+    expect(outputOf(step1)).toEqual(ANSWER_OUTPUT);
+
+    // Step 1's input still carries the tool round-trip sent to the model.
+    const step1In = parseMessages(step1?.attributes[ATTR_INPUT_MESSAGES]) ?? [];
+    expect(step1In.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(step1In[1]?.parts).toEqual([LOOKUP_CALL_PART]);
+    expect(step1In[2]?.parts).toEqual([
+      { type: 'tool_call_response', id: TOOL_CALL_ID, response: ORDER },
+    ]);
+
+    // Agent: the final answer alone, without step 0's tool call or the result.
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(ANSWER_OUTPUT);
+
+    // The tool round-trip is on the execute_tool span.
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(JSON.parse(String(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]))).toEqual({
+      order_id: '1001',
+    });
+    expect(JSON.parse(String(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]))).toEqual(ORDER);
+  }
+
+  it('streamText: chat and agent outputs leave out the tool result', async () => {
+    await drain(
+      streamText({
+        model: lookupOrderStreamModel(),
+        prompt: 'order id 1001, tell me the status',
+        tools: lookupOrderTools(),
+        stopWhen: twoSteps,
+        telemetry: { functionId: 'bean-there-support' },
+      }),
+    );
+    expectTwoStepToolLoop();
+  });
+
+  it('generateText: chat and agent outputs leave out the tool result', async () => {
+    const out = await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(),
+      stopWhen: twoSteps,
+      telemetry: { functionId: 'bean-there-support' },
+    });
+    expect(out.text).toBe(ANSWER);
+    expectTwoStepToolLoop();
+  });
+
+  it('leaves a failed tool out of the step output', async () => {
+    await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(async () => {
+        throw new Error('orders db down');
+      }),
+      stopWhen: twoSteps,
+    });
+    const [step0] = byStart(byName(h, 'chat'));
+    expect(outputOf(step0)).toEqual(TOOL_CALL_OUTPUT);
+    expect(oneByName(h, 'execute_tool')?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records the final tool call as the agent output when the run stops on it', async () => {
+    await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(),
+      stopWhen: oneStep,
+    });
+    expect(outputOf(oneByName(h, 'chat'))).toEqual(TOOL_CALL_OUTPUT);
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(TOOL_CALL_OUTPUT);
+  });
+
+  it("keeps a provider-executed tool's result in the model's message", async () => {
+    // A built-in tool (e.g. web search) runs at the provider, so its result is
+    // part of what the model returned.
+    const model = new MockLanguageModelV3({
+      provider: 'anthropic.messages',
+      modelId: 'claude-haiku-4-5',
+      doGenerate: async () => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'srv1',
+            toolName: 'web_search',
+            input: '{"query":"otel"}',
+            providerExecuted: true,
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'srv1',
+            toolName: 'web_search',
+            result: [{ url: 'https://opentelemetry.io' }],
+          },
+          { type: 'text', text: 'Found it.' },
+        ],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(5, 5),
+        warnings: [],
+      }),
+    });
+    const webSearch = {
+      type: 'provider' as const,
+      id: 'anthropic.web_search',
+      args: {},
+      isProviderExecuted: true,
+      inputSchema: jsonSchema({ type: 'object' }),
+      outputSchema: jsonSchema({}),
+    } as Tool;
+    await generateText({ model, prompt: 'search otel', tools: { web_search: webSearch } });
+
+    const expected: ParsedMessage[] = [
+      {
+        role: 'assistant',
+        parts: [
+          { type: 'tool_call', name: 'web_search', id: 'srv1', arguments: { query: 'otel' } },
+          {
+            type: 'tool_call_response',
+            id: 'srv1',
+            response: [{ url: 'https://opentelemetry.io' }],
+          },
+          { type: 'text', content: 'Found it.' },
+        ],
+        finish_reason: 'stop',
+      },
+    ];
+    expect(outputOf(oneByName(h, 'chat'))).toEqual(expected);
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(expected);
   });
 });

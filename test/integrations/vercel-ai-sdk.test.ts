@@ -240,6 +240,30 @@ describe('Vercel AI SDK adapter — wrapper messages', () => {
     ]);
   });
 
+  it('wrapGenerateText leaves the tool result out when the run stops on a tool step', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [{ type: 'tool-call', toolCallId: 't1', toolName: 'ping', input: '{}' }],
+        finishReason: v7Finish('tool-calls'),
+        usage: v7Usage(1, 1),
+        warnings: [],
+      }),
+    });
+    await wrapGenerateText(h.client, {
+      model,
+      prompt: 'ping',
+      tools: { ping: tool({ inputSchema: z.object({}), execute: async () => 'pong' }) },
+    });
+
+    expect(messagesOf(ATTR_OUTPUT_MESSAGES)).toEqual([
+      {
+        role: 'assistant',
+        parts: [{ type: 'tool_call', id: 't1', name: 'ping', arguments: {} }],
+        finish_reason: 'tool-calls',
+      },
+    ]);
+  });
+
   it('wrapGenerateText records the input of a call that fails', async () => {
     const model = new MockLanguageModelV3({
       doGenerate: async () => {

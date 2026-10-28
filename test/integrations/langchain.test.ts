@@ -26,6 +26,7 @@
  */
 
 import { Serializable } from '@langchain/core/load/serializable';
+import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -2593,5 +2594,98 @@ describe('LangChain adapter — identity', () => {
       expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('scoped-conv');
       expect(span.attributes[ATTR_USER_ID]).toBe('scoped-user');
     }
+  });
+});
+
+describe('LangChain adapter — agent output never carries tool results', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+  });
+  afterEach(async () => {
+    await h.shutdown();
+  });
+
+  const toolCall = { id: 'call-1', name: 'lookup_order', args: { order_id: '1001' } };
+  const orderJson = '{"item":"Ethiopia Yirgacheffe, 1 kg","status":"delivered","total":38}';
+
+  function agentSpan() {
+    return h.spans.getFinishedSpans().find((s) => s.name.startsWith('invoke_agent'));
+  }
+  function agentOutput(): Array<{ role: string; parts: unknown[] }> | undefined {
+    const raw = agentSpan()?.attributes[ATTR_OUTPUT_MESSAGES];
+    return raw === undefined ? undefined : JSON.parse(raw as string);
+  }
+
+  it('uses the last AI message when the graph state ends on a ToolMessage', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    // e.g. a `returnDirect` tool, or an interrupt right after the tools node.
+    const messages = [
+      new HumanMessage('order id 1001, tell me the status'),
+      new AIMessage({ content: '', tool_calls: [toolCall] }),
+      new ToolMessage({ content: orderJson, tool_call_id: 'call-1', name: 'lookup_order' }),
+    ];
+    await handler.handleChainStart?.(chainSerialized as never, { messages } as never, 'c1');
+    await handler.handleChainEnd?.({ messages } as never, 'c1');
+
+    expect(agentOutput()).toEqual([
+      {
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool_call',
+            id: 'call-1',
+            name: 'lookup_order',
+            arguments: { order_id: '1001' },
+          },
+        ],
+        finish_reason: 'stop',
+      },
+    ]);
+    // Inputs are history, so they keep the tool message.
+    const input = JSON.parse(String(agentSpan()?.attributes[ATTR_INPUT_MESSAGES]));
+    expect(input.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'tool']);
+  });
+
+  it('emits no output when the trailing tool messages follow a non-AI message', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const messages = [
+      new HumanMessage('hi'),
+      new ToolMessage({ content: orderJson, tool_call_id: 'call-1' }),
+    ];
+    await handler.handleChainStart?.(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd?.({ messages } as never, 'c1');
+
+    expect(agentOutput()).toBeUndefined();
+  });
+
+  it('emits no output for a chain whose output is a bare ToolMessage', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    // LangChain passes a returned message object through to handleChainEnd as is.
+    const output = new ToolMessage({ content: orderJson, tool_call_id: 'call-1' });
+    await handler.handleChainStart?.(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd?.(output as never, 'c1');
+
+    expect(agentOutput()).toBeUndefined();
+  });
+
+  it('still maps the final AI answer after a tool round-trip', async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const messages = [
+      new HumanMessage('order id 1001, tell me the status'),
+      new AIMessage({ content: '', tool_calls: [toolCall] }),
+      new ToolMessage({ content: orderJson, tool_call_id: 'call-1' }),
+      new AIMessage('Your order 1001 has been delivered!'),
+    ];
+    await handler.handleChainStart?.(chainSerialized as never, {} as never, 'c1');
+    await handler.handleChainEnd?.({ messages } as never, 'c1');
+
+    expect(agentOutput()).toEqual([
+      {
+        role: 'assistant',
+        parts: [{ type: 'text', content: 'Your order 1001 has been delivered!' }],
+        finish_reason: 'stop',
+      },
+    ]);
   });
 });

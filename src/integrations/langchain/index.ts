@@ -548,16 +548,30 @@ function chainInputToMessages(inputs: ChainValues | undefined): Message[] {
  * of the graph state (empty / unrenderable → `[]`). Otherwise a string, or a
  * string `output`/`text` field, becomes one assistant message; any other shape
  * is JSON-encoded. Empty output returns `[]`.
+ *
+ * Tool results are never output. When the graph ends on tool messages (a
+ * `returnDirect` tool, an interrupt after the tools node) the answer is the AI
+ * message that requested them, and a chain that returns a bare `ToolMessage` has
+ * no model output.
  */
 function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   if (output == null) return [];
   if (typeof output === 'string') return output === '' ? [] : [assistantTextMessage(output)];
   if (typeof output !== 'object') return [];
+  if (isLcToolMessage(output)) return [];
 
   const rec = output as Record<string, unknown>;
   if (Array.isArray(rec.messages)) {
     if (rec.messages.length === 0) return [];
-    return mapBaseMessages([rec.messages[rec.messages.length - 1]]);
+    let end = rec.messages.length;
+    while (end > 0 && isLcToolMessage(rec.messages[end - 1])) end--;
+    if (end === rec.messages.length) {
+      return mapBaseMessages([rec.messages[rec.messages.length - 1]]);
+    }
+    // Trailing tool messages were skipped: only a preceding AI message (the one
+    // that requested those calls) is model output; otherwise emit none.
+    const last = rec.messages[end - 1];
+    return end > 0 && lcMessageType(last) === 'ai' ? mapBaseMessages([last]) : [];
   }
 
   const candidate = rec.output ?? rec.text;
@@ -584,6 +598,18 @@ interface LCBaseMessage {
   content?: unknown;
   tool_calls?: Array<{ id?: string; name?: string; args?: unknown }>;
   tool_call_id?: string;
+}
+
+/** The LangChain message type (`human`, `ai`, `tool`, …), when `raw` is a message. */
+function lcMessageType(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const getType = (raw as LCBaseMessage)._getType;
+  return typeof getType === 'function' ? getType.call(raw) : undefined;
+}
+
+/** True for a LangChain `ToolMessage` or legacy `FunctionMessage`. */
+function isLcToolMessage(raw: unknown): boolean {
+  return lcRole(lcMessageType(raw)) === 'tool';
 }
 
 function lcRole(t: string | undefined): Message['role'] {
@@ -635,7 +661,7 @@ function mapBaseMessages(messages: readonly unknown[]): Message[] {
   for (const raw of messages) {
     if (!raw || typeof raw !== 'object') continue;
     const msg = raw as LCBaseMessage;
-    const role = lcRole(typeof msg._getType === 'function' ? msg._getType() : undefined);
+    const role = lcRole(lcMessageType(msg));
     if (role === 'tool') {
       out.push({
         role: 'tool',
