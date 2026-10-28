@@ -40,6 +40,7 @@ import {
 import { type HandedDown, contentCaptureModeFromContext, setScope } from '../context.js';
 import type { ErrorClassifier } from '../errors/classify.js';
 import { classifyError } from '../errors/classify.js';
+import { serializeError } from '../errors/serialize.js';
 import type { GenAIMetrics } from '../metrics/histograms.js';
 import {
   ATTR_ERROR_CATEGORY,
@@ -111,7 +112,7 @@ export abstract class RecorderBase {
     try {
       await this.finalize();
     } catch (err) {
-      this.localError = err instanceof Error ? err : new Error(String(err));
+      this.localError = recordedException(err);
       // Best-effort: end the span even if finalize threw.
       try {
         this.span.end();
@@ -238,7 +239,7 @@ export abstract class RecorderBase {
     }
     const classifier = this.host.errorClassifier ?? classifyError;
     const category = (classifier(err) || ERR_CATEGORY_SDK) as ErrorCategory;
-    const statusMessage = stripped ? category : stringifyError(err);
+    const statusMessage = stripped ? category : serializeError(err);
     return {
       errorType: this.errorTypeOverride ?? defaultType,
       errorCategory: category,
@@ -255,7 +256,7 @@ export abstract class RecorderBase {
     if (err == null) return;
     if (mode === 'metadata_only') return;
     try {
-      this.span.recordException(err instanceof Error ? err : new Error(String(err)));
+      this.span.recordException(recordedException(err));
     } catch {
       /* never let exception-recording crash the recorder */
     }
@@ -265,7 +266,7 @@ export abstract class RecorderBase {
   protected recordSdkException(err: unknown): void {
     if (err == null) return;
     try {
-      this.span.recordException(err instanceof Error ? err : new Error(String(err)));
+      this.span.recordException(recordedException(err));
     } catch {
       /* ignore */
     }
@@ -285,14 +286,9 @@ export abstract class RecorderBase {
   }
 }
 
-function stringifyError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  try {
-    return String(err);
-  } catch {
-    return '';
-  }
+/** A real Error is recorded as itself so its name and stack survive. */
+function recordedException(err: unknown): Error {
+  return err instanceof Error ? err : new Error(serializeError(err));
 }
 
 /** Converts a Date | number (ms epoch) into a Date for OTel's span.end. */

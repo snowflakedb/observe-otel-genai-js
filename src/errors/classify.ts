@@ -33,6 +33,7 @@ import {
   ERR_CATEGORY_TIMEOUT,
   type ErrorCategory,
 } from '../semconv.js';
+import { readErrorMessage } from './serialize.js';
 
 const STATUS_CODE_FIELDS = ['status', 'statusCode', 'status_code', 'Status', 'StatusCode'] as const;
 const STATUS_REGEX = /\b([1-5][0-9][0-9])\b/g;
@@ -140,10 +141,18 @@ function asStatusCode(value: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Text scanned for "timeout" / "deadline exceeded" and, when no status field
+ * matched, for a 3-digit HTTP code.
+ *
+ * This is the string message only. A JSON dump of the whole value would let an
+ * incidental number in the payload be read as a status. Numbers and other
+ * primitives still stringify, which is how a bare status code is recognized.
+ */
 function stringify(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (value instanceof Error) return value.message;
+  const message = readErrorMessage(value);
+  if (message != null) return message;
+  if (value == null || typeof value === 'object') return '';
   try {
     return String(value);
   } catch {

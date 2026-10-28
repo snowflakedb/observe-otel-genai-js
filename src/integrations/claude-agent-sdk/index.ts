@@ -41,6 +41,7 @@ import { type Context, context, diag } from '@opentelemetry/api';
 import type { Client } from '../../client.js';
 import { resolveContentCaptureMode } from '../../content/capture.js';
 import { contentCaptureModeFromContext, conversationIdFromContext } from '../../context.js';
+import { serializeError } from '../../errors/serialize.js';
 import type { GenerationStart, ToolDefinition } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart } from '../../models/message.js';
@@ -1017,7 +1018,7 @@ function resultError(msg: AgentMessage): Error | undefined {
 }
 
 function asError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
+  return err instanceof Error ? err : new Error(serializeError(err));
 }
 
 function pickString(v: unknown): string | undefined {

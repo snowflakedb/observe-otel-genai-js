@@ -77,4 +77,24 @@ describe('classifyError', () => {
     expect(classifyError(new Error('deadline exceeded'))).toBe(ERR_CATEGORY_TIMEOUT);
     expect(classifyError(new Error('socket timeout'))).toBe(ERR_CATEGORY_TIMEOUT);
   });
+
+  it('returns rate_limit when a message accompanies status 429', () => {
+    expect(classifyError({ status: 429, message: 'slow down' })).toBe(ERR_CATEGORY_RATE_LIMIT);
+  });
+
+  it('reads timeout text from a string message or error field', () => {
+    expect(classifyError({ message: 'deadline exceeded' })).toBe(ERR_CATEGORY_TIMEOUT);
+    expect(classifyError({ error: 'deadline exceeded' })).toBe(ERR_CATEGORY_TIMEOUT);
+  });
+
+  it('reads an HTTP status from a string message', () => {
+    expect(classifyError({ message: 'HTTP 502 Bad Gateway' })).toBe(ERR_CATEGORY_SERVER);
+  });
+
+  it('does not classify a JSON payload from an incidental 3-digit number', () => {
+    expect(classifyError({ code: 503, reason: 'overloaded' })).toBe(ERR_CATEGORY_SDK);
+    expect(classifyError({ message: { detail: 'deadline exceeded' }, code: 503 })).toBe(
+      ERR_CATEGORY_SDK,
+    );
+  });
 });
