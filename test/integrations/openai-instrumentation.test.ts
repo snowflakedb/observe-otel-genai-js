@@ -55,6 +55,7 @@ import {
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
@@ -178,6 +179,7 @@ describe('OpenAIInstrumentation', () => {
     expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(7);
     expect(span.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
     expect(span.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(2);
+    expect(span.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(1);
     expect(span.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
   });
 

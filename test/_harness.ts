@@ -40,6 +40,7 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 import { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
+import { METRIC_ATTR_TOKEN_TYPE, METRIC_TOKEN_USAGE } from '../src/semconv.js';
 
 export interface Harness {
   client: Client;
@@ -128,4 +129,13 @@ export function createHarness(input?: ClientConfig): Harness {
  */
 export function findSpan(spans: InMemorySpanExporter, predicate: (name: string) => boolean) {
   return spans.getFinishedSpans().find((s) => predicate(s.name));
+}
+
+/** The `gen_ai.token.type` values recorded on the token usage histogram. */
+export async function tokenTypes(h: Harness): Promise<unknown[]> {
+  return (await h.collectMetrics())
+    .flatMap((rm) => rm.scopeMetrics)
+    .flatMap((sm) => sm.metrics)
+    .filter((m) => m.descriptor.name === METRIC_TOKEN_USAGE)
+    .flatMap((m) => m.dataPoints.map((p) => p.attributes[METRIC_ATTR_TOKEN_TYPE]));
 }

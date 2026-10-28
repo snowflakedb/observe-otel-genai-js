@@ -262,7 +262,7 @@ interface ChatUsageShape {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
   completion_tokens_details?: { reasoning_tokens?: number };
 }
 
@@ -273,6 +273,7 @@ function mapUsage(usage: ChatUsageShape | undefined) {
     outputTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,
     cacheReadInputTokens: usage.prompt_tokens_details?.cached_tokens,
+    cacheWriteInputTokens: usage.prompt_tokens_details?.cache_write_tokens,
     reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
   };
 }

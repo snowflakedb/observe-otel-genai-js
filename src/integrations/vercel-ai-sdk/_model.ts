@@ -85,10 +85,21 @@ export function embedModelRefFromAi(model: unknown): ModelRef {
   return modelRefFromAi(model);
 }
 
+/** AI SDK v7 usage, which nests cache and reasoning counts under the token details. */
+export interface AiUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+  outputTokenDetails?: { reasoningTokens?: number };
+  promptTokens?: number; // before AI SDK v5
+  completionTokens?: number; // before AI SDK v5
+}
+
 /**
- * Maps AI SDK usage (v7 top-level shape) to a partial `TokenUsage` object.
- * Handles both the legacy `promptTokens`/`completionTokens` (v5) and
- * current `inputTokens`/`outputTokens` (v6/v7) names.
+ * Maps AI SDK usage (v7 shape) to a partial `TokenUsage` object.
+ * Handles both the legacy `promptTokens`/`completionTokens` (v4) and
+ * current `inputTokens`/`outputTokens` (v5 and later) names.
  */
 export function mapAiUsage(usage: unknown):
   | {
@@ -101,14 +112,14 @@ export function mapAiUsage(usage: unknown):
     }
   | undefined {
   if (!usage || typeof usage !== 'object') return undefined;
-  const u = usage as Record<string, number | undefined>;
+  const u = usage as AiUsage;
   return {
     inputTokens: u.promptTokens ?? u.inputTokens,
     outputTokens: u.completionTokens ?? u.outputTokens,
     totalTokens: u.totalTokens,
-    cacheReadInputTokens: u.cacheReadInputTokens,
-    cacheWriteInputTokens: u.cacheCreationInputTokens,
-    reasoningTokens: u.reasoningTokens,
+    cacheReadInputTokens: u.inputTokenDetails?.cacheReadTokens,
+    cacheWriteInputTokens: u.inputTokenDetails?.cacheWriteTokens,
+    reasoningTokens: u.outputTokenDetails?.reasoningTokens,
   };
 }
 

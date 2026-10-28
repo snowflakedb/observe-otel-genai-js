@@ -259,6 +259,7 @@ interface AnthropicUsageShape {
   output_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  output_tokens_details?: { thinking_tokens?: number } | null;
 }
 
 function mapAnthropicUsage(usage: AnthropicUsageShape | undefined) {
@@ -268,6 +269,7 @@ function mapAnthropicUsage(usage: AnthropicUsageShape | undefined) {
     outputTokens: usage.output_tokens,
     cacheWriteInputTokens: usage.cache_creation_input_tokens,
     cacheReadInputTokens: usage.cache_read_input_tokens,
+    reasoningTokens: usage.output_tokens_details?.thinking_tokens,
   };
 }
 

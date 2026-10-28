@@ -39,8 +39,11 @@ import {
   ATTR_RESPONSE_MODEL,
   ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
   ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
@@ -48,18 +51,22 @@ import { type Harness, createHarness } from '../_harness.js';
 // AI SDK v7 reports usage as a nested provider shape; the SDK flattens
 // `inputTokens.total` / `outputTokens.total` into the top-level
 // `result.usage.inputTokens` / `.outputTokens` that the adapter reads.
-function v7Usage(inputTokens: number, outputTokens: number) {
+function v7Usage(
+  inputTokens: number,
+  outputTokens: number,
+  details: { cacheRead?: number; cacheWrite?: number; reasoning?: number } = {},
+) {
   return {
     inputTokens: {
       total: inputTokens,
       noCache: undefined,
-      cacheRead: undefined,
-      cacheWrite: undefined,
+      cacheRead: details.cacheRead,
+      cacheWrite: details.cacheWrite,
     },
     outputTokens: {
       total: outputTokens,
       text: undefined,
-      reasoning: undefined,
+      reasoning: details.reasoning,
     },
   };
 }
@@ -110,6 +117,24 @@ describe('Vercel AI SDK adapter — wrapGenerateText', () => {
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
     // Content capture is off by default.
     expect(span?.attributes).not.toHaveProperty(ATTR_INPUT_MESSAGES);
+  });
+
+  it('records cache and reasoning token counts from the AI SDK result', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'hello' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(20, 9, { cacheRead: 6, cacheWrite: 2, reasoning: 5 }),
+        warnings: [],
+      }),
+    });
+
+    await wrapGenerateText(h.client, { model, prompt: 'hi' });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(6);
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(2);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(5);
   });
 
   it('records call errors via setCallError when the provider throws', async () => {

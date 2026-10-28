@@ -244,6 +244,23 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the graph state ends on `ToolMessage`s (a `returnDirect` tool, an interrupt
   after the tools node), the output is the AI message that requested the calls;
   a chain that returns a bare `ToolMessage` records no output messages.
+- LangChain adapter: `chat` spans now record reasoning tokens as
+  `gen_ai.usage.reasoning.output_tokens`, and `gen_ai.client.token.usage` counts
+  them as `reasoning`. LangChain reports them in the message's
+  `usage_metadata.output_token_details.reasoning` (for example `ChatOpenAI` on a
+  reasoning model). Before, the adapter did not read them.
+- Vercel AI SDK: `chat` and `generate_content` spans, from both the telemetry
+  integration and the wrappers, now record cache-read, cache-write and reasoning
+  tokens, and `gen_ai.client.token.usage` counts them. AI SDK v7 reports them
+  under `usage.inputTokenDetails` and `usage.outputTokenDetails`. Before, the
+  adapter read field names that no AI SDK version has, so these counts were
+  always missing.
+- Anthropic: `chat` spans now record reasoning tokens from
+  `usage.output_tokens_details.thinking_tokens`, for normal and streamed calls.
+  Before, the adapter did not read them.
+- OpenAI: Chat Completions spans now record cache-write tokens from
+  `usage.prompt_tokens_details.cache_write_tokens`, as Responses spans already
+  did. Before, the adapter did not read them.
 - Claude Agent SDK: `ClaudeAgentSdkInstrumentation` now also patches the
   `@anthropic-ai/claude-agent-sdk/core` entry, which the SDK ships from 0.3.282.
   Before, a `query()` imported from `/core` was not traced.

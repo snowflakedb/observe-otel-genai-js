@@ -167,7 +167,7 @@ export function chatCompletion(
       prompt_tokens: 7,
       completion_tokens: 3,
       total_tokens: 10,
-      prompt_tokens_details: { cached_tokens: 2 },
+      prompt_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 },
       completion_tokens_details: { reasoning_tokens: 1 },
     },
   };
