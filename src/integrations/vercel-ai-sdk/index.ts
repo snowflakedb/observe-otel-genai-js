@@ -62,7 +62,7 @@ import {
 
 import type { Client } from '../../client.js';
 import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
-import { mapCallPrompt, mapStepContent, toAgentInputMessages } from './_map.js';
+import { mapCallPrompt, mapStepOutput, toAgentInputMessages } from './_map.js';
 import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
@@ -350,8 +350,8 @@ function systemPromptOf(params: GenerateTextParams | StreamTextParams): string |
 }
 
 /** The reply of the call's last step; earlier steps' tool calls led up to it. */
-function finalReply(steps: ReadonlyArray<{ content: Parameters<typeof mapStepContent>[0] }>) {
-  return mapStepContent(steps.at(-1)?.content ?? []);
+function finalReply(steps: ReadonlyArray<{ content: Parameters<typeof mapStepOutput>[0] }>) {
+  return mapStepOutput(steps.at(-1)?.content ?? []);
 }
 
 /**

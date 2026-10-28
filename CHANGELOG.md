@@ -229,6 +229,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
+- Vercel AI SDK: `gen_ai.output.messages` holds only what the model returned.
+  A `chat` span's output is the step's text, reasoning and tool calls; the
+  `invoke_agent` span's output is the final step's; `wrapGenerateText` and
+  `wrapStreamText` follow the same rule. Before, the results and errors of the
+  app's tools, which the AI SDK runs inside the step after the model call ended,
+  came out as a trailing `tool` message, and the `invoke_agent` span merged every
+  step's tool calls and results into its output. Tool results stay on the
+  `execute_tool` span and in the next `chat` span's input messages. Results of
+  tools the provider runs itself (`providerExecuted`, such as web search) are
+  model output and stay, inside the assistant message. This changes the shape
+  of recorded output messages for tool loops.
+- LangChain adapter: a chain's output messages never include a tool result. When
+  the graph state ends on `ToolMessage`s (a `returnDirect` tool, an interrupt
+  after the tools node), the output is the AI message that requested the calls;
+  a chain that returns a bare `ToolMessage` records no output messages.
 - Claude Agent SDK: `ClaudeAgentSdkInstrumentation` now also patches the
   `@anthropic-ai/claude-agent-sdk/core` entry, which the SDK ships from 0.3.282.
   Before, a `query()` imported from `/core` was not traced.

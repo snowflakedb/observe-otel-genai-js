@@ -64,7 +64,7 @@ import {
   type AiToolExecutionStartEvent,
   mapModelMessages,
   mapProviderPrompt,
-  mapStepContent,
+  mapStepOutput,
 } from './_map.js';
 import {
   type RequestParams,
@@ -155,6 +155,11 @@ interface OpState {
   streamed: boolean;
   steps: Map<number, StepState>;
   latestStep?: StepState;
+  /**
+   * Output of the step that finished last. The final step's output is the agent's
+   * answer; onEnd's `content` joins every step's, tool results included.
+   */
+  lastStepOutput?: Message[];
   tools: Map<string, ToolRec>;
   closed: boolean;
 }
@@ -346,12 +351,14 @@ class GenaiTelemetry {
   async onStepEnd(event: AiStepFinishEvent): Promise<void> {
     const op = this.get(event.callId);
     if (!op) return;
+    const output = this.recordOutputs(event) ? mapStepOutput(event.content) : undefined;
+    op.lastStepOutput = output;
     const step = op.steps.get(event.stepNumber);
     op.steps.delete(event.stepNumber);
     if (op.latestStep === step) op.latestStep = undefined;
     if (!step) return;
     step.rec.setResult({
-      output: this.recordOutputs(event) ? mapStepContent(event.content) : undefined,
+      output,
       usage: mapAiUsage(event.usage),
       stopReason: event.finishReason,
       responseId: event.response?.id,
@@ -413,9 +420,15 @@ class GenaiTelemetry {
     if (this.embedOps.delete(event.callId)) return;
     const op = this.get(event.callId);
     if (!op) return;
-    if (op.agent && this.recordOutputs(event) && Array.isArray(event.content)) {
-      const output = mapStepContent(event.content);
-      if (output.length > 0) op.agent.setOutput(output);
+    if (op.agent && this.recordOutputs(event)) {
+      // The agent's answer is the final step's model output: never earlier steps'
+      // parts, never the app's tool results.
+      const output = op.lastStepOutput?.length
+        ? op.lastStepOutput
+        : event.text
+          ? [assistantTextMessage(event.text)]
+          : undefined;
+      if (output) op.agent.setOutput(output);
     }
     if (op.agent && event.finishReason) op.agent.setStopReason(event.finishReason);
     await this.closeOp(event.callId, op);

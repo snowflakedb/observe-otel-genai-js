@@ -59,6 +59,8 @@ export interface AiContentPart {
   input?: unknown;
   output?: unknown;
   error?: unknown;
+  /** Set on tool calls and results a provider ran itself (e.g. web search). */
+  providerExecuted?: boolean;
 }
 
 export interface AiModelMessage {
@@ -210,7 +212,9 @@ export interface AiOperationStartEvent extends AiCallSettings {
  */
 export interface AiOperationEndEvent {
   callId: string;
+  /** Every step's content joined, the app's tool results included. */
   content?: AiContentPart[];
+  /** The final step's text. */
   text?: string;
   finishReason?: string;
   usage?: unknown;
@@ -346,25 +350,30 @@ export function mapContentParts(content: AiContentPart[]): Part[] {
 }
 
 /**
- * Converts `StepResult.content[]` to genai-otel output `Message[]`.
- * Assembles assistant parts (text + reasoning + tool-calls) and tool-role parts
- * (results + errors). A step's `tool-result.output` is what the tool returned,
- * not the `{ type, value }` wrapper model messages use, so it is recorded as is.
+ * Converts `StepResult.content[]` to the step's `gen_ai.output.messages`: at most
+ * one assistant message, holding what the model returned (text, reasoning, tool
+ * calls, and the results of tools the provider ran itself). A step's
+ * `tool-result.output` is what the tool returned, not the `{ type, value }`
+ * wrapper model messages use, so it is recorded as is.
+ *
+ * The AI SDK runs the app's tools inside the step, so `content` also carries
+ * their results and errors. The app produced those after the model call ended,
+ * so they are left out: they belong on the `execute_tool` span and in the next
+ * step's input messages.
  */
-export function mapStepContent(content: AiContentPart[]): Message[] {
-  const assistantParts: Part[] = [];
-  const toolParts: Part[] = [];
+export function mapStepOutput(content: AiContentPart[]): Message[] {
+  const parts: Part[] = [];
 
   for (const c of content) {
     switch (c.type) {
       case 'text':
-        if (typeof c.text === 'string') assistantParts.push(textPart(c.text));
+        if (typeof c.text === 'string') parts.push(textPart(c.text));
         break;
       case 'reasoning':
-        if (typeof c.text === 'string') assistantParts.push(thinkingPart(c.text));
+        if (typeof c.text === 'string') parts.push(thinkingPart(c.text));
         break;
       case 'tool-call':
-        assistantParts.push(
+        parts.push(
           toolCallPart({
             name: c.toolName ?? '',
             id: c.toolCallId,
@@ -373,7 +382,8 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
         );
         break;
       case 'tool-result':
-        toolParts.push(
+        if (!c.providerExecuted) break;
+        parts.push(
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
@@ -382,7 +392,8 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
         );
         break;
       case 'tool-error':
-        toolParts.push(
+        if (!c.providerExecuted) break;
+        parts.push(
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
@@ -394,10 +405,7 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
     }
   }
 
-  const messages: Message[] = [];
-  if (assistantParts.length > 0) messages.push({ role: 'assistant', parts: assistantParts });
-  if (toolParts.length > 0) messages.push({ role: 'tool', parts: toolParts });
-  return messages;
+  return parts.length > 0 ? [{ role: 'assistant', parts }] : [];
 }
 
 /**
