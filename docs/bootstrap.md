@@ -14,19 +14,19 @@ Skip it when:
 
 ## Install
 
-The bootstrap entry point needs these optional peer dependencies:
+The bootstrap entry point needs these optional peer dependencies. Keep the versions as shown: OpenTelemetry's new major release (3.0, with 0.300 for the experimental packages) is not supported yet.
 
 ```bash
 pnpm add @genai-otel/core \
-  @opentelemetry/api \
-  @opentelemetry/context-async-hooks \
-  @opentelemetry/sdk-trace-node \
-  @opentelemetry/sdk-trace-base \
-  @opentelemetry/sdk-metrics \
-  @opentelemetry/exporter-trace-otlp-http \
-  @opentelemetry/exporter-metrics-otlp-http \
-  @opentelemetry/resources \
-  @opentelemetry/semantic-conventions
+  @opentelemetry/api@1.9.1 \
+  @opentelemetry/context-async-hooks@2.12.0 \
+  @opentelemetry/sdk-trace-node@2.12.0 \
+  @opentelemetry/sdk-trace-base@2.12.0 \
+  @opentelemetry/sdk-metrics@2.12.0 \
+  @opentelemetry/exporter-trace-otlp-http@0.223.0 \
+  @opentelemetry/exporter-metrics-otlp-http@0.223.0 \
+  @opentelemetry/resources@2.12.0 \
+  @opentelemetry/semantic-conventions@1.44.0
 ```
 
 ## Usage
