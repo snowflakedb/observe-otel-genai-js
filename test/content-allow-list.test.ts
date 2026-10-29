@@ -69,7 +69,6 @@ const NOT_ALLOWLISTED: Record<string, string> = {
   'gen_ai.conversation.compacted': 'pending privacy review',
   'gen_ai.request.reasoning.level': 'pending privacy review',
   'gen_ai.response.time_to_first_chunk': 'pending privacy review',
-  'genai.usage.cost_usd': 'pending privacy review',
   'genai.usage.is_partial': 'pending privacy review',
   'gen_ai.embeddings.input_count': 'pending privacy review',
   'gen_ai.embeddings.dimension.count': 'pending privacy review',

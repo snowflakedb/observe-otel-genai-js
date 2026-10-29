@@ -677,7 +677,7 @@ options: {
 }
 ```
 
-Without `forwardSubagentText`, a delegation still gets its `execute_tool` span and timing, but none of the subagent's messages reach the stream, so there is no nested `invoke_agent` span. `includePartialMessages` is covered under [tokens](#tokens-cost-and-time-to-first-token) below.
+Without `forwardSubagentText`, the SDK forwards only a subagent's tool calls and tool results, not its text or thinking. The subagent still gets its nested `invoke_agent` span, with a `chat` span for each call that asked for a tool, but its final reply, which is text, never arrives. `includePartialMessages` is covered under [tokens](#tokens-and-time-to-first-token) below.
 
 ### Span tree
 
@@ -710,13 +710,13 @@ invoke_agent <agentName>          one per query() call; claude-agent-sdk when no
 - A streamed prompt (an async iterable of user messages, passed to `query()` or `streamInput()`) is passed to the SDK unchanged, and the run's input lists every user message. A user message shows up in the `chat` spans' conversation once the SDK has read it, which can be before the call that answers it.
 - After the CLI compacts the conversation, the run and every later `chat` span carry `gen_ai.conversation.compacted`. Later `chat` inputs start after the compaction, since the summary never reaches the process. A `/clear` also starts them over, and ends the compacted flag.
 
-### Tokens, cost, and time to first token
+### Tokens and time to first token
 
-- The `invoke_agent` span carries the run totals from the latest `result.modelUsage`, the only source that includes subagents, plus the cost in `genai.usage.cost_usd`. A `/clear` mid-run resets the SDK's totals; usage from before it still counts.
-- A run started with `resume` or `continue` gets no run totals: the SDK folds the earlier session's usage into its first result without saying how much of it there is.
-- Each `chat` span carries its own call's figures, so summing across every span in a trace counts tokens twice. Use either the `invoke_agent` span or the `chat` spans. The token metric is recorded from `chat` spans only.
+- Each `invoke_agent` span carries the input and output tokens of its own agent's calls: the sum of its `chat` spans. Cache and reasoning counts stay on the `chat` spans, as the GenAI conventions ask. A subagent's calls count on the subagent's span, not on its caller's, so summing the `invoke_agent` spans of a trace counts each traced call once. Summing `invoke_agent` and `chat` spans together counts tokens twice. The token metric is recorded from `chat` spans only.
+- An `invoke_agent` span is marked `genai.usage.is_partial` when any of its calls is. Its output count then leaves those calls out.
+- A call with no message in the stream is on no span, so its tokens are not counted anywhere: without `forwardSubagentText`, a subagent's final reply and any other call that asked for no tool; and calls the CLI makes on its own. The subagent's span is then marked `genai.usage.is_partial`.
 - Exact per-call counts need `includePartialMessages`. Without it, a `chat` span has only the usage snapshot taken as the reply starts: input and cache figures are kept, the output count is left out rather than reported low, and the span is marked `genai.usage.is_partial`. With it, each call gets its final usage, stop reason, reasoning tokens, time to first token and real start time.
-- The SDK does not forward stream events for subagents, so their `chat` spans are marked `is_partial`, except a foreground delegation's last call, whose `tool_result` carries its final usage. Subagent tokens are in the run totals either way.
+- The SDK does not forward stream events for subagents, so their `chat` spans, and their `invoke_agent` spans, are marked `is_partial`.
 - Cached tokens are counted in `gen_ai.usage.input_tokens`, as the GenAI conventions ask. The [Anthropic adapter](#anthropic-sdk) does not do this, so the two report different input counts for the same call.
 
 ### Content capture

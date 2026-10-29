@@ -81,7 +81,7 @@ In short, it covers:
   dropped.
 - **Everything else not on the list.** Today that includes some metadata the
   library emits that has not been through privacy review yet: time to first
-  chunk, cost, partial-usage and compaction flags, reasoning level, embedding
+  chunk, partial-usage and compaction flags, reasoning level, embedding
   input and dimension counts, retrieval data source and top-k, the OpenAI Agents
   `genai.metadata.*` entries, and the `gen_ai.relationship` attribute on span
   links.
