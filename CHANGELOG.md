@@ -7,6 +7,22 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Claude Agent SDK: each `invoke_agent` span now carries the input and output
+  tokens of its own agent's calls, the sum of its `chat` spans, and a subagent's
+  span carries its own. Before, the root span carried the SDK's run totals,
+  subagents included, with cache and reasoning counts, and subagent spans carried
+  none. An `invoke_agent` span is marked `genai.usage.is_partial` when any of its
+  calls is: usual for a subagent, which gets no stream events, and for every
+  agent without `includePartialMessages`. A resumed or continued run now gets its
+  tokens too.
+- Claude Agent SDK: a subagent's last call no longer takes its usage from the
+  delegation's tool result, so every subagent `chat` span has only its snapshot
+  and is marked `genai.usage.is_partial`. That usage is the subagent's final
+  reply's, which the SDK forwards only with `forwardSubagentText`, so without it
+  the usage landed on an earlier call.
+- Claude Agent SDK: the root `invoke_agent` span no longer carries
+  `genai.usage.cost_usd`, which is not a GenAI convention attribute, and the
+  `ATTR_USAGE_COST_USD` export is removed.
 - Metrics: `error.type` and `error.category` are now left off a data point when
   the operation succeeded, as the GenAI conventions ask, instead of being written
   as empty strings. To count successes, filter on `error.type` not being set

@@ -32,8 +32,7 @@
  *           chat <model>
  *
  * A `result` message is a checkpoint, not the end of the run: a background task can
- * keep the run going past it, and each result's totals cover the whole call so far.
- * The run ends when the stream does.
+ * keep the run going past it. The run ends when the stream does.
  */
 
 import { type Context, context, diag } from '@opentelemetry/api';
@@ -52,7 +51,6 @@ import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import {
   ATTR_CONVERSATION_COMPACTED,
   ATTR_REQUEST_REASONING_LEVEL,
-  ATTR_USAGE_COST_USD,
   ATTR_USAGE_IS_PARTIAL,
 } from '../../semconv.js';
 import { usageAttributes } from '../../spans/attributes.js';
@@ -62,7 +60,6 @@ import { isTracedQuery, markTraced } from './traced-queries.js';
 import type {
   AgentContentBlock,
   AgentMessage,
-  AgentModelUsage,
   AgentQueryFn,
   AgentQueryOptions,
   AgentQueryParams,
@@ -252,6 +249,10 @@ interface AgentThread {
   readyAt: number;
   call?: ModelCall;
   lastModel?: string;
+  /** This agent's own calls, summed as each one closes; its subagents count separately. */
+  usage: TokenUsage;
+  /** Some call had only a snapshot, so `usage` leaves out its output tokens. */
+  usageIsPartial: boolean;
 }
 
 /** The API call in flight on a thread. */
@@ -305,9 +306,6 @@ class AgentRun {
   /** The main agent's tools, from `init`. The CLI reports names only. */
   private toolDefinitions: ToolDefinition[] | undefined;
   private compacted = false;
-  /** The latest result's cumulative totals, and what earlier resets zeroed. */
-  private latestTotals: RunTotals | undefined;
-  private totalsBeforeReset: RunTotals = { usage: {}, costUsd: 0 };
   private sawResult = false;
   /** The caller ended the run with `close()` or `return()`, which is not a failure. */
   private stoppedByCaller = false;
@@ -412,10 +410,7 @@ class AgentRun {
         this.onResult(msg);
         break;
       case 'conversation_reset':
-        // A /clear zeroes the running totals; what came before still counts for this run.
-        this.totalsBeforeReset = addTotals(this.totalsBeforeReset, this.latestTotals);
-        this.latestTotals = undefined;
-        // The next call starts from an empty conversation, not a compacted one.
+        // A /clear: the next call starts from an empty conversation, not a compacted one.
         this.mainThread().history = [];
         this.compacted = false;
         break;
@@ -480,10 +475,6 @@ class AgentRun {
         tool.receipt = block.content ?? '';
         continue;
       }
-      // A subagent gets no stream events; this is the only final usage its last call gets.
-      const call = tool?.subagent?.call;
-      const usage = usageOf(msg.tool_use_result);
-      if (call && usage) call.finalUsage = usage;
       const error = block.is_error ? new Error('tool error') : tool?.finished?.error;
       this.closeTool(id, block.content, error);
     }
@@ -571,7 +562,6 @@ class AgentRun {
     }
     this.closeCall(main);
 
-    this.recordTotals(root, msg);
     root.setOutput(
       !msg.is_error && typeof msg.result === 'string' && msg.result
         ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
@@ -581,17 +571,15 @@ class AgentRun {
   }
 
   /**
-   * The results' totals cover more than this call when the session was resumed or
-   * continued: its first result already includes the earlier runs, by an amount the
-   * stream never states. Those runs get no totals rather than wrong ones.
+   * An agent's own tokens: the calls it made, not those of the subagents it ran.
+   * Input and output only: the GenAI conventions keep cache and reasoning counts off
+   * agent spans, since they add up across models and calls.
    */
-  private recordTotals(root: AgentInvocationRecorder, msg: AgentMessage): void {
-    if (this.queryOptions.resume || this.queryOptions.continue) return;
-    this.latestTotals = { usage: sumModelUsage(msg.modelUsage), costUsd: msg.total_cost_usd ?? 0 };
-    const run = addTotals(this.totalsBeforeReset, this.latestTotals);
-    root.setAttributes({
-      ...usageAttributes(run.usage),
-      ...(run.costUsd ? { [ATTR_USAGE_COST_USD]: run.costUsd } : {}),
+  private recordAgentUsage(thread: AgentThread): void {
+    const { inputTokens, outputTokens } = thread.usage;
+    thread.agent.setAttributes({
+      ...usageAttributes({ inputTokens, outputTokens }),
+      ...(thread.usageIsPartial ? { [ATTR_USAGE_IS_PARTIAL]: true } : {}),
     });
   }
 
@@ -622,6 +610,8 @@ class AgentRun {
       isMain: true,
       history: [...this.promptInput],
       readyAt: this.startedAt,
+      usage: {},
+      usageIsPartial: false,
     };
     return this.main;
   }
@@ -662,12 +652,15 @@ class AgentRun {
       isMain: false,
       history: [...input],
       readyAt: tool.startedAt,
+      usage: {},
+      usageIsPartial: false,
     };
   }
 
   private finishSubagent(thread: AgentThread, report: unknown, error: Error | undefined): void {
     this.closeToolsOf(thread, error);
     this.closeCall(thread);
+    this.recordAgentUsage(thread);
     const output = this.capturesToolContent()
       ? blocksToMessage(blocksOf(report), 'assistant')
       : undefined;
@@ -724,12 +717,17 @@ class AgentRun {
     const output = blocksToMessage(call.blocks, 'assistant');
     // A snapshot's input figures are final, but its output count is taken as the reply
     // starts, so it is left out rather than reported low.
-    const usage = call.finalUsage
-      ? { ...call.usage, ...call.finalUsage }
-      : { ...call.usage, output_tokens: undefined };
+    const usage = toTokenUsage(
+      call.finalUsage
+        ? { ...call.usage, ...call.finalUsage }
+        : { ...call.usage, output_tokens: undefined },
+    );
+    thread.usage = addUsage(thread.usage, usage);
+    // A failed API call reports no usage at all, so it leaves nothing out.
+    if (call.usage && !call.finalUsage) thread.usageIsPartial = true;
     call.rec.setResult({
       output: output ? [output] : [],
-      usage: toTokenUsage(usage),
+      usage,
       responseModel: call.model,
       stopReason: call.stopReason ?? (hasToolUse(call.blocks) ? 'tool_use' : undefined),
     });
@@ -811,6 +809,7 @@ class AgentRun {
       // call cut off mid-stream shares the failure.
       if (failure && this.expectsStreamEvents(this.main)) this.main.call?.rec.setCallError(failure);
       this.closeCall(this.main);
+      this.recordAgentUsage(this.main);
     }
 
     // A run that ends before its first message still gets a span: the CLI did start.
@@ -921,12 +920,6 @@ function hasToolUse(blocks: AgentContentBlock[]): boolean {
   return blocks.some((b) => b.type === 'tool_use');
 }
 
-function usageOf(toolUseResult: unknown): AgentUsage | undefined {
-  if (typeof toolUseResult !== 'object' || toolUseResult === null) return undefined;
-  const { usage } = toolUseResult as { usage?: unknown };
-  return typeof usage === 'object' && usage !== null ? (usage as AgentUsage) : undefined;
-}
-
 function blocksOf(content: unknown): AgentContentBlock[] {
   if (Array.isArray(content)) return content as AgentContentBlock[];
   if (typeof content === 'string' && content) return [{ type: 'text', text: content }];
@@ -967,15 +960,6 @@ function toTokenUsage(usage: AgentUsage): TokenUsage {
   };
 }
 
-interface RunTotals {
-  usage: TokenUsage;
-  costUsd: number;
-}
-
-function addTotals(a: RunTotals, b: RunTotals | undefined): RunTotals {
-  return b ? { usage: addUsage(a.usage, b.usage), costUsd: a.costUsd + b.costUsd } : a;
-}
-
 function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   const sum = (key: keyof TokenUsage) => (a[key] ?? 0) + (b[key] ?? 0);
   return {
@@ -985,20 +969,6 @@ function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
     cacheWriteInputTokens: sum('cacheWriteInputTokens'),
     reasoningTokens: sum('reasoningTokens') || undefined,
   };
-}
-
-/** `modelUsage` covers subagents too, and is cumulative over the whole call. */
-function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined): TokenUsage {
-  const perModel = Object.values(modelUsage ?? {}).map((m) =>
-    toTokenUsage({
-      input_tokens: m.inputTokens,
-      output_tokens: m.outputTokens,
-      cache_read_input_tokens: m.cacheReadInputTokens,
-      cache_creation_input_tokens: m.cacheCreationInputTokens,
-      output_tokens_details: { thinking_tokens: m.thinkingTokens },
-    }),
-  );
-  return perModel.reduce(addUsage, {});
 }
 
 /**

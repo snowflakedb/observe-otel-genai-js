@@ -52,13 +52,6 @@ export const ATTR_GENERATION_ID = 'genai.generation.id';
 export const ATTR_PARENT_GENERATION_IDS = 'genai.parent_generation_ids';
 
 /**
- * Provider-reported cost of an operation, in USD. GenAI semconv defines no cost
- * attribute, so this is a library extension. Only a few providers report real
- * cost (the Claude Agent SDK's `modelUsage[*].costUSD`, Bedrock); emit it when
- * the number comes from the provider, never when it is estimated locally.
- */
-export const ATTR_USAGE_COST_USD = 'genai.usage.cost_usd';
-/**
  * Marks token counts that are the provider's mid-stream figures rather than its
  * final ones, so a consumer knows not to trust them as authoritative totals.
  */

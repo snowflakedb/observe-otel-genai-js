@@ -167,15 +167,6 @@ function result(extra: Partial<AgentMessage> = {}): AgentMessage {
     is_error: false,
     result: 'done',
     stop_reason: 'end_turn',
-    total_cost_usd: 0.0123,
-    modelUsage: {
-      [MODEL]: {
-        inputTokens: 100,
-        outputTokens: 50,
-        cacheReadInputTokens: 20,
-        cacheCreationInputTokens: 10,
-      },
-    },
     ...extra,
   };
 }
@@ -343,7 +334,7 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(JSON.stringify(input.at(-1))).toContain('tu_29');
   });
 
-  it('flags snapshot usage as partial and puts the run totals on invoke_agent', async () => {
+  it('flags snapshot usage as partial, on the chat span and on invoke_agent', async () => {
     const h = harness();
     await run(h, [
       init(),
@@ -359,31 +350,27 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(chat, 'gen_ai.usage.input_tokens')).toBe(9); // cache reads count as input
     expect(attr(chat, 'gen_ai.response.finish_reasons')).toEqual(['end_turn']);
 
+    // The agent's tokens are its calls': input and output only.
     const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(130); // 100 + 20 read + 10 write
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
-    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(10);
-    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0123);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(9);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBeUndefined();
+    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBeUndefined();
+    expect(attr(root, 'genai.usage.is_partial')).toBe(true);
   });
 
-  it('keeps one invoke_agent span per query, with the latest result totals', async () => {
+  it('keeps one invoke_agent span per query, with its calls summed across results', async () => {
     const h = harness();
-    const totals = (input: number, cost: number) => ({
-      modelUsage: { [MODEL]: { inputTokens: input, outputTokens: 1 } },
-      total_cost_usd: cost,
-    });
     await run(h, [
       init(),
-      assistant('msg_1', [text('one')]),
-      result({ ...totals(100, 0.01), result: 'one' }),
-      assistant('msg_2', [text('two')]),
-      result({ ...totals(250, 0.03), result: 'two' }),
+      assistant('msg_1', [text('one')], { usage: { input_tokens: 100, output_tokens: 1 } }),
+      result({ result: 'one' }),
+      assistant('msg_2', [text('two')], { usage: { input_tokens: 150, output_tokens: 1 } }),
+      result({ result: 'two' }),
     ]);
 
     const root = findSpan(h, ROOT);
     expect(allSpans(h, ROOT)).toHaveLength(1);
     expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(250);
-    expect(attr(root, 'genai.usage.cost_usd')).toBe(0.03);
     expect(String(attr(root, 'gen_ai.output.messages'))).toContain('two');
     expect(childrenOf(h, root, CHAT)).toHaveLength(2);
   });
@@ -536,6 +523,32 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(chat, 'gen_ai.output.messages')).toBeUndefined();
   });
 
+  it('does not flag an agent partial for a failed API call, which uses no tokens', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100, { input_tokens: 10, output_tokens: 1 }),
+        assistant('msg_1', [text('first')]),
+        messageDelta({ output_tokens: 30 }),
+        {
+          type: 'assistant',
+          message: { id: 'uuid-1', model: '<synthetic>', content: [text('API Error: 529')] },
+          parent_tool_use_id: null,
+        },
+        result({ is_error: true, result: 'API Error: 529' }),
+      ],
+      {},
+      streamed,
+    );
+
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(10);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(30);
+    expect(attr(root, 'genai.usage.is_partial')).toBeUndefined();
+  });
+
   it('fails a subagent call that the API rejected', async () => {
     const h = harness();
     await run(h, [
@@ -565,80 +578,16 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(findSpan(h, CHAT).status.message).toBe('assistant message aborted');
   });
 
-  it('sums the run totals across models', async () => {
+  it("counts a resumed session's own calls, not the earlier session's", async () => {
     const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result({
-        modelUsage: {
-          [MODEL]: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 1 },
-          'claude-haiku-4-5': { inputTokens: 20, outputTokens: 7, cacheCreationInputTokens: 2 },
-        },
-      }),
-    ]);
+    await run(
+      h,
+      [init(), assistant('msg_1', [text('hi')], { usage: { input_tokens: 7 } }), result()],
+      {},
+      { resume: 'sess-0' },
+    );
 
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(33);
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(12);
-    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBe(1);
-    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(2);
-  });
-
-  it('reports the run thinking tokens from modelUsage', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result({
-        modelUsage: {
-          [MODEL]: { inputTokens: 10, outputTokens: 40, thinkingTokens: 25 },
-          'claude-haiku-4-5': { inputTokens: 5, outputTokens: 8, thinkingTokens: 3 },
-        },
-      }),
-    ]);
-
-    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.reasoning.output_tokens')).toBe(28);
-  });
-
-  it('keeps the usage from before a /clear in the run totals', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('first')]),
-      result(),
-      { type: 'conversation_reset', new_conversation_id: 'conv-2' },
-      assistant('msg_2', [text('second')]),
-      result({
-        modelUsage: { [MODEL]: { inputTokens: 1, outputTokens: 2 } },
-        total_cost_usd: 0.001,
-      }),
-    ]);
-
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(52);
-    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0133);
-  });
-
-  it('keeps the earlier totals when a later result reports zeroes', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result(),
-      result({ modelUsage: {}, total_cost_usd: 0 }),
-    ]);
-
-    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.output_tokens')).toBe(50);
-  });
-
-  it('reports no run totals for a resumed session', async () => {
-    const h = harness();
-    await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {}, { resume: 'sess-0' });
-
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBeUndefined();
-    expect(attr(root, 'genai.usage.cost_usd')).toBeUndefined();
+    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.input_tokens')).toBe(7);
   });
 
   it('applies the run options to each span type that has a field for them', async () => {
@@ -816,6 +765,59 @@ describe('Claude Agent SDK adapter: stream events', () => {
     const subChats = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT);
     expect(subChats).toHaveLength(2);
     for (const chat of subChats) expect(attr(chat, 'genai.usage.is_partial')).toBe(true);
+  });
+
+  it('gives each agent the tokens of its own calls, leaving its subagents out', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100, {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_read_input_tokens: 4,
+        }),
+        assistant('msg_1', [delegate('task_1', 'worker')]),
+        messageDelta({ output_tokens: 30, output_tokens_details: { thinking_tokens: 8 } }),
+        taskStarted('task_1'),
+        assistant('msg_s1', [toolUse('tu_9', 'Bash')], {
+          parent: 'task_1',
+          usage: { input_tokens: 20, output_tokens: 2 },
+        }),
+        toolResult('tu_9', 'ok', { parent: 'task_1' }),
+        assistant('msg_s2', [text('report')], {
+          parent: 'task_1',
+          usage: { input_tokens: 25, output_tokens: 1 },
+        }),
+        taskNotification('task_1', 'report'),
+        toolResult('task_1', 'report'),
+        messageStart('msg_2', 100, { input_tokens: 40, output_tokens: 1 }),
+        assistant('msg_2', [text('done')]),
+        messageDelta({ output_tokens: 12 }),
+        result(),
+      ],
+      {},
+      streamed,
+    );
+
+    // Both main thread calls have final usage, so the root's sum is exact. The cache
+    // and reasoning breakdowns stay on the chat spans.
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(54);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(42);
+    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBeUndefined();
+    expect(attr(root, 'gen_ai.usage.reasoning.output_tokens')).toBeUndefined();
+    expect(attr(root, 'genai.usage.is_partial')).toBeUndefined();
+    const [firstMain] = childrenOf(h, root, CHAT);
+    expect(attr(firstMain!, 'gen_ai.usage.cache_read.input_tokens')).toBe(4);
+    expect(attr(firstMain!, 'gen_ai.usage.reasoning.output_tokens')).toBe(8);
+
+    // The subagent's calls have only snapshots, so its output count is missing.
+    const worker = findSpan(h, 'invoke_agent worker');
+    expect(attr(worker, 'gen_ai.usage.input_tokens')).toBe(45);
+    expect(attr(worker, 'gen_ai.usage.output_tokens')).toBeUndefined();
+    expect(attr(worker, 'genai.usage.is_partial')).toBe(true);
   });
 
   it('records time to first token and starts the span when the request did', async () => {
@@ -1003,9 +1005,12 @@ describe('Claude Agent SDK adapter: subagents', () => {
       assistant('msg_1', [delegate('task_1', 'worker')]),
       taskStarted('task_1'),
       toolResult('task_1', 'Async agent launched successfully.'),
-      assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+      assistant('msg_s1', [toolUse('tu_9', 'Bash')], {
+        parent: 'task_1',
+        usage: { input_tokens: 20 },
+      }),
       toolResult('tu_9', 'from-subagent', { parent: 'task_1' }),
-      assistant('msg_s2', [text('report')], { parent: 'task_1' }),
+      assistant('msg_s2', [text('report')], { parent: 'task_1', usage: { input_tokens: 30 } }),
       taskNotification('task_1', 'the real report'),
       result(),
     ]);
@@ -1013,6 +1018,8 @@ describe('Claude Agent SDK adapter: subagents', () => {
     const delegation = findSpan(h, 'execute_tool Agent');
     const sub = findSpan(h, 'invoke_agent worker');
     expect(parentOf(h, sub)).toBe(delegation);
+    expect(attr(sub, 'gen_ai.usage.input_tokens')).toBe(50);
+    expect(attr(sub, 'genai.usage.is_partial')).toBe(true);
     expect(parentOf(h, findSpan(h, 'execute_tool Bash'))).toBe(sub);
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(String(attr(delegation, 'gen_ai.tool.call.result'))).toContain('the real report');
@@ -1059,32 +1066,6 @@ describe('Claude Agent SDK adapter: subagents', () => {
     // The echoed prompt is not added a second time.
     const input = String(attr(subChat, 'gen_ai.input.messages'));
     expect(input.split('check it')).toHaveLength(2);
-  });
-
-  it("takes a subagent's last call usage from its delegation's tool result", async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [delegate('task_1', 'worker')]),
-      taskStarted('task_1'),
-      assistant('msg_s1', [text('report')], {
-        parent: 'task_1',
-        usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 100 },
-      }),
-      taskNotification('task_1', 'report'),
-      {
-        ...toolResult('task_1', 'report'),
-        tool_use_result: {
-          status: 'completed',
-          usage: { input_tokens: 12, output_tokens: 521, cache_read_input_tokens: 100 },
-        },
-      },
-      result(),
-    ]);
-
-    const subChat = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT)[0]!;
-    expect(attr(subChat, 'gen_ai.usage.output_tokens')).toBe(521);
-    expect(attr(subChat, 'genai.usage.is_partial')).toBeUndefined();
   });
 
   it('keeps a failed foreground task failed when its tool_result never comes', async () => {
@@ -1204,8 +1185,11 @@ describe('Claude Agent SDK adapter: subagents', () => {
     await run(h, [
       init(),
       assistant('msg_1', [delegate('task_1', 'outer')]),
-      assistant('msg_s1', [delegate('task_2', 'inner')], { parent: 'task_1' }),
-      assistant('msg_t1', [text('deep')], { parent: 'task_2' }),
+      assistant('msg_s1', [delegate('task_2', 'inner')], {
+        parent: 'task_1',
+        usage: { input_tokens: 30 },
+      }),
+      assistant('msg_t1', [text('deep')], { parent: 'task_2', usage: { input_tokens: 7 } }),
       toolResult('task_2', 'inner done', { parent: 'task_1' }),
       toolResult('task_1', 'outer done'),
       result(),
@@ -1215,6 +1199,9 @@ describe('Claude Agent SDK adapter: subagents', () => {
     const inner = findSpan(h, 'invoke_agent inner');
     expect(parentOf(h, parentOf(h, inner)!)).toBe(outer);
     expect(childrenOf(h, inner, CHAT)).toHaveLength(1);
+    // Each subagent counts only its own calls.
+    expect(attr(outer, 'gen_ai.usage.input_tokens')).toBe(30);
+    expect(attr(inner, 'gen_ai.usage.input_tokens')).toBe(7);
   });
 
   it('ignores messages for a delegation that is not open', async () => {
@@ -1323,7 +1310,6 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(root.status.code).toBe(SpanStatusCode.ERROR);
     expect(root.status.message).toBe('Reached maximum number of turns (1)');
     expect(attr(root, 'gen_ai.output.messages')).toBeUndefined();
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
   });
 
   it('marks the run failed when the last result is an error', async () => {

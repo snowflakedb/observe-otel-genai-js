@@ -50,17 +50,6 @@ export interface AgentUsage {
   output_tokens_details?: { thinking_tokens?: number };
 }
 
-/** Per-model totals from `result.modelUsage`, the only figures that cover subagents. */
-export interface AgentModelUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  /** Already counted in `outputTokens`. Absent on older CLIs. */
-  thinkingTokens?: number;
-  [key: string]: unknown;
-}
-
 export interface AgentMessage {
   type?: string;
   subtype?: string;
@@ -71,8 +60,6 @@ export interface AgentMessage {
   parent_tool_use_id?: string | null;
   /** Set when an interrupt cut the message short. */
   aborted?: true;
-  /** A tool's structured output. A delegation's carries its last call's final `usage`. */
-  tool_use_result?: unknown;
 
   // system/init
   session_id?: string;
@@ -111,9 +98,6 @@ export interface AgentMessage {
   /** Why the run stopped, e.g. `completed`, `api_error`, `max_turns`. */
   terminal_reason?: string;
   stop_reason?: string | null;
-  /** Cumulative over the whole call, subagents included. */
-  total_cost_usd?: number;
-  modelUsage?: Record<string, AgentModelUsage>;
 
   [key: string]: unknown;
 }
