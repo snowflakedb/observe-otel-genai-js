@@ -58,6 +58,7 @@ import {
   ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
   ATTR_USER_ID,
   ATTR_WORKFLOW_NAME,
   OP_CHAT,
@@ -66,7 +67,7 @@ import {
   OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, tokenTypes } from '../_harness.js';
 
 const llmSerialized = {
   lc: 1,
@@ -631,7 +632,7 @@ describe('LangChain adapter — provider name mapping', () => {
   });
 });
 
-describe('LangChain adapter — cache token counts', () => {
+describe('LangChain adapter — cache and reasoning token counts', () => {
   let h: Harness;
   beforeEach(() => {
     h = createHarness();
@@ -814,6 +815,61 @@ describe('LangChain adapter — cache token counts', () => {
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(7);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBeUndefined();
+  });
+
+  it('takes reasoning tokens from the message when input counts tie (real ChatOpenAI)', async () => {
+    // ChatOpenAI on a reasoning model: `llmOutput` wins the tie and has no
+    // reasoning count, so it has to come from the message's usage_metadata.
+    await endWith('run-reasoning-tie', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 1150,
+                output_tokens: 206,
+                total_tokens: 1356,
+                output_token_details: { reasoning: 192 },
+              },
+            },
+          },
+        ],
+      ],
+      llmOutput: { tokenUsage: { promptTokens: 1150, completionTokens: 206, totalTokens: 1356 } },
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(206);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(192);
+    expect(await tokenTypes(h)).toContain('reasoning');
+  });
+
+  it('omits reasoning tokens when the provider reports none', async () => {
+    await endWith('run-reasoning-zero', {
+      generations: [
+        [
+          {
+            text: 'hi',
+            message: {
+              _getType: () => 'ai',
+              content: 'hi',
+              usage_metadata: {
+                input_tokens: 10,
+                output_tokens: 2,
+                output_token_details: { reasoning: 0 },
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBeUndefined();
+    expect(await tokenTypes(h)).not.toContain('reasoning');
   });
 });
 

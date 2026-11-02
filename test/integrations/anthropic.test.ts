@@ -41,6 +41,7 @@ import {
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_IS_PARTIAL,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
@@ -73,6 +74,7 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
         output_tokens: 4,
         cache_creation_input_tokens: 100,
         cache_read_input_tokens: 50,
+        output_tokens_details: { thinking_tokens: 3 },
       },
     }));
 
@@ -92,6 +94,7 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(4);
     expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(100);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(50);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(3);
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
   });
 
@@ -195,7 +198,7 @@ describe('Anthropic adapter — streaming', () => {
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
-          usage: { output_tokens: 1 },
+          usage: { output_tokens: 1, output_tokens_details: { thinking_tokens: 1 } },
         };
         yield { type: 'message_stop' };
       }
@@ -218,6 +221,7 @@ describe('Anthropic adapter — streaming', () => {
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('claude-stream');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(12);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(1);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
     expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBeUndefined();
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
     const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);

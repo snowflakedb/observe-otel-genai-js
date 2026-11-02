@@ -184,7 +184,7 @@ What gets recorded:
 - One `embeddings` span per embedding model call of `embed` and `embedMany`, which splits large inputs into several calls. A call the AI SDK retries leaves no failed span; a failed call gets one. When one call of an `embedMany` fails, the AI SDK gives up on the others, so those still running are recorded as failed too.
 - `chat` and `execute_tool` spans sit side by side under `invoke_agent`. A `chat` span ends when the model replies, so its duration does not include the step's tools.
 - `gen_ai.output.messages` holds what the model returned: a `chat` span's is its step's text, reasoning and tool calls, and the `invoke_agent` span's is the final step's. The AI SDK runs the app's tools inside a step, after its model call; their results go on the `execute_tool` span and in the next `chat` span's input messages, not in any output. Results of tools the provider runs itself, such as web search, are part of the model's reply and stay in its message.
-- Each `chat` and `generate_content` span carries the request parameters its model call used (`temperature`, `maxOutputTokens` and the like), including any `prepareStep` set for that step. `chat` spans also carry the tool definitions sent to the model. Spans of `streamText` and `streamObject` carry time to first token.
+- Each `chat` and `generate_content` span carries the request parameters its model call used (`temperature`, `maxOutputTokens` and the like), including any `prepareStep` set for that step. `chat` spans also carry the tool definitions sent to the model. Both carry usage, including cache-read, cache-write and reasoning tokens. Spans of `streamText` and `streamObject` carry time to first token.
 - Concurrent calls stay in separate trees.
 - Work inside a tool, such as HTTP calls or a nested `generateText`, nests under that tool's `execute_tool` span. A nested `generateText` gets its own `invoke_agent` span there.
 - A failed call marks the `invoke_agent` span as an error, whether the model call failed or something around it, such as `prepareStep`. A model call that fails and then succeeds on retry is not an error.
@@ -308,7 +308,7 @@ If both stay on, the split can depend on versions: the other library may take yo
 ### What gets recorded
 
 - One `chat` span per `chat.completions.create` or `responses.create` call, and one `embeddings` span per `embeddings.create` call.
-- Request parameters, tool definitions, `server.address` (from the client's `baseURL`), usage including cached and reasoning tokens, finish reason, response id and model.
+- Request parameters, tool definitions, `server.address` (from the client's `baseURL`), usage including cache-read, cache-write and reasoning tokens, finish reason, response id and model.
 - On `responses.create`, `instructions` becomes `gen_ai.system_instructions`, and the request's `conversation` becomes the conversation id unless `withMetadata` sets one.
 - With `stream: true`, the stream is returned unchanged. Time to first token comes from the first chunk (Chat Completions) or the first `*.delta` event (Responses). Final usage on Chat Completions streams needs `stream_options: { include_usage: true }`; without it the span has no token counts.
 - Breaking out of a stream early ends the span without an error, with the output read so far. If the final usage had not arrived yet, the span has no token counts and is marked `genai.usage.is_partial`. A stream nobody reads within 10 minutes is ended as a failed call.
@@ -505,7 +505,7 @@ await anthropic.messages.create(
 
 - One `chat` span per `messages.create` call, with `max_tokens`, `temperature`, `top_p` and `stop_sequences`.
 - `system` becomes `gen_ai.system_instructions`; text, thinking, tool-use and tool-result blocks become input and output messages.
-- Usage, including `cache_read_input_tokens` and `cache_creation_input_tokens` as the cache-read and cache-write counts. `gen_ai.usage.input_tokens` is Anthropic's `input_tokens`, which leaves cached tokens out.
+- Usage, including `cache_read_input_tokens` and `cache_creation_input_tokens` as the cache-read and cache-write counts, and `output_tokens_details.thinking_tokens` as the reasoning count. `gen_ai.usage.input_tokens` is Anthropic's `input_tokens`, which leaves cached tokens out.
 - With `stream: true`, time to first token is taken at the first content block, and the final stop reason and output tokens from `message_delta`.
 - Breaking out of a stream before `message_delta` ends the span without an error, with the output read so far. The output token count is left out and the span is marked `genai.usage.is_partial`.
 
@@ -603,7 +603,7 @@ All spans from one invocation form one trace:
 | retriever | `retrieval`, with any query rewrite nested under it |
 
 - `invoke_agent` and `invoke_workflow` input: a `messages` array maps message by message; a string, or a string `input`, `question` or `text` field, becomes one user message; any other shape is JSON-encoded. The output is the last message of a `messages` array, else a string, `output` or `text` field, else the JSON-encoded result. Tool results are never output: when a `messages` array ends on tool messages, the output is the AI message that requested them, and a bare `ToolMessage` result records none.
-- `chat` spans carry input and output messages, the model's bound tools as `gen_ai.tool.definitions`, usage including cache-read and cache-write tokens, the finish reason, response id and served model (`gen_ai.response.model`, for example `gpt-4o-2024-11-20` for a `gpt-4o` request). Streaming calls record time to first token.
+- `chat` spans carry input and output messages, the model's bound tools as `gen_ai.tool.definitions`, usage including cache-read, cache-write and reasoning tokens, the finish reason, response id and served model (`gen_ai.response.model`, for example `gpt-4o-2024-11-20` for a `gpt-4o` request). Streaming calls record time to first token.
 - `gen_ai.provider.name` uses the well-known values (`openai`, `anthropic`, `aws.bedrock`, `gcp.gemini`, …). A hosting platform wins over the vendor it hosts, so a Bedrock-hosted Anthropic model reports `aws.bedrock`.
 - The tool name is the run's `runName`, else the tool's class name; on success, the name on the returned `ToolMessage` replaces it.
 - Retrieval spans carry the query text and documents (subject to content capture). `gen_ai.retrieval.top_k` and `gen_ai.data_source.id` come only from the retriever's serialized config, so they are often missing.

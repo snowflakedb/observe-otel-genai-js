@@ -40,7 +40,7 @@ import {
   toolResultPart,
   userTextMessage,
 } from '../../models/message.js';
-import type { AiCallSettings } from './_model.js';
+import type { AiCallSettings, AiUsage } from './_model.js';
 
 // ---------------------------------------------------------------------------
 // Duck-typed AI SDK event shapes — we only read what we need
@@ -129,16 +129,7 @@ export interface AiStepFinishEvent {
   toolCalls: AiToolCall[];
   toolResults: AiToolResult[];
   finishReason: string;
-  usage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-    cacheReadInputTokens?: number;
-    cacheCreationInputTokens?: number;
-    reasoningTokens?: number;
-    promptTokens?: number; // v5 compat
-    completionTokens?: number; // v5 compat
-  };
+  usage: AiUsage;
   response: {
     id?: string;
     modelId?: string;

@@ -57,11 +57,14 @@ import {
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
   ATTR_TOOL_DEFINITIONS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
   OP_GENERATE_CONTENT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, tokenTypes } from '../_harness.js';
 
 // ---------------------------------------------------------------------------
 // Mock model builders (AI SDK v7 provider shapes)
@@ -70,14 +73,23 @@ import { type Harness, createHarness } from '../_harness.js';
 function v7Finish(unified: 'stop' | 'tool-calls') {
   return { unified, raw: unified };
 }
-function v7Usage(i: number, o: number) {
+function v7Usage(
+  i: number,
+  o: number,
+  d: { cacheRead?: number; cacheWrite?: number; reasoning?: number } = {},
+) {
   return {
-    inputTokens: { total: i, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-    outputTokens: { total: o, text: undefined, reasoning: undefined },
+    inputTokens: { total: i, noCache: undefined, cacheRead: d.cacheRead, cacheWrite: d.cacheWrite },
+    outputTokens: { total: o, text: undefined, reasoning: d.reasoning },
   };
 }
 
-function textStreamModel(text: string, provider = 'mock', modelId = 'mock-stream') {
+function textStreamModel(
+  text: string,
+  provider = 'mock',
+  modelId = 'mock-stream',
+  usage = v7Usage(5, 2),
+) {
   return new MockLanguageModelV3({
     provider,
     modelId,
@@ -88,7 +100,7 @@ function textStreamModel(text: string, provider = 'mock', modelId = 'mock-stream
           c.enqueue({ type: 'text-start', id: '0' });
           c.enqueue({ type: 'text-delta', id: '0', delta: text });
           c.enqueue({ type: 'text-end', id: '0' });
-          c.enqueue({ type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(5, 2) });
+          c.enqueue({ type: 'finish', finishReason: v7Finish('stop'), usage });
           c.close();
         },
       }),
@@ -189,6 +201,24 @@ describe('genaiTelemetryIntegration', () => {
     expect(chat!.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(2);
     // agent output captured from aggregated content
     expect(agent!.attributes[ATTR_OUTPUT_MESSAGES]).toBeDefined();
+  });
+
+  it('records cache and reasoning token counts', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const usage = v7Usage(20, 9, { cacheRead: 6, cacheWrite: 2, reasoning: 5 });
+    const model = textStreamModel('hi', 'mock', 'mock-stream', usage);
+    await drain(streamText({ model, prompt: 'hi' }));
+
+    const chat = oneByName(h, 'chat');
+    expect(chat!.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+    expect(chat!.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(9);
+    expect(chat!.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(6);
+    expect(chat!.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(2);
+    expect(chat!.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(5);
+
+    expect(await tokenTypes(h)).toEqual(
+      expect.arrayContaining(['cache_read', 'cache_write', 'reasoning']),
+    );
   });
 
   it('works for non-streaming generateText', async () => {

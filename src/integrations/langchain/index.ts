@@ -1002,6 +1002,7 @@ interface MappedUsage {
   outputTokens?: number;
   cacheReadInputTokens?: number;
   cacheWriteInputTokens?: number;
+  reasoningTokens?: number;
 }
 
 /**
@@ -1020,13 +1021,13 @@ function mapLangChainUsage(output: LLMResult): MappedUsage | undefined {
   // llmOutput's 0 yields to the message's real count. Keep input and output
   // from a single source so they stay consistent.
   return (fromMessage.inputTokens ?? 0) > (fromLlmOutput.inputTokens ?? 0)
-    ? mergeCacheCounts(fromMessage, fromLlmOutput)
-    : mergeCacheCounts(fromLlmOutput, fromMessage);
+    ? mergeTokenDetails(fromMessage, fromLlmOutput)
+    : mergeTokenDetails(fromLlmOutput, fromMessage);
 }
 
-/** `primary` wins except on cache counts, where its zero would hide a real count
- *  on `secondary`. */
-function mergeCacheCounts(primary: MappedUsage, secondary: MappedUsage): MappedUsage {
+/** `primary` wins except on cache and reasoning counts, where its zero or
+ *  missing count would hide a real count on `secondary`. */
+function mergeTokenDetails(primary: MappedUsage, secondary: MappedUsage): MappedUsage {
   return {
     ...primary,
     cacheReadInputTokens: preferPositive(
@@ -1037,6 +1038,7 @@ function mergeCacheCounts(primary: MappedUsage, secondary: MappedUsage): MappedU
       primary.cacheWriteInputTokens,
       secondary.cacheWriteInputTokens,
     ),
+    reasoningTokens: preferPositive(primary.reasoningTokens, secondary.reasoningTokens),
   };
 }
 
@@ -1071,12 +1073,14 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
   const cacheReadInputTokens = numField(details, 'cache_read') ?? firstNum(u, CACHE_READ_KEYS);
   const cacheWriteInputTokens =
     numField(details, 'cache_creation') ?? firstNum(u, CACHE_WRITE_KEYS);
+  const reasoningTokens = numField(readObject(u, 'output_token_details'), 'reasoning');
 
   if (
     inputTokens == null &&
     outputTokens == null &&
     cacheReadInputTokens == null &&
-    cacheWriteInputTokens == null
+    cacheWriteInputTokens == null &&
+    reasoningTokens == null
   ) {
     return undefined;
   }
@@ -1085,6 +1089,7 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
     outputTokens,
     cacheReadInputTokens,
     cacheWriteInputTokens,
+    reasoningTokens,
   };
 }
 
