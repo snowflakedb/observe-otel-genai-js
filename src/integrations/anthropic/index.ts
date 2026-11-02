@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Anthropic SDK adapter.
  *
@@ -17,7 +34,7 @@ import type { Client } from '../../client.js';
 import type { GenerationStart } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart, thinkingPart, toolCallPart } from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import {
   type AnthropicBlock as AntBlock,
   type AnthropicMessageParam as AntMessageParam,
@@ -85,6 +102,7 @@ async function runMessageCreate(
     rec.setResult({ input: mapAnthropicInput(params.messages) });
     let firstTokenSeen = false;
     let finalUsage: AnthropicUsageShape | undefined;
+    let hasFinalUsage = false;
     let finalModel: string | undefined;
     let finalStopReason: string | undefined;
     let finalId: string | undefined;
@@ -147,17 +165,27 @@ async function runMessageCreate(
           const delta = (event as { delta?: { stop_reason?: string } }).delta;
           if (delta?.stop_reason) finalStopReason = delta.stop_reason;
           const usage = (event as { usage?: AnthropicUsageShape }).usage;
-          if (usage) finalUsage = { ...finalUsage, ...usage };
+          if (usage) {
+            finalUsage = { ...finalUsage, ...usage };
+            hasFinalUsage = true;
+          }
         }
       },
       onComplete: async () => {
+        // A caller that stops before message_delta has only message_start's usage,
+        // whose output count is taken as the reply starts, so it is left out rather
+        // than reported low.
+        const partial = !hasFinalUsage;
+        const usage =
+          partial && finalUsage ? { ...finalUsage, output_tokens: undefined } : finalUsage;
         rec.setResult({
           responseId: finalId,
           responseModel: finalModel,
           stopReason: finalStopReason,
-          usage: mapAnthropicUsage(finalUsage),
+          usage: mapAnthropicUsage(usage),
           output: buildAnthropicStreamOutput(blockAcc),
         });
+        if (partial) rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
         await rec.end();
       },
       onError: async (err) => {
@@ -172,6 +200,7 @@ async function runMessageCreate(
   }
 
   await using rec = client.startGeneration(seed);
+  rec.setResult({ input: mapAnthropicInput(params.messages) });
   try {
     const result = (await anthropic.messages.create(params)) as AnthropicMessage;
     rec.setResult({
@@ -179,7 +208,6 @@ async function runMessageCreate(
       responseModel: result.model,
       stopReason: result.stop_reason ?? undefined,
       usage: mapAnthropicUsage(result.usage as unknown as AnthropicUsageShape),
-      input: mapAnthropicInput(params.messages),
       output: mapAnthropicOutput((result as { content?: unknown }).content),
     });
     return result;
@@ -231,6 +259,7 @@ interface AnthropicUsageShape {
   output_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  output_tokens_details?: { thinking_tokens?: number } | null;
 }
 
 function mapAnthropicUsage(usage: AnthropicUsageShape | undefined) {
@@ -238,8 +267,9 @@ function mapAnthropicUsage(usage: AnthropicUsageShape | undefined) {
   return {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
-    cacheCreationInputTokens: usage.cache_creation_input_tokens,
+    cacheWriteInputTokens: usage.cache_creation_input_tokens,
     cacheReadInputTokens: usage.cache_read_input_tokens,
+    reasoningTokens: usage.output_tokens_details?.thinking_tokens,
   };
 }
 

@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Shared, framework-agnostic mapping helpers + duck-typed AI SDK v7 event
  * shapes for the Vercel adapter.
@@ -16,11 +33,14 @@ import type { ModelMessage } from 'ai';
 import {
   type Message,
   type Part,
+  type ToolResult,
   textPart,
   thinkingPart,
   toolCallPart,
   toolResultPart,
+  userTextMessage,
 } from '../../models/message.js';
+import type { AiCallSettings, AiUsage } from './_model.js';
 
 // ---------------------------------------------------------------------------
 // Duck-typed AI SDK event shapes — we only read what we need
@@ -39,6 +59,8 @@ export interface AiContentPart {
   input?: unknown;
   output?: unknown;
   error?: unknown;
+  /** Set on tool calls and results a provider ran itself (e.g. web search). */
+  providerExecuted?: boolean;
 }
 
 export interface AiModelMessage {
@@ -107,16 +129,7 @@ export interface AiStepFinishEvent {
   toolCalls: AiToolCall[];
   toolResults: AiToolResult[];
   finishReason: string;
-  usage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-    cacheReadInputTokens?: number;
-    cacheCreationInputTokens?: number;
-    reasoningTokens?: number;
-    promptTokens?: number; // v5 compat
-    completionTokens?: number; // v5 compat
-  };
+  usage: AiUsage;
   response: {
     id?: string;
     modelId?: string;
@@ -127,7 +140,44 @@ export interface AiChunkEvent {
   chunk: { type: string; text?: string };
 }
 
+/**
+ * `onLanguageModelCallStart` event (AI SDK v7): the settings this model call uses,
+ * and `tools`, the definitions it is sent.
+ */
+export interface AiLanguageModelCallStartEvent extends AiCallSettings {
+  callId: string;
+  tools?: unknown;
+}
+
+/**
+ * `onLanguageModelCallEnd` event (AI SDK v7): the step's model call is done, before
+ * its tools run. `timeToFirstOutputMs` is set for streamed calls.
+ */
+export interface AiLanguageModelCallEndEvent {
+  callId: string;
+  performance?: { timeToFirstOutputMs?: number };
+}
+
+/** `onEmbedStart` event (AI SDK v7): one embedding model call of an `embed` or `embedMany`. */
+export interface AiEmbedStartEvent {
+  callId: string;
+  embedCallId: string;
+  provider: string;
+  modelId: string;
+  values: string[];
+}
+
+/** `onEmbedEnd` event (AI SDK v7): that model call's result. */
+export interface AiEmbedEndEvent {
+  callId: string;
+  embedCallId: string;
+  embeddings?: unknown[][];
+  usage?: { tokens?: number };
+}
+
+/** `onError` event (AI SDK v7). The SDK types it as `unknown` but passes `{ callId, error }`. */
 export interface AiErrorEvent {
+  callId: string;
   error: unknown;
 }
 
@@ -136,7 +186,7 @@ export interface AiErrorEvent {
  * model info, the initial prompt `messages`, `instructions`, and the
  * user-defined `runtimeContext`. Used to open the `invoke_agent` span.
  */
-export interface AiOperationStartEvent {
+export interface AiOperationStartEvent extends AiCallSettings {
   callId: string;
   operationId?: string;
   provider?: string;
@@ -153,7 +203,9 @@ export interface AiOperationStartEvent {
  */
 export interface AiOperationEndEvent {
   callId: string;
+  /** Every step's content joined, the app's tool results included. */
   content?: AiContentPart[];
+  /** The final step's text. */
   text?: string;
   finishReason?: string;
   usage?: unknown;
@@ -204,6 +256,7 @@ export interface AiObjectStepEndEvent {
   finishReason?: string;
   usage?: unknown;
   response?: { id?: string; modelId?: string };
+  msToFirstChunk?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +294,16 @@ export function toAgentInputMessages(messages: ModelMessage[]): Message[] {
   return mapModelMessages(messages as unknown as AiModelMessage[]);
 }
 
+/** Maps a call's `prompt` (text or messages) or `messages` to input messages. */
+export function mapCallPrompt(params: {
+  prompt?: string | ModelMessage[];
+  messages?: ModelMessage[];
+}): Message[] {
+  const prompt = params.messages ?? params.prompt;
+  if (typeof prompt === 'string') return [userTextMessage(prompt)];
+  return prompt ? toAgentInputMessages(prompt) : [];
+}
+
 /**
  * Converts `AiContentPart[]` (from a message's content array) to genai-otel `Part[]`.
  */
@@ -268,7 +331,7 @@ export function mapContentParts(content: AiContentPart[]): Part[] {
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
-            contentJson: jsonString(c.output),
+            ...unwrapToolOutput(c.output),
           }),
         );
         break;
@@ -278,24 +341,30 @@ export function mapContentParts(content: AiContentPart[]): Part[] {
 }
 
 /**
- * Converts `StepResult.content[]` to genai-otel output `Message[]`.
- * Assembles assistant parts (text + reasoning + tool-calls) and tool-role parts
- * (results + errors).
+ * Converts `StepResult.content[]` to the step's `gen_ai.output.messages`: at most
+ * one assistant message, holding what the model returned (text, reasoning, tool
+ * calls, and the results of tools the provider ran itself). A step's
+ * `tool-result.output` is what the tool returned, not the `{ type, value }`
+ * wrapper model messages use, so it is recorded as is.
+ *
+ * The AI SDK runs the app's tools inside the step, so `content` also carries
+ * their results and errors. The app produced those after the model call ended,
+ * so they are left out: they belong on the `execute_tool` span and in the next
+ * step's input messages.
  */
-export function mapStepContent(content: AiContentPart[]): Message[] {
-  const assistantParts: Part[] = [];
-  const toolParts: Part[] = [];
+export function mapStepOutput(content: AiContentPart[]): Message[] {
+  const parts: Part[] = [];
 
   for (const c of content) {
     switch (c.type) {
       case 'text':
-        if (typeof c.text === 'string') assistantParts.push(textPart(c.text));
+        if (typeof c.text === 'string') parts.push(textPart(c.text));
         break;
       case 'reasoning':
-        if (typeof c.text === 'string') assistantParts.push(thinkingPart(c.text));
+        if (typeof c.text === 'string') parts.push(thinkingPart(c.text));
         break;
       case 'tool-call':
-        assistantParts.push(
+        parts.push(
           toolCallPart({
             name: c.toolName ?? '',
             id: c.toolCallId,
@@ -304,7 +373,8 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
         );
         break;
       case 'tool-result':
-        toolParts.push(
+        if (!c.providerExecuted) break;
+        parts.push(
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
@@ -313,7 +383,8 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
         );
         break;
       case 'tool-error':
-        toolParts.push(
+        if (!c.providerExecuted) break;
+        parts.push(
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
@@ -325,10 +396,7 @@ export function mapStepContent(content: AiContentPart[]): Message[] {
     }
   }
 
-  const messages: Message[] = [];
-  if (assistantParts.length > 0) messages.push({ role: 'assistant', parts: assistantParts });
-  if (toolParts.length > 0) messages.push({ role: 'tool', parts: toolParts });
-  return messages;
+  return parts.length > 0 ? [{ role: 'assistant', parts }] : [];
 }
 
 /**
@@ -388,7 +456,7 @@ export function mapProviderParts(content: AiProviderPart[]): Part[] {
           toolResultPart({
             toolCallId: c.toolCallId,
             name: c.toolName,
-            contentJson: jsonString(c.output),
+            ...unwrapToolOutput(c.output),
           }),
         );
         break;
@@ -400,6 +468,31 @@ export function mapProviderParts(content: AiProviderPart[]): Part[] {
 export function normalizeRole(role: string): Message['role'] {
   if (role === 'user' || role === 'assistant' || role === 'tool' || role === 'system') return role;
   return 'user';
+}
+
+/**
+ * Model messages and prompts wrap a tool's output as `{ type, value }`. Records
+ * `value`, the output as the tool returned it. Anything else, such as a denied
+ * execution, is recorded as is.
+ */
+function unwrapToolOutput(
+  output: unknown,
+): Pick<ToolResult, 'content' | 'contentJson' | 'isError'> {
+  const { type, value } = (output ?? {}) as { type?: unknown; value?: unknown };
+  switch (type) {
+    case 'text':
+      return { content: jsonString(value) };
+    case 'error-text':
+      return { content: jsonString(value), isError: true };
+    // Always encoded, so a JSON string value stays a string rather than being parsed.
+    case 'json':
+    case 'content':
+      return { contentJson: JSON.stringify(value) };
+    case 'error-json':
+      return { contentJson: JSON.stringify(value), isError: true };
+    default:
+      return { contentJson: jsonString(output) };
+  }
 }
 
 export function jsonString(value: unknown): string | undefined {

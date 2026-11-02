@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * The `allow_list` content mode. Spans started under it are wrapped in an
  * `AllowListSpan`, which forwards only what the allowlist permits:
@@ -25,8 +42,7 @@ import type {
  * Span attribute keys kept under the `allow_list` content mode. Matching is by
  * exact key; anything not listed is dropped.
  *
- * Adding a key needs a privacy review. The Python SDK (observe-otel-genai-python,
- * `_content_allow_list.json`) applies the same list, so change both together.
+ * Adding a key needs a privacy review.
  */
 export const CONTENT_ALLOW_LIST: ReadonlySet<string> = new Set([
   'error.category',
@@ -61,11 +77,12 @@ export const CONTENT_ALLOW_LIST: ReadonlySet<string> = new Set([
   'gen_ai.tool.description',
   'gen_ai.tool.name',
   'gen_ai.tool.type',
-  'gen_ai.usage.cache_creation.input_tokens',
   'gen_ai.usage.cache_read.input_tokens',
+  'gen_ai.usage.cache_write.input_tokens',
   'gen_ai.usage.input_tokens',
   'gen_ai.usage.output_tokens',
   'gen_ai.usage.reasoning.output_tokens',
+  'gen_ai.workflow.name',
   'genai.conversation.turn_index',
   'genai.conversation.turn_role',
   'genai.generation.id',

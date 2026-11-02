@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenTelemetry instrumentation for the Claude Agent SDK.
  *
@@ -6,8 +23,9 @@
  *
  *   registerInstrumentations({ instrumentations: [new ClaudeAgentSdkInstrumentation()] });
  *
- * It replaces the module's `query` and `startup` exports with traced wrappers, so every
- * `query()` in the process is traced with no per-call-site wiring.
+ * It replaces the `query` and `startup` exports of the root entry and the `/core` entry
+ * with traced wrappers, so every `query()` in the process is traced with no
+ * per-call-site wiring.
  *
  * The SDK ships only an ESM build, and a native ESM namespace rejects writes, so the
  * patch needs the OpenTelemetry ESM loader hook registered before the SDK is first
@@ -19,9 +37,11 @@ import {
   InstrumentationBase,
   type InstrumentationConfig,
   InstrumentationNodeModuleDefinition,
+  InstrumentationNodeModuleFile,
 } from '@opentelemetry/instrumentation';
 
 import { Client } from '../../client.js';
+import type { IdentityFields } from '../../models/identity.js';
 import { VERSION } from '../../version.js';
 import { type ClaudeAgentSdkOptions, wrapQuery, wrapStartup } from './index.js';
 import { isTracedQuery } from './traced-queries.js';
@@ -31,6 +51,8 @@ const MODULE_NAME = '@anthropic-ai/claude-agent-sdk';
 // Pre-1.0, so a minor release can break the message shapes read here. Tested live on
 // 0.3.142 (the first 0.3 release) through 0.3.278, each with its bundled CLI.
 const SUPPORTED_VERSIONS = ['>=0.3.142 <0.4.0'];
+/** The `/core` entry, a separate bundle from the root entry. Shipped since 0.3.282. */
+const CORE_FILE = `${MODULE_NAME}/core.mjs`;
 
 /** The subset of the SDK's module namespace this instrumentation touches. */
 interface ClaudeAgentSdkModuleExports {
@@ -38,9 +60,10 @@ interface ClaudeAgentSdkModuleExports {
   startup?: AgentStartupFn;
 }
 
+/** Identity is set per call with `wrapQuery` options or a `withX(...)` scope, not here. */
 export interface ClaudeAgentSdkInstrumentationConfig
   extends InstrumentationConfig,
-    ClaudeAgentSdkOptions {
+    Omit<ClaudeAgentSdkOptions, keyof IdentityFields> {
   /** Reuse an existing `Client`. When omitted, one is created from the global providers. */
   client?: Client;
 }
@@ -67,12 +90,15 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
   }
 
   protected init(): InstrumentationNodeModuleDefinition {
+    const patch = (moduleExports: ClaudeAgentSdkModuleExports, moduleVersion?: string) =>
+      this.patch(moduleExports, moduleVersion);
+    const unpatch = (moduleExports?: ClaudeAgentSdkModuleExports) => this.unpatch(moduleExports);
     return new InstrumentationNodeModuleDefinition(
       MODULE_NAME,
       SUPPORTED_VERSIONS,
-      (moduleExports: ClaudeAgentSdkModuleExports, moduleVersion?: string) =>
-        this.patch(moduleExports, moduleVersion),
-      (moduleExports?: ClaudeAgentSdkModuleExports) => this.unpatch(moduleExports),
+      patch,
+      unpatch,
+      [new InstrumentationNodeModuleFile(CORE_FILE, SUPPORTED_VERSIONS, patch, unpatch)],
     );
   }
 
@@ -86,7 +112,7 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
   }
 
   /** The adapter options, with the instrumentation-level keys stripped. */
-  private adapterOptions(): ClaudeAgentSdkOptions {
+  private adapterOptions(): Omit<ClaudeAgentSdkOptions, keyof IdentityFields> {
     const { client: _client, enabled: _enabled, ...options } = this.getConfig();
     return options;
   }

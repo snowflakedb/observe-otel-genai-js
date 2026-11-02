@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for `OpenAIInstrumentation`.
  *
@@ -20,17 +37,25 @@ import { DiagLogLevel, diag } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { withAgent, withContentCaptureMode, withConversationId } from '../../src/context.js';
 import { isInstrumented } from '../../src/integrations/_common/instrumented.js';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_CONVERSATION_ID,
+  ATTR_CONVERSATION_TURN_ROLE,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
+  ATTR_OUTPUT_TYPE,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
+  ATTR_SERVER_ADDRESS,
+  ATTR_SERVER_PORT,
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
@@ -154,6 +179,7 @@ describe('OpenAIInstrumentation', () => {
     expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(7);
     expect(span.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(3);
     expect(span.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(2);
+    expect(span.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(1);
     expect(span.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
   });
 
@@ -248,6 +274,132 @@ describe('OpenAIInstrumentation', () => {
     expect(spans[0]?.attributes[ATTR_REQUEST_MODEL]).toBe('text-embedding-3-small');
   });
 
+  it('records the server address and port on chat and embeddings spans', async () => {
+    const client = await setup((req) =>
+      req.url.includes('embeddings')
+        ? {
+            object: 'list',
+            model: 'text-embedding-3-small',
+            data: [{ object: 'embedding', index: 0, embedding: [0.1] }],
+            usage: { prompt_tokens: 1, total_tokens: 1 },
+          }
+        : chatCompletion(),
+    );
+    const { hostname, port } = new URL(server.baseURL);
+
+    await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    await client.embeddings.create({ model: 'text-embedding-3-small', input: 'hi' });
+
+    expect(h.spans.getFinishedSpans()).toHaveLength(2);
+    for (const span of h.spans.getFinishedSpans()) {
+      expect(span.attributes[ATTR_SERVER_ADDRESS], span.name).toBe(hostname);
+      expect(span.attributes[ATTR_SERVER_PORT], span.name).toBe(Number(port));
+    }
+  });
+
+  it('records the server address through wrapOpenAI too', async () => {
+    const client = await setup(() => chatCompletion());
+    unpatch?.();
+    unpatch = undefined;
+    await wrapOpenAI(h.client, client).chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(onlyChatSpan(h).attributes[ATTR_SERVER_ADDRESS]).toBe(new URL(server.baseURL).hostname);
+  });
+
+  it('maps the Chat Completions response_format to gen_ai.output.type', async () => {
+    const client = await setup(() => chatCompletion());
+    const ask = (response_format: unknown) =>
+      client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        response_format,
+      } as never);
+
+    await ask({ type: 'json_object' });
+    await ask({ type: 'json_schema', json_schema: { name: 'x', schema: { type: 'object' } } });
+    await ask({ type: 'text' });
+    await ask(undefined);
+
+    expect(chatSpans(h).map((s) => s.attributes[ATTR_OUTPUT_TYPE])).toEqual([
+      'json',
+      'json',
+      'text',
+      undefined,
+    ]);
+  });
+
+  it('maps a Responses json_object format to gen_ai.output.type', async () => {
+    const client = await setup(() => responsesMessage());
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      text: { format: { type: 'json_object' } },
+    });
+
+    expect(onlyChatSpan(h).attributes[ATTR_OUTPUT_TYPE]).toBe('json');
+  });
+
+  it('records Chat Completions tool definitions under each capture mode', async () => {
+    const tools = [
+      {
+        type: 'function' as const,
+        function: {
+          name: 'get_weather',
+          description: 'Look up weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      },
+      { type: 'custom' as const, custom: { name: 'run_sql', description: 'Run a query' } },
+    ];
+    const ask = async (contentCapture: 'full' | 'no_tool_content' | 'metadata_only') => {
+      const client = await setup(() => chatCompletion(), { contentCapture });
+      await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools,
+      });
+      const value = onlyChatSpan(h).attributes[ATTR_TOOL_DEFINITIONS];
+      unpatch?.();
+      unpatch = undefined;
+      await server.close();
+      h.spans.reset();
+      return value === undefined ? undefined : String(value);
+    };
+
+    const full = await ask('full');
+    expect(full).toContain('get_weather');
+    expect(full).toContain('Look up weather');
+    expect(full).toContain('city');
+    expect(full).toContain('run_sql');
+    const names = await ask('no_tool_content');
+    expect(names).toContain('get_weather');
+    expect(names).toContain('run_sql');
+    expect(names).not.toContain('Look up weather');
+    expect(await ask('metadata_only')).toBeUndefined();
+  });
+
+  it('keeps the content of a call returned from a withContentCaptureMode scope', async () => {
+    const client = await setup(() => chatCompletion());
+
+    await withContentCaptureMode('full', () =>
+      client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hi there' }],
+        tools: [{ type: 'function', function: { name: 'get_weather', parameters: {} } }],
+      }),
+    );
+
+    const span = onlyChatSpan(h);
+    expect(String(span.attributes[ATTR_INPUT_MESSAGES])).toContain('hi there');
+    expect(String(span.attributes[ATTR_TOOL_DEFINITIONS])).toContain('get_weather');
+  });
+
   it('preserves the APIPromise so withResponse() still works', async () => {
     const client = await setup(() => chatCompletion({ id: 'chatcmpl-wr' }));
 
@@ -278,7 +430,7 @@ describe('OpenAIInstrumentation', () => {
   });
 
   it('applies config metadata as a default and lets withMetadata override it', async () => {
-    const client = await setup(() => chatCompletion(), { agentName: 'config-default' });
+    const client = await setup(() => chatCompletion(), { turnRole: 'config-default' });
 
     await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -287,12 +439,68 @@ describe('OpenAIInstrumentation', () => {
     await client.chat.completions.create(
       withMetadata(
         { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
-        { agentName: 'per-call' },
+        { turnRole: 'per-call' },
       ),
     );
 
+    const roles = chatSpans(h).map((s) => s.attributes[ATTR_CONVERSATION_TURN_ROLE]);
+    expect(roles).toEqual(['config-default', 'per-call']);
+  });
+
+  it('takes identity from withMetadata over the enclosing scope', async () => {
+    const client = await setup(() => chatCompletion());
+    const params = { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] };
+
+    await withAgent('scoped', async () => {
+      await client.chat.completions.create({ ...params });
+      await client.chat.completions.create(withMetadata({ ...params }, { agentName: 'per-call' }));
+    });
+
     const names = chatSpans(h).map((s) => s.attributes[ATTR_AGENT_NAME]);
-    expect(names).toEqual(['config-default', 'per-call']);
+    expect(names).toEqual(['scoped', 'per-call']);
+  });
+
+  it('gives chat spans inside client.invokeAgent the agent identity', async () => {
+    const client = await setup(() => chatCompletion());
+    await withAgent('outer-agent', '3', () =>
+      h.client.invokeAgent(
+        { agentName: 'support-agent', conversationId: 'conv-1', userId: 'user-1' },
+        () =>
+          client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+      ),
+    );
+
+    const span = onlyChatSpan(h);
+    expect(span.attributes[ATTR_AGENT_NAME]).toBe('support-agent');
+    expect(span.attributes['gen_ai.agent.version']).toBeUndefined();
+    expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('conv-1');
+    expect(span.attributes['user.id']).toBe('user-1');
+  });
+
+  it("reads the Responses request's conversation as the conversation id", async () => {
+    const client = await setup(() => responsesMessage());
+
+    await client.responses.create({ model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_1' });
+    await client.responses.create({
+      model: 'gpt-4o-mini',
+      input: 'hi',
+      conversation: { id: 'conv_2' },
+    });
+    await withConversationId('scoped', () =>
+      client.responses.create({ model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_3' }),
+    );
+    await client.responses.create(
+      withMetadata(
+        { model: 'gpt-4o-mini', input: 'hi', conversation: 'conv_4' },
+        { conversationId: 'per-call' },
+      ),
+    );
+
+    const ids = chatSpans(h).map((s) => s.attributes[ATTR_CONVERSATION_ID]);
+    expect(ids).toEqual(['conv_1', 'conv_2', 'conv_3', 'per-call']);
   });
 
   it('does not leak the metadata symbol into the request body', async () => {

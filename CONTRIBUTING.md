@@ -32,9 +32,10 @@ failure, so a lint or type error surfaces without waiting on the suite. Use
 ## Conventions
 
 - TypeScript strict mode. No `any` outside provider-typed boundaries.
-- Keep core (`src/`) free of `@opentelemetry/sdk-*` imports — only
-  `@opentelemetry/api` types are allowed in core. SDK code lives in
-  `src/bootstrap/`.
+- Keep `src/` free of `@opentelemetry/sdk-*` imports outside `src/bootstrap/`.
+  The core imports only `@opentelemetry/api`; the OTel-native
+  instrumentations in `src/integrations/` also use
+  `@opentelemetry/instrumentation`.
 - Library-specific attributes go under the `genai.*` namespace; only OTel
   spec attributes use `gen_ai.*`.
 - Tests are in `test/`. Vitest. Use the `_harness` for end-to-end span /
@@ -43,9 +44,8 @@ failure, so a lint or type error surfaces without waiting on the suite. Use
 
 ## Contributor agreement
 
-A contributor agreement mechanism (DCO sign-off or CLA) is pending and will be
-finalized before contributions are accepted. Until it is in place, external PRs
-may be held; check back here or ask a maintainer for the current status.
+Before we can merge your pull request, you need to agree to the Snowflake
+[contributor license agreement](https://github.com/Snowflake-Labs/CLA).
 
 ## Reporting issues
 

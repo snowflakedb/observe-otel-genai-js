@@ -1,7 +1,22 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveConfig } from '../src/config.js';
 import {
-  DEFAULT_MAX_CONTENT_LENGTH,
   defaultContentCapture,
   resolveContentCaptureMode,
   truncate,
@@ -94,36 +109,16 @@ describe('content on span attributes', () => {
     expect(system).toEqual([{ type: 'text', content: 'You are helpful' }]);
   });
 
-  const overDefaultCap = 'X'.repeat(DEFAULT_MAX_CONTENT_LENGTH + 1);
-
-  it('trims content longer than the default cap', async () => {
+  it('does not truncate by default (unlimited) — emits full valid JSON', async () => {
+    const long = 'X'.repeat(100_000);
     const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: overDefaultCap }] }] });
+    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: long }] }] });
     await rec.end();
 
     const [span] = h.spans.getFinishedSpans();
     const raw = span!.attributes[ATTR_INPUT_MESSAGES] as string;
-    expect(raw.length).toBeLessThanOrEqual(DEFAULT_MAX_CONTENT_LENGTH);
-    expect(JSON.parse(raw)[0].role).toBe('user');
-    expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBe(true);
-  });
-
-  it('keeps the default cap when only other capture fields are set', () => {
-    const config = resolveConfig({ contentCapture: { truncationStrategy: 'end' } });
-    expect(config.contentCapture.maxContentLength).toBe(DEFAULT_MAX_CONTENT_LENGTH);
-  });
-
-  it.each([0, Number.POSITIVE_INFINITY])('maxContentLength %s turns the cap off', async (cap) => {
-    await h.shutdown();
-    h = createHarness({ contentCaptureMode: 'full', contentCapture: { maxContentLength: cap } });
-
-    const rec = h.client.startGeneration({ model: { provider: 'p', name: 'm' } });
-    rec.setResult({ input: [{ role: 'user', parts: [{ kind: 'text', text: overDefaultCap }] }] });
-    await rec.end();
-
-    const [span] = h.spans.getFinishedSpans();
-    const parsed = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
-    expect(parsed[0].parts[0].content).toBe(overDefaultCap);
+    const parsed = JSON.parse(raw);
+    expect(parsed).toEqual([{ role: 'user', parts: [{ type: 'text', content: long }] }]);
     expect(span!.attributes[`${ATTR_INPUT_MESSAGES}.truncated`]).toBeUndefined();
   });
 

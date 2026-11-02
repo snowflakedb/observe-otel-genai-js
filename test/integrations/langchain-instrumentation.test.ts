@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for `LangChainInstrumentation`.
  *
@@ -14,15 +31,18 @@
 
 import { CallbackManager } from '@langchain/core/callbacks/manager';
 import { awaitAllCallbacks } from '@langchain/core/callbacks/promises';
+import { Serializable } from '@langchain/core/load/serializable';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { GenAIOtelCallbackHandler } from '../../src/integrations/langchain/index.js';
 import { LangChainInstrumentation } from '../../src/integrations/langchain/instrumentation.js';
 import {
   ATTR_AGENT_NAME,
   ATTR_CONVERSATION_ID,
   ATTR_OPERATION_NAME,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
@@ -60,13 +80,12 @@ describe('LangChainInstrumentation — auto-injection', () => {
     // the test doesn't depend on module-load interception under vitest.
     const instr = new LangChainInstrumentation({
       client: h.client,
-      agentName: 'auto-agent',
       enabled: false,
     });
     const unpatch = patchLangChain(instr);
     try {
       const echo = RunnableLambda.from((x: unknown) => x);
-      await echo.invoke({ q: 'hello' });
+      await echo.withConfig({ runName: 'auto-agent' }).invoke({ q: 'hello' });
       await awaitAllCallbacks();
       await instr.handler.dispose();
 
@@ -122,12 +141,7 @@ describe('LangChainInstrumentation — auto-injection', () => {
   });
 
   it('does not double-instrument when the same run nests', async () => {
-    const instr = new LangChainInstrumentation({
-      client: h.client,
-      agentName: 'auto-agent',
-      captureNestedChains: false,
-      enabled: false,
-    });
+    const instr = new LangChainInstrumentation({ client: h.client, enabled: false });
     const unpatch = patchLangChain(instr);
     try {
       // A pipe is a RunnableSequence: the sequence is the top-level run and each
@@ -140,7 +154,7 @@ describe('LangChainInstrumentation — auto-injection', () => {
       await instr.handler.dispose();
 
       // Only the top-level sequence becomes an invoke_agent span; the nested
-      // steps inherit the handler but are skipped (captureNestedChains: false).
+      // steps inherit the handler but are skipped.
       expect(invokeAgentSpans(h)).toHaveLength(1);
     } finally {
       unpatch();
@@ -178,13 +192,12 @@ describe('LangChainInstrumentation — manuallyInstrument (ESM entry point)', ()
   it('injects the handler via the public manuallyInstrument entry point', async () => {
     const instr = new LangChainInstrumentation({
       client: h.client,
-      agentName: 'manual-agent',
       enabled: false,
     });
     instr.manuallyInstrument({ CallbackManager });
     try {
       const echo = RunnableLambda.from((x: unknown) => x);
-      await echo.invoke({ q: 'hello' });
+      await echo.withConfig({ runName: 'manual-agent' }).invoke({ q: 'hello' });
       await awaitAllCallbacks();
       await instr.handler.dispose();
 
@@ -227,5 +240,128 @@ describe('LangChainInstrumentation — manuallyInstrument (ESM entry point)', ()
 
     expect(invokeAgentSpans(h)).toHaveLength(0);
     unpatch(instr); // redundant unpatch after disable() must not throw
+  });
+});
+
+/**
+ * Stands in for LangGraph's `Pregel`, which this repo does not depend on. Like a
+ * real compiled graph it serializes under the `langgraph`/`pregel` namespace and
+ * keeps its own name, nodes and config, where `createAgent` writes its markers.
+ */
+class FakePregel extends Serializable {
+  lc_namespace = ['langgraph', 'pregel'];
+  readonly name?: string;
+  readonly nodes: Record<string, unknown>;
+  readonly config: { metadata?: Record<string, unknown> };
+  constructor(graph: Partial<Pick<FakePregel, 'name' | 'nodes' | 'config'>> = {}) {
+    super({});
+    this.name = graph.name;
+    this.nodes = graph.nodes ?? { __start__: {} };
+    this.config = graph.config ?? {};
+  }
+}
+
+const createAgentConfig = { metadata: { ls_integration: 'langchain_create_agent' } };
+
+describe('LangChainInstrumentation — what a LangGraph graph says about itself', () => {
+  let h: Harness;
+  let instr: LangChainInstrumentation;
+  beforeEach(() => {
+    h = createHarness();
+    instr = new LangChainInstrumentation({ client: h.client, enabled: false });
+    instr.manuallyInstrument({ Pregel: FakePregel });
+  });
+  afterEach(async () => {
+    instr.disable();
+    await h.shutdown();
+  });
+
+  /** Starts and ends a top-level run of `graph`, as LangGraph does, with `metadata` on the run. */
+  async function runGraph(graph: FakePregel, metadata: Record<string, unknown>, runName: string) {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    await handler.handleChainStart(
+      graph.toJSON(),
+      {},
+      'g1',
+      undefined,
+      [],
+      metadata,
+      undefined,
+      runName,
+    );
+    await handler.handleChainEnd({}, 'g1');
+    return h.spans.getFinishedSpans()[0]!;
+  }
+
+  it('takes a createAgent graph from the graph itself, whatever the run metadata says', async () => {
+    const span = await runGraph(new FakePregel({ config: createAgentConfig }), {}, 'support');
+    expect(span.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+  });
+
+  it('knows a createAgent graph from langchain before 1.4.4 by its model node', async () => {
+    // Those versions put no marker in the graph's own config.
+    const graph = new FakePregel({ nodes: { __start__: {}, model_request: {} } });
+    const span = await runGraph(graph, {}, 'support');
+    expect(span.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+  });
+
+  it('names a createAgent graph by createAgent, not by a run that renames it', async () => {
+    const graph = new FakePregel({ name: 'planner', config: createAgentConfig });
+    expect((await runGraph(graph, {}, 'step1')).name).toBe('invoke_agent planner');
+  });
+
+  it("gives an unnamed createAgent graph the default name, not the run's", async () => {
+    const graph = new FakePregel({ name: 'LangGraph', config: createAgentConfig });
+    const span = await runGraph(graph, {}, 'step1');
+    expect(span.name).toBe('invoke_agent langchain');
+  });
+
+  it("gives an unnamed createAgent graph inside another agent its own span, not that agent's name", async () => {
+    const handler = new GenAIOtelCallbackHandler({ client: h.client });
+    const supervisor = new FakePregel({ name: 'supervisor', config: createAgentConfig });
+    const helper = new FakePregel({ name: 'LangGraph', config: createAgentConfig });
+    await handler.handleChainStart(
+      supervisor.toJSON(),
+      {},
+      'outer',
+      undefined,
+      [],
+      {},
+      undefined,
+      'supervisor',
+    );
+    await handler.handleChainStart(
+      helper.toJSON(),
+      {},
+      'inner',
+      'outer',
+      [],
+      {},
+      undefined,
+      'LangGraph',
+    );
+    for (const run of ['inner', 'outer']) await handler.handleChainEnd({}, run);
+
+    const spans = h.spans.getFinishedSpans();
+    expect(spans.map((s) => s.name).sort()).toEqual([
+      'invoke_agent langchain',
+      'invoke_agent supervisor',
+    ]);
+    const inner = spans.find((s) => s.name === 'invoke_agent langchain')!;
+    const outer = spans.find((s) => s.name === 'invoke_agent supervisor')!;
+    expect(inner.parentSpanContext?.spanId).toBe(outer.spanContext().spanId);
+  });
+
+  it('keeps a plain graph a workflow when its run inherits createAgent metadata', async () => {
+    // A graph run started inside a createAgent tool carries the agent's metadata.
+    const span = await runGraph(new FakePregel(), createAgentConfig.metadata, 'research_flow');
+    expect(span.name).toBe('invoke_workflow research_flow');
+    expect(span.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
+  });
+
+  it('falls back to the run metadata once the patch is removed', async () => {
+    instr.disable();
+    const span = await runGraph(new FakePregel(), createAgentConfig.metadata, 'research_flow');
+    expect(span.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
   });
 });

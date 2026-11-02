@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Structural types for the messages the Claude Agent SDK streams.
  *
@@ -33,17 +50,6 @@ export interface AgentUsage {
   output_tokens_details?: { thinking_tokens?: number };
 }
 
-/** Per-model totals from `result.modelUsage`, the only figures that cover subagents. */
-export interface AgentModelUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  /** Already counted in `outputTokens`. Absent on older CLIs. */
-  thinkingTokens?: number;
-  [key: string]: unknown;
-}
-
 export interface AgentMessage {
   type?: string;
   subtype?: string;
@@ -54,12 +60,12 @@ export interface AgentMessage {
   parent_tool_use_id?: string | null;
   /** Set when an interrupt cut the message short. */
   aborted?: true;
-  /** A tool's structured output. A delegation's carries its last call's final `usage`. */
-  tool_use_result?: unknown;
 
   // system/init
   session_id?: string;
   model?: string;
+  /** The tools the main agent can call this turn, MCP tools included. */
+  tools?: string[];
 
   // stream_event
   /** Carried on `message_start`. */
@@ -92,9 +98,6 @@ export interface AgentMessage {
   /** Why the run stopped, e.g. `completed`, `api_error`, `max_turns`. */
   terminal_reason?: string;
   stop_reason?: string | null;
-  /** Cumulative over the whole call, subagents included. */
-  total_cost_usd?: number;
-  modelUsage?: Record<string, AgentModelUsage>;
 
   [key: string]: unknown;
 }

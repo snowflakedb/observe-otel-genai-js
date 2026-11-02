@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Provider-error classification.
  *
@@ -16,9 +33,27 @@ import {
   ERR_CATEGORY_TIMEOUT,
   type ErrorCategory,
 } from '../semconv.js';
+import { readErrorMessage } from './serialize.js';
 
 const STATUS_CODE_FIELDS = ['status', 'statusCode', 'status_code', 'Status', 'StatusCode'] as const;
 const STATUS_REGEX = /\b([1-5][0-9][0-9])\b/g;
+
+/**
+ * `error.type` must stay low-cardinality, but error records can carry free text, so
+ * only class-like names pass. `TripwireTriggered` keeps OpenAI Agents guardrail trips
+ * visible.
+ */
+export const ERROR_CLASS_NAME =
+  /^(?:[A-Za-z_$][A-Za-z0-9_$.]{0,127})?(?:Error|Exception|TripwireTriggered)$/;
+
+/** The class name of a thrown `Error`, such as `AuthenticationError`, when it looks like one. */
+export function errorClassName(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  // The openai package's error classes leave `name` as 'Error'.
+  const className = err.constructor.name;
+  const name = err.name === 'Error' && ERROR_CLASS_NAME.test(className) ? className : err.name;
+  return ERROR_CLASS_NAME.test(name) ? name : undefined;
+}
 
 /**
  * Returns one of the canonical `error.category` values for `err`. Returns
@@ -106,10 +141,18 @@ function asStatusCode(value: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Text scanned for "timeout" / "deadline exceeded" and, when no status field
+ * matched, for a 3-digit HTTP code.
+ *
+ * This is the string message only. A JSON dump of the whole value would let an
+ * incidental number in the payload be read as a status. Numbers and other
+ * primitives still stringify, which is how a bare status code is recognized.
+ */
 function stringify(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (value instanceof Error) return value.message;
+  const message = readErrorMessage(value);
+  if (message != null) return message;
+  if (value == null || typeof value === 'object') return '';
   try {
     return String(value);
   } catch {

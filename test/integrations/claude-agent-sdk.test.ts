@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for the Claude Agent SDK adapter.
  *
@@ -12,6 +29,7 @@ import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ClientConfig } from '../../src/config.js';
+import { withAgent, withConversationId } from '../../src/context.js';
 import {
   type ClaudeAgentSdkOptions,
   wrapQuery,
@@ -149,15 +167,6 @@ function result(extra: Partial<AgentMessage> = {}): AgentMessage {
     is_error: false,
     result: 'done',
     stop_reason: 'end_turn',
-    total_cost_usd: 0.0123,
-    modelUsage: {
-      [MODEL]: {
-        inputTokens: 100,
-        outputTokens: 50,
-        cacheReadInputTokens: 20,
-        cacheCreationInputTokens: 10,
-      },
-    },
     ...extra,
   };
 }
@@ -325,7 +334,7 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(JSON.stringify(input.at(-1))).toContain('tu_29');
   });
 
-  it('flags snapshot usage as partial and puts the run totals on invoke_agent', async () => {
+  it('flags snapshot usage as partial, on the chat span and on invoke_agent', async () => {
     const h = harness();
     await run(h, [
       init(),
@@ -341,32 +350,27 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(chat, 'gen_ai.usage.input_tokens')).toBe(9); // cache reads count as input
     expect(attr(chat, 'gen_ai.response.finish_reasons')).toEqual(['end_turn']);
 
+    // The agent's tokens are its calls': input and output only.
     const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(130); // 100 + 20 read + 10 write
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
-    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(10);
-    expect(attr(root, 'gen_ai.usage.cache_creation.input_tokens')).toBe(10);
-    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0123);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(9);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBeUndefined();
+    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBeUndefined();
+    expect(attr(root, 'genai.usage.is_partial')).toBe(true);
   });
 
-  it('keeps one invoke_agent span per query, with the latest result totals', async () => {
+  it('keeps one invoke_agent span per query, with its calls summed across results', async () => {
     const h = harness();
-    const totals = (input: number, cost: number) => ({
-      modelUsage: { [MODEL]: { inputTokens: input, outputTokens: 1 } },
-      total_cost_usd: cost,
-    });
     await run(h, [
       init(),
-      assistant('msg_1', [text('one')]),
-      result({ ...totals(100, 0.01), result: 'one' }),
-      assistant('msg_2', [text('two')]),
-      result({ ...totals(250, 0.03), result: 'two' }),
+      assistant('msg_1', [text('one')], { usage: { input_tokens: 100, output_tokens: 1 } }),
+      result({ result: 'one' }),
+      assistant('msg_2', [text('two')], { usage: { input_tokens: 150, output_tokens: 1 } }),
+      result({ result: 'two' }),
     ]);
 
     const root = findSpan(h, ROOT);
     expect(allSpans(h, ROOT)).toHaveLength(1);
     expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(250);
-    expect(attr(root, 'genai.usage.cost_usd')).toBe(0.03);
     expect(String(attr(root, 'gen_ai.output.messages'))).toContain('two');
     expect(childrenOf(h, root, CHAT)).toHaveLength(2);
   });
@@ -397,6 +401,43 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(subChat!, 'gen_ai.request.reasoning.level')).toBeUndefined();
     expect(attr(subChat!, 'gen_ai.agent.name')).toBe('helper');
     expect(attr(findSpan(h, ROOT), 'gen_ai.request.reasoning.level')).toBe('high');
+  });
+
+  it('lists the tools from init on main thread chat spans only, by the names the model calls', async () => {
+    const h = harness();
+    await run(h, [
+      { ...init(), tools: ['Bash', 'Task', 'mcp__docs__search'] },
+      assistant('msg_1', [delegate('task_1', 'helper')]),
+      assistant('msg_s1', [text('sub')], { parent: 'task_1' }),
+      taskNotification('task_1', 'ok'),
+      result(),
+    ]);
+
+    const mainChat = childrenOf(h, findSpan(h, ROOT), CHAT)[0];
+    const subChat = childrenOf(h, findSpan(h, 'invoke_agent helper'), CHAT)[0];
+    expect(JSON.parse(String(attr(mainChat!, 'gen_ai.tool.definitions')))).toEqual([
+      { type: 'function', name: 'Bash' },
+      { type: 'function', name: 'Agent' },
+      { type: 'extension', name: 'mcp__docs__search' },
+    ]);
+    expect(attr(subChat!, 'gen_ai.tool.definitions')).toBeUndefined();
+  });
+
+  it('takes the tools from the latest init, which starts each turn', async () => {
+    const h = harness();
+    await run(h, [
+      { ...init(), tools: ['Bash'] },
+      assistant('msg_1', [text('one')]),
+      result(),
+      { ...init(), tools: ['Bash', 'mcp__docs__search'] },
+      assistant('msg_2', [text('two')]),
+      result(),
+    ]);
+
+    const names = allSpans(h, CHAT).map((s) =>
+      JSON.parse(String(attr(s, 'gen_ai.tool.definitions'))).map((t: { name: string }) => t.name),
+    );
+    expect(names).toEqual([['Bash'], ['Bash', 'mcp__docs__search']]);
   });
 
   it('records a custom system prompt, but not a preset', async () => {
@@ -482,6 +523,32 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(chat, 'gen_ai.output.messages')).toBeUndefined();
   });
 
+  it('does not flag an agent partial for a failed API call, which uses no tokens', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100, { input_tokens: 10, output_tokens: 1 }),
+        assistant('msg_1', [text('first')]),
+        messageDelta({ output_tokens: 30 }),
+        {
+          type: 'assistant',
+          message: { id: 'uuid-1', model: '<synthetic>', content: [text('API Error: 529')] },
+          parent_tool_use_id: null,
+        },
+        result({ is_error: true, result: 'API Error: 529' }),
+      ],
+      {},
+      streamed,
+    );
+
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(10);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(30);
+    expect(attr(root, 'genai.usage.is_partial')).toBeUndefined();
+  });
+
   it('fails a subagent call that the API rejected', async () => {
     const h = harness();
     await run(h, [
@@ -511,80 +578,16 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(findSpan(h, CHAT).status.message).toBe('assistant message aborted');
   });
 
-  it('sums the run totals across models', async () => {
+  it("counts a resumed session's own calls, not the earlier session's", async () => {
     const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result({
-        modelUsage: {
-          [MODEL]: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 1 },
-          'claude-haiku-4-5': { inputTokens: 20, outputTokens: 7, cacheCreationInputTokens: 2 },
-        },
-      }),
-    ]);
+    await run(
+      h,
+      [init(), assistant('msg_1', [text('hi')], { usage: { input_tokens: 7 } }), result()],
+      {},
+      { resume: 'sess-0' },
+    );
 
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(33);
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(12);
-    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBe(1);
-    expect(attr(root, 'gen_ai.usage.cache_write.input_tokens')).toBe(2);
-  });
-
-  it('reports the run thinking tokens from modelUsage', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result({
-        modelUsage: {
-          [MODEL]: { inputTokens: 10, outputTokens: 40, thinkingTokens: 25 },
-          'claude-haiku-4-5': { inputTokens: 5, outputTokens: 8, thinkingTokens: 3 },
-        },
-      }),
-    ]);
-
-    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.reasoning.output_tokens')).toBe(28);
-  });
-
-  it('keeps the usage from before a /clear in the run totals', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('first')]),
-      result(),
-      { type: 'conversation_reset', new_conversation_id: 'conv-2' },
-      assistant('msg_2', [text('second')]),
-      result({
-        modelUsage: { [MODEL]: { inputTokens: 1, outputTokens: 2 } },
-        total_cost_usd: 0.001,
-      }),
-    ]);
-
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(52);
-    expect(attr(root, 'genai.usage.cost_usd')).toBeCloseTo(0.0133);
-  });
-
-  it('keeps the earlier totals when a later result reports zeroes', async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [text('hi')]),
-      result(),
-      result({ modelUsage: {}, total_cost_usd: 0 }),
-    ]);
-
-    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.output_tokens')).toBe(50);
-  });
-
-  it('reports no run totals for a resumed session', async () => {
-    const h = harness();
-    await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {}, { resume: 'sess-0' });
-
-    const root = findSpan(h, ROOT);
-    expect(attr(root, 'gen_ai.usage.input_tokens')).toBeUndefined();
-    expect(attr(root, 'genai.usage.cost_usd')).toBeUndefined();
+    expect(attr(findSpan(h, ROOT), 'gen_ai.usage.input_tokens')).toBe(7);
   });
 
   it('applies the run options to each span type that has a field for them', async () => {
@@ -601,13 +604,14 @@ describe('Claude Agent SDK adapter: model calls', () => {
       ],
       {
         userId: 'user-7',
+        agentName: 'billing-bot',
         agentVersion: '2.0',
         conversationTitle: 'Billing question',
         parentGenerationIds: ['gen-parent'],
       },
     );
 
-    const root = findSpan(h, ROOT);
+    const root = findSpan(h, 'invoke_agent billing-bot');
     const mainChat = childrenOf(h, root, CHAT)[0]!;
     const tool = findSpan(h, 'execute_tool Read');
     expect(attr(root, 'user.id')).toBe('user-7');
@@ -618,6 +622,51 @@ describe('Claude Agent SDK adapter: model calls', () => {
     expect(attr(findSpan(h, 'invoke_agent helper'), 'user.id')).toBe('user-7');
     expect(attr(tool, 'gen_ai.conversation.id')).toBe('sess-1');
     expect(attr(tool, 'gen_ai.agent.version')).toBe('2.0');
+    // The subagent is a different agent, so none of its spans take the main agent's version.
+    const subagent = findSpan(h, 'invoke_agent helper');
+    for (const span of [subagent, ...childrenOf(h, subagent, CHAT)]) {
+      expect(attr(span, 'gen_ai.agent.version')).toBeUndefined();
+    }
+  });
+
+  it('ranks the session id below the enclosing scope', async () => {
+    const h = harness();
+    await withConversationId('scoped', () =>
+      run(h, [init(), assistant('msg_1', [text('hi')]), result()]),
+    );
+    expect(attr(findSpan(h, ROOT), 'gen_ai.conversation.id')).toBe('scoped');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.conversation.id')).toBe('scoped');
+  });
+
+  it('uses the scope query() was called in, even when the stream is read outside it', async () => {
+    const h = harness();
+    const traced = wrapQuery(
+      h.client,
+      fakeQuery([
+        init(),
+        assistant('msg_1', [toolUse('tu_1', 'Read')]),
+        toolResult('tu_1', 'body'),
+        result(),
+      ]),
+    );
+    const stream = withConversationId('scoped-conv', () =>
+      withAgent('scoped-agent', () => traced({ prompt: 'hi', options: { model: MODEL } })),
+    );
+    await drain(stream);
+
+    for (const name of ['invoke_agent scoped-agent', CHAT, 'execute_tool Read']) {
+      expect(attr(findSpan(h, name), 'gen_ai.conversation.id'), name).toBe('scoped-conv');
+      expect(attr(findSpan(h, name), 'gen_ai.agent.name'), name).toBe('scoped-agent');
+    }
+  });
+
+  it('takes the agent name from the scope when the options give none', async () => {
+    const h = harness();
+    await withAgent('scoped-agent', () =>
+      run(h, [init(), assistant('msg_1', [text('hi')]), result()]),
+    );
+    expect(findSpan(h, 'invoke_agent scoped-agent')).toBeDefined();
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('scoped-agent');
   });
 
   it('prefers the caller conversation id over the session id', async () => {
@@ -716,6 +765,59 @@ describe('Claude Agent SDK adapter: stream events', () => {
     const subChats = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT);
     expect(subChats).toHaveLength(2);
     for (const chat of subChats) expect(attr(chat, 'genai.usage.is_partial')).toBe(true);
+  });
+
+  it('gives each agent the tokens of its own calls, leaving its subagents out', async () => {
+    const h = harness();
+    await run(
+      h,
+      [
+        init(),
+        messageStart('msg_1', 100, {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_read_input_tokens: 4,
+        }),
+        assistant('msg_1', [delegate('task_1', 'worker')]),
+        messageDelta({ output_tokens: 30, output_tokens_details: { thinking_tokens: 8 } }),
+        taskStarted('task_1'),
+        assistant('msg_s1', [toolUse('tu_9', 'Bash')], {
+          parent: 'task_1',
+          usage: { input_tokens: 20, output_tokens: 2 },
+        }),
+        toolResult('tu_9', 'ok', { parent: 'task_1' }),
+        assistant('msg_s2', [text('report')], {
+          parent: 'task_1',
+          usage: { input_tokens: 25, output_tokens: 1 },
+        }),
+        taskNotification('task_1', 'report'),
+        toolResult('task_1', 'report'),
+        messageStart('msg_2', 100, { input_tokens: 40, output_tokens: 1 }),
+        assistant('msg_2', [text('done')]),
+        messageDelta({ output_tokens: 12 }),
+        result(),
+      ],
+      {},
+      streamed,
+    );
+
+    // Both main thread calls have final usage, so the root's sum is exact. The cache
+    // and reasoning breakdowns stay on the chat spans.
+    const root = findSpan(h, ROOT);
+    expect(attr(root, 'gen_ai.usage.input_tokens')).toBe(54);
+    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(42);
+    expect(attr(root, 'gen_ai.usage.cache_read.input_tokens')).toBeUndefined();
+    expect(attr(root, 'gen_ai.usage.reasoning.output_tokens')).toBeUndefined();
+    expect(attr(root, 'genai.usage.is_partial')).toBeUndefined();
+    const [firstMain] = childrenOf(h, root, CHAT);
+    expect(attr(firstMain!, 'gen_ai.usage.cache_read.input_tokens')).toBe(4);
+    expect(attr(firstMain!, 'gen_ai.usage.reasoning.output_tokens')).toBe(8);
+
+    // The subagent's calls have only snapshots, so its output count is missing.
+    const worker = findSpan(h, 'invoke_agent worker');
+    expect(attr(worker, 'gen_ai.usage.input_tokens')).toBe(45);
+    expect(attr(worker, 'gen_ai.usage.output_tokens')).toBeUndefined();
+    expect(attr(worker, 'genai.usage.is_partial')).toBe(true);
   });
 
   it('records time to first token and starts the span when the request did', async () => {
@@ -903,9 +1005,12 @@ describe('Claude Agent SDK adapter: subagents', () => {
       assistant('msg_1', [delegate('task_1', 'worker')]),
       taskStarted('task_1'),
       toolResult('task_1', 'Async agent launched successfully.'),
-      assistant('msg_s1', [toolUse('tu_9', 'Bash')], { parent: 'task_1' }),
+      assistant('msg_s1', [toolUse('tu_9', 'Bash')], {
+        parent: 'task_1',
+        usage: { input_tokens: 20 },
+      }),
       toolResult('tu_9', 'from-subagent', { parent: 'task_1' }),
-      assistant('msg_s2', [text('report')], { parent: 'task_1' }),
+      assistant('msg_s2', [text('report')], { parent: 'task_1', usage: { input_tokens: 30 } }),
       taskNotification('task_1', 'the real report'),
       result(),
     ]);
@@ -913,6 +1018,8 @@ describe('Claude Agent SDK adapter: subagents', () => {
     const delegation = findSpan(h, 'execute_tool Agent');
     const sub = findSpan(h, 'invoke_agent worker');
     expect(parentOf(h, sub)).toBe(delegation);
+    expect(attr(sub, 'gen_ai.usage.input_tokens')).toBe(50);
+    expect(attr(sub, 'genai.usage.is_partial')).toBe(true);
     expect(parentOf(h, findSpan(h, 'execute_tool Bash'))).toBe(sub);
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(String(attr(delegation, 'gen_ai.tool.call.result'))).toContain('the real report');
@@ -959,32 +1066,6 @@ describe('Claude Agent SDK adapter: subagents', () => {
     // The echoed prompt is not added a second time.
     const input = String(attr(subChat, 'gen_ai.input.messages'));
     expect(input.split('check it')).toHaveLength(2);
-  });
-
-  it("takes a subagent's last call usage from its delegation's tool result", async () => {
-    const h = harness();
-    await run(h, [
-      init(),
-      assistant('msg_1', [delegate('task_1', 'worker')]),
-      taskStarted('task_1'),
-      assistant('msg_s1', [text('report')], {
-        parent: 'task_1',
-        usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 100 },
-      }),
-      taskNotification('task_1', 'report'),
-      {
-        ...toolResult('task_1', 'report'),
-        tool_use_result: {
-          status: 'completed',
-          usage: { input_tokens: 12, output_tokens: 521, cache_read_input_tokens: 100 },
-        },
-      },
-      result(),
-    ]);
-
-    const subChat = childrenOf(h, findSpan(h, 'invoke_agent worker'), CHAT)[0]!;
-    expect(attr(subChat, 'gen_ai.usage.output_tokens')).toBe(521);
-    expect(attr(subChat, 'genai.usage.is_partial')).toBeUndefined();
   });
 
   it('keeps a failed foreground task failed when its tool_result never comes', async () => {
@@ -1104,8 +1185,11 @@ describe('Claude Agent SDK adapter: subagents', () => {
     await run(h, [
       init(),
       assistant('msg_1', [delegate('task_1', 'outer')]),
-      assistant('msg_s1', [delegate('task_2', 'inner')], { parent: 'task_1' }),
-      assistant('msg_t1', [text('deep')], { parent: 'task_2' }),
+      assistant('msg_s1', [delegate('task_2', 'inner')], {
+        parent: 'task_1',
+        usage: { input_tokens: 30 },
+      }),
+      assistant('msg_t1', [text('deep')], { parent: 'task_2', usage: { input_tokens: 7 } }),
       toolResult('task_2', 'inner done', { parent: 'task_1' }),
       toolResult('task_1', 'outer done'),
       result(),
@@ -1115,6 +1199,9 @@ describe('Claude Agent SDK adapter: subagents', () => {
     const inner = findSpan(h, 'invoke_agent inner');
     expect(parentOf(h, parentOf(h, inner)!)).toBe(outer);
     expect(childrenOf(h, inner, CHAT)).toHaveLength(1);
+    // Each subagent counts only its own calls.
+    expect(attr(outer, 'gen_ai.usage.input_tokens')).toBe(30);
+    expect(attr(inner, 'gen_ai.usage.input_tokens')).toBe(7);
   });
 
   it('ignores messages for a delegation that is not open', async () => {
@@ -1140,7 +1227,7 @@ describe('Claude Agent SDK adapter: subagents', () => {
 
 describe('Claude Agent SDK adapter: content capture', () => {
   const messages = [
-    init(),
+    { ...init(), tools: ['Bash', 'Agent'] },
     assistant('msg_1', [delegate('task_1', 'worker', 'secret prompt')]),
     assistant('msg_s1', [toolUse('tu_9', 'Bash', { command: 'cat secret' })], { parent: 'task_1' }),
     toolResult('tu_9', 'secret file', { parent: 'task_1' }),
@@ -1174,6 +1261,7 @@ describe('Claude Agent SDK adapter: content capture', () => {
       for (const span of h.spans.getFinishedSpans()) {
         expect(attr(span, 'gen_ai.input.messages')).toBeUndefined();
         expect(attr(span, 'gen_ai.output.messages')).toBeUndefined();
+        expect(attr(span, 'gen_ai.tool.definitions')).toBeUndefined();
         expect(attr(span, 'gen_ai.tool.call.arguments')).toBeUndefined();
         expect(attr(span, 'gen_ai.tool.call.result')).toBeUndefined();
       }
@@ -1222,7 +1310,6 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     expect(root.status.code).toBe(SpanStatusCode.ERROR);
     expect(root.status.message).toBe('Reached maximum number of turns (1)');
     expect(attr(root, 'gen_ai.output.messages')).toBeUndefined();
-    expect(attr(root, 'gen_ai.usage.output_tokens')).toBe(50);
   });
 
   it('marks the run failed when the last result is an error', async () => {
@@ -1332,6 +1419,23 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
 
     await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toThrow('cli died');
     expect(findSpan(h, ROOT).status.message).toBe('cli died');
+  });
+
+  it('serializes a plain-object stream error instead of [object Object]', async () => {
+    const h = harness();
+    const failure = {
+      type: 'api_error',
+      message: 'An error occurred while streaming the response',
+    };
+    const query = (_params: AgentQueryParams) =>
+      (async function* () {
+        yield init();
+        throw failure;
+      })();
+
+    await expect(drain(wrapQuery(h.client, query)({ prompt: 'p' }))).rejects.toBe(failure);
+    expect(findSpan(h, ROOT).status.message).toBe(failure.message);
+    expect(findSpan(h, ROOT).status.message).not.toContain('[object Object]');
   });
 
   it('fails a call cut off mid-stream when the stream breaks', async () => {
@@ -1449,6 +1553,18 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(findSpan(h, ROOT).status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it('names a run closed before reading anything after the scope query() was called in', async () => {
+    const h = harness();
+    const query = (_params: AgentQueryParams) =>
+      Object.assign(fakeQuery([init(), result()])({ prompt: '' }), { close: () => {} });
+
+    const q = withAgent('scoped-agent', () => wrapQuery(h.client, query)({ prompt: 'p' }));
+    q.close();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(findSpan(h, 'invoke_agent scoped-agent')).toBeDefined();
   });
 
   it("ends the run, and passes on the error, when the SDK's own close() throws", async () => {
@@ -1732,5 +1848,125 @@ describe('Claude Agent SDK adapter: replayed CLI recordings', () => {
     expect(childrenOf(h, sub, CHAT)).toHaveLength(2);
     expect(allSpans(h, 'execute_tool Agent')).toHaveLength(1);
     expect(childrenOf(h, findSpan(h, ROOT), CHAT)).toHaveLength(2);
+  });
+});
+
+describe('Claude Agent SDK adapter: default agent name', () => {
+  const harness = useHarness();
+
+  it('names the run claude-agent-sdk when nothing names it, and its chat spans too', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()]);
+    expect(attr(findSpan(h, ROOT), 'gen_ai.agent.name')).toBe('claude-agent-sdk');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('claude-agent-sdk');
+  });
+});
+
+describe('Claude Agent SDK adapter: identity from the client', () => {
+  const harness = useHarness({ agentName: 'svc', agentVersion: '9' });
+
+  it('names the run after the client when nothing else names it', async () => {
+    const h = harness();
+    await run(h, [init(), assistant('msg_1', [text('hi')]), result()]);
+    expect(attr(findSpan(h, 'invoke_agent svc'), 'gen_ai.agent.version')).toBe('9');
+    expect(attr(findSpan(h, CHAT), 'gen_ai.agent.name')).toBe('svc');
+  });
+});
+
+describe('Claude Agent SDK adapter: streamed prompt', () => {
+  const harness = useHarness({ contentCaptureMode: 'full' });
+  const user = (content: string): AgentMessage => ({
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+  });
+  const inputOf = (span: FinishedSpan) => JSON.parse(String(attr(span, 'gen_ai.input.messages')));
+  const textsOf = (messages: { role: string; parts: { content?: string }[] }[]) =>
+    messages.map((m) => `${m.role}:${m.parts.map((p) => p.content).join('')}`);
+
+  /** Reads the prompt ahead of answering, as the SDK does, then answers `turns` times. */
+  function eagerQuery(turns: number, read = Number.POSITIVE_INFINITY) {
+    return (params: AgentQueryParams) =>
+      (async function* () {
+        const input = (params.prompt as AsyncIterable<AgentMessage>)[Symbol.asyncIterator]();
+        for (let i = 0; i < read && !(await input.next()).done; i++);
+        await input.return?.();
+        yield init();
+        for (let i = 1; i <= turns; i++) {
+          yield assistant(`msg_${i}`, [text(`a${i}`)]);
+          yield result();
+        }
+      })();
+  }
+
+  it('records each user message when the SDK reads it', async () => {
+    const h = harness();
+    async function* prompt() {
+      yield user('u1');
+      yield user('u2');
+    }
+    await drain(wrapQuery(h.client, eagerQuery(2))({ prompt: prompt() }));
+
+    expect(textsOf(inputOf(findSpan(h, ROOT)))).toEqual(['user:u1', 'user:u2']);
+    const [first, second] = allSpans(h, CHAT);
+    expect(textsOf(inputOf(first!))).toEqual(['user:u1', 'user:u2']);
+    expect(textsOf(inputOf(second!))).toEqual(['user:u1', 'user:u2', 'assistant:a1']);
+  });
+
+  it('records messages sent through streamInput()', async () => {
+    const h = harness();
+    let streamed!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      streamed = resolve;
+    });
+    const sdk = (_params: AgentQueryParams) =>
+      Object.assign(
+        (async function* () {
+          yield init();
+          yield assistant('msg_1', [text('a1')]);
+          yield result();
+          await answered;
+          yield assistant('msg_2', [text('a2')]);
+          yield result();
+        })(),
+        {
+          async streamInput(input: AsyncIterable<unknown>) {
+            for await (const _ of input);
+            streamed();
+          },
+        },
+      );
+    async function* more() {
+      yield user('u2');
+    }
+
+    const q = wrapQuery(h.client, sdk)({ prompt: 'u1' });
+    let sent = false;
+    for await (const msg of q) {
+      if (msg.type === 'result' && !sent) {
+        sent = true;
+        await q.streamInput(more());
+      }
+    }
+
+    expect(textsOf(inputOf(findSpan(h, ROOT)))).toEqual(['user:u1', 'user:u2']);
+    const [, second] = allSpans(h, CHAT);
+    expect(textsOf(inputOf(second!))).toEqual(['user:u1', 'assistant:a1', 'user:u2']);
+  });
+
+  it("closes the caller's prompt when the SDK stops reading it", async () => {
+    const h = harness();
+    let closed = false;
+    async function* prompt() {
+      try {
+        yield user('u1');
+        yield user('never read');
+      } finally {
+        closed = true;
+      }
+    }
+    await drain(wrapQuery(h.client, eagerQuery(1, 1))({ prompt: prompt() }));
+
+    expect(closed).toBe(true);
   });
 });

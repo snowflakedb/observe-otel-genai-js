@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Shared utilities for wrapping provider streams (OpenAI Stream, Anthropic
  * MessageStream, etc.) so the recorder ends correctly even if the consumer
@@ -6,7 +23,9 @@
  *
  * The returned Proxy forwards every property/method to the underlying stream
  * EXCEPT `[Symbol.asyncIterator]`, which is replaced with a wrapping iterator
- * that observes chunks and ends the recorder in `finally`.
+ * that observes chunks and ends the recorder in `finally`. A consumer that
+ * leaves its loop early (`break`, `return` or a throw) completes the call with
+ * what it read so far.
  *
  * A watchdog timer (default 10 minutes, .unref()'d so it doesn't keep the
  * event loop alive) ends the recorder with an error if the iterator is never
@@ -18,7 +37,7 @@ const DEFAULT_WATCHDOG_MS = 10 * 60 * 1000; // 10 minutes
 export interface StreamWrapOptions<TChunk> {
   /** Called for every chunk; first chunk should record TTFT. */
   onChunk?: (chunk: TChunk) => void;
-  /** Called once the iterator finishes successfully. */
+  /** Called once the iterator finishes successfully or the consumer stops early. */
   onComplete?: () => Promise<void> | void;
   /** Called when the iterator throws. */
   onError?: (err: unknown) => Promise<void> | void;
@@ -105,10 +124,8 @@ export function wrapProviderStream<S extends AsyncIterable<TChunk>, TChunk>(
                   await inner.return(value);
                 }
               } finally {
-                // Early termination (consumer `break`s out of the loop). Treat
-                // as abandonment, not a clean completion, when the caller
-                // distinguishes the two; fall back to onComplete otherwise.
-                await finishOnce(options.onAbandoned ?? options.onComplete);
+                // The consumer left its loop early: end with what was read.
+                await finishOnce(options.onComplete);
               }
               return { done: true, value: value as TChunk };
             },

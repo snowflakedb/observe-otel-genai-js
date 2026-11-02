@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * End-to-end tests for `OpenAIAgentsInstrumentation`.
  *
@@ -28,14 +45,21 @@
 
 import * as Agents from '@openai/agents';
 import * as AiSdkExt from '@openai/agents-extensions/ai-sdk';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import * as OpenAIModule from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  withAgent,
+  withContentCaptureMode,
+  withConversationId,
+  withUserId,
+} from '../../src/context.js';
 import { OpenAIAgentsInstrumentation } from '../../src/integrations/openai-agents/instrumentation.js';
 import { OpenAIInstrumentation } from '../../src/integrations/openai/instrumentation.js';
 import {
   ATTR_AGENT_NAME,
+  ATTR_AGENT_VERSION,
   ATTR_CONVERSATION_ID,
   ATTR_ERROR_TYPE,
   ATTR_OPERATION_NAME,
@@ -47,10 +71,12 @@ import {
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
+  ATTR_WORKFLOW_NAME,
   METRIC_TIME_TO_FIRST_TOKEN,
   OP_CHAT,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 import {
@@ -186,9 +212,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
 
   const spansNamed = (op: string) =>
     h.spans.getFinishedSpans().filter((s) => s.attributes[ATTR_OPERATION_NAME] === op);
-  /** `invoke_agent` spans for the SDK's agents, leaving out the run container. */
-  const agentSpans = () =>
-    spansNamed(OP_INVOKE_AGENT).filter((s) => s.name.startsWith(`${OP_INVOKE_AGENT} `));
+  const agentSpans = () => spansNamed(OP_INVOKE_AGENT);
 
   /** The finished span that is `span`'s parent, if it is one of ours. */
   const parentOf = (span: { parentSpanContext?: { spanId: string } } | undefined) => {
@@ -210,7 +234,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
    *
    * Only streamed runs need this. `Runner.run()` does not resolve until the trace
    * has ended, but `stream.completed` resolves while the SDK is still dispatching
-   * its span- and trace-end callbacks, so the agent and container spans can be open
+   * its span- and trace-end callbacks, so chat, agent and workflow spans can be open
    * for a few ticks after the last event. No span is lost either way, since
    * `shutdown()` ends whatever is still in flight, but a parentage assertion has to
    * wait for the parent to arrive.
@@ -275,7 +299,81 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(agentSpan.attributes[ATTR_CONVERSATION_ID]).toBe('thread-99');
   });
 
-  it('records trace metadata on the run container', async () => {
+  it("prefers the run's conversationId over groupId, on every span of the run", async () => {
+    // The SDK sends `conversationId` as the Responses `conversation`, which the chat
+    // span records as its own. The agent spans must use the same id, or one run would
+    // show up as two conversations.
+    const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
+    const agent = new A.Agent({ name: 'conv-agent', instructions: 'x', model: setupResult.model });
+    await new A.Runner({ groupId: 'thread-1' }).run(agent, 'hi', { conversationId: 'conv_1' });
+
+    const ids = h.spans.getFinishedSpans().map((s) => [s.name, s.attributes[ATTR_CONVERSATION_ID]]);
+    expect(ids.length).toBeGreaterThan(2);
+    for (const [name, id] of ids) expect(id, String(name)).toBe('conv_1');
+  });
+
+  it("keeps an outer agent's version off the chat spans of a run", async () => {
+    const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
+    const agent = new A.Agent({ name: 'inner-agent', instructions: 'x', model: setupResult.model });
+    await withAgent('outer-agent', '3', () => new A.Runner().run(agent, 'hi'));
+
+    const chat = only(spansNamed(OP_CHAT), 'chat span');
+    expect(chat.attributes[ATTR_AGENT_NAME]).toBe('inner-agent');
+    expect(chat.attributes[ATTR_AGENT_VERSION]).toBeUndefined();
+  });
+
+  it('names an openai API error by its class on the workflow span', async () => {
+    // The openai package's error classes keep `name` as 'Error'.
+    const setupResult = await setup(() => ({
+      status: 401,
+      body: { error: { message: 'bad key' } },
+    }));
+    const agent = new A.Agent({
+      name: 'denied-agent',
+      instructions: 'x',
+      model: setupResult.model,
+    });
+    await expect(new A.Runner().run(agent, 'hi')).rejects.toThrow();
+
+    await vi.waitFor(() => expect(spansNamed(OP_INVOKE_WORKFLOW)).toHaveLength(1));
+    expect(only(spansNamed(OP_INVOKE_WORKFLOW), 'workflow span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'AuthenticationError',
+    );
+    // The agent span sees only the error's text, so it keeps its own category.
+    expect(only(agentSpans(), 'agent span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'provider_call_error',
+    );
+  });
+
+  it('names an openai API error by its class on the workflow span of a streamed run', async () => {
+    // A streamed run does not reject, and the SDK's error record names no class; the
+    // streamed result keeps the error object.
+    const setupResult = await setup(() => ({
+      status: 401,
+      body: { error: { message: 'bad key' } },
+    }));
+    const agent = new A.Agent({
+      name: 'denied-streamer',
+      instructions: 'x',
+      model: setupResult.model,
+    });
+    const stream = await new A.Runner().run(agent, 'hi', { stream: true });
+    await expect(
+      (async () => {
+        for await (const _event of stream.toStream()) {
+          // drain
+        }
+        await stream.completed;
+      })(),
+    ).rejects.toThrow();
+
+    await vi.waitFor(() => expect(spansNamed(OP_INVOKE_WORKFLOW)).toHaveLength(1));
+    expect(only(spansNamed(OP_INVOKE_WORKFLOW), 'workflow span').attributes[ATTR_ERROR_TYPE]).toBe(
+      'AuthenticationError',
+    );
+  });
+
+  it('records trace metadata on the workflow span', async () => {
     const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
     const agent = new A.Agent({ name: 'meta-agent', instructions: 'x', model: setupResult.model });
     await new A.Runner({ traceMetadata: { tenant: 'acme' } }).run(agent, 'hi');
@@ -332,7 +430,9 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(String(tool.attributes[ATTR_TOOL_CALL_RESULT])).toContain('sunny in Tokyo');
   });
 
-  it('reports the run container as invoke_agent, named after the trace', async () => {
+  it('reports the run as invoke_workflow, named after its first agent when it has no name', async () => {
+    // The SDK names an unnamed workflow "Agent workflow", a constant the semantic
+    // conventions say not to record; they name it after the entry agent instead.
     const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
 
     const agent = new A.Agent({ name: 'solo-agent', instructions: 'x', model: setupResult.model });
@@ -342,11 +442,25 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
       h.spans.getFinishedSpans().filter((s) => !s.parentSpanContext),
       'root span',
     );
-    expect(root.name).toBe('Agent workflow');
-    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+    expect(root.name).toBe('invoke_workflow solo-agent');
+    expect(root.kind).toBe(SpanKind.INTERNAL);
+    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
+    expect(root.attributes[ATTR_WORKFLOW_NAME]).toBe('solo-agent');
+    expect(root.attributes[ATTR_AGENT_NAME]).toBeUndefined();
   });
 
-  it('keeps both agents of a handoff under the one run container', async () => {
+  it('names the workflow span after RunConfig.workflowName', async () => {
+    const setupResult = await setup(() => responsesMessage({ text: 'hi' }));
+
+    const agent = new A.Agent({ name: 'solo-agent', instructions: 'x', model: setupResult.model });
+    await new A.Runner({ workflowName: 'triage' }).run(agent, 'hi');
+
+    const root = only(spansNamed(OP_INVOKE_WORKFLOW), 'invoke_workflow span');
+    expect(root.name).toBe('invoke_workflow triage');
+    expect(root.attributes[ATTR_WORKFLOW_NAME]).toBe('triage');
+  });
+
+  it('keeps both agents of a handoff under the one workflow span', async () => {
     const setupResult = await setup((req, i) => {
       if (i === 0) {
         // The SDK derives the handoff tool's name from the agent name, so pick it
@@ -376,7 +490,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
       h.spans.getFinishedSpans().filter((s) => !s.parentSpanContext),
       'root span',
     );
-    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
     const agents = agentSpans();
     expect(agents).toHaveLength(2);
     for (const span of agents) {
@@ -469,6 +583,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
       // drain
     }
     await stream.completed;
+    await waitForSpan(OP_CHAT);
 
     const chat = only(spansNamed(OP_CHAT), 'chat span');
     expect(chat.attributes['gen_ai.request.stream']).toBe(true);
@@ -558,7 +673,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
   it('closes every span with an error when a run rejects', async () => {
     // The SDK does not call `trace.end()` on rejection, because `withTrace`'s
     // lifecycle wrapper ends the trace only on its success path. Without the
-    // failure boundary the container span would leak.
+    // failure boundary the workflow span would leak.
     await setupAiSdk();
 
     const agent = new A.Agent({
@@ -573,7 +688,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     await vi.waitFor(() => expect(h.spans.getFinishedSpans()).toHaveLength(3));
 
     const finished = h.spans.getFinishedSpans();
-    // Container, agent, and chat: all three ended.
+    // Workflow, agent, and chat: all three ended.
     expect(finished).toHaveLength(3);
     expect(h.openSpanCount()).toBe(0);
     for (const span of finished) {
@@ -605,9 +720,11 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     ).rejects.toThrow('model exploded');
 
     await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
-    const container = h.spans.getFinishedSpans().find((s) => s.name === 'outer-workflow');
-    expect(container?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(container?.attributes[ATTR_ERROR_TYPE]).toBe('BoomError');
+    const workflow = h.spans
+      .getFinishedSpans()
+      .find((s) => s.name === 'invoke_workflow outer-workflow');
+    expect(workflow?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(workflow?.attributes[ATTR_ERROR_TYPE]).toBe('BoomError');
   });
 
   it('does not fail the outer run when an agent used as a tool fails and the run recovers', async () => {
@@ -636,7 +753,7 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
       'root span',
     );
     expect(root.status.code).not.toBe(SpanStatusCode.ERROR);
-    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+    expect(root.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_WORKFLOW);
   });
 
   it('does not fail a withTrace block that recovers from a failed run', async () => {
@@ -818,6 +935,102 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(agentSpans()).toHaveLength(2);
     const tool = only(spansNamed(OP_EXECUTE_TOOL), 'execute_tool span');
     expect(parentOf(tool)?.attributes[ATTR_OPERATION_NAME]).toBe(OP_INVOKE_AGENT);
+  });
+
+  it("keeps the run's conversationId on a run resumed from its state", async () => {
+    await setupAiSdk();
+    const danger = A.tool({
+      name: 'danger',
+      description: 'Needs approval',
+      parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      strict: true,
+      needsApproval: true,
+      execute: async () => 'done',
+    });
+    const agent = new A.Agent({
+      name: 'careful-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel({ toolCallFirst: 'danger' })),
+      tools: [danger],
+    });
+    const runner = new A.Runner({ groupId: 'thread-1' });
+    const first = await runner.run(agent, 'go', { conversationId: 'conv_1' });
+    for (const interruption of first.interruptions) first.state.approve(interruption);
+    await runner.run(agent, first.state);
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    const ids = h.spans.getFinishedSpans().map((s) => [s.name, s.attributes[ATTR_CONVERSATION_ID]]);
+    for (const [name, id] of ids) expect(id, String(name)).toBe('conv_1');
+  });
+
+  it("gives the spans of a run inside withTrace the run's conversationId", async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'traced-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await core.withTrace('block', () =>
+      new A.Runner().run(agent, 'hi', { conversationId: 'conv_1' }),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes[ATTR_CONVERSATION_ID]).toBe('conv_1');
+    }
+  });
+
+  it('takes a scope set inside withTrace, not the one the trace opened under', async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'scoped-agent',
+      instructions: 'x',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await core.withTrace('block', () =>
+      withUserId('u1', () => withConversationId('c1', () => new A.Runner().run(agent, 'hi'))),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes[ATTR_CONVERSATION_ID], op).toBe('c1');
+      expect(span.attributes['user.id'], op).toBe('u1');
+    }
+  });
+
+  it('applies an allow_list mode set inside withTrace', async () => {
+    const core = { ...Agents };
+    await setupAiSdk(core);
+    const agent = new A.Agent({
+      name: 'filtered-agent',
+      instructions: 'Be brief.',
+      model: AiSdkExt.aisdk(fakeLanguageModel()),
+    });
+    await withContentCaptureMode('full', () =>
+      core.withTrace('block', () =>
+        withContentCaptureMode('allow_list', () => new A.Runner().run(agent, 'hi')),
+      ),
+    );
+
+    await vi.waitFor(() => expect(h.openSpanCount()).toBe(0));
+    for (const op of [OP_INVOKE_AGENT, OP_CHAT]) {
+      const span = only(
+        spansNamed(op).filter((s) => s.name !== 'block'),
+        op,
+      );
+      expect(span.attributes['gen_ai.input.messages'], op).toBeUndefined();
+      expect(span.attributes['gen_ai.output.messages'], op).toBeUndefined();
+    }
   });
 
   it('emits AI SDK chat spans when this processor is the only one', async () => {

@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Robustness tests for the shared adapter machinery.
  *
@@ -52,7 +69,7 @@ describe('wrapProviderStream — telemetry never breaks the consumer', () => {
     await expect(drain(wrapped)).rejects.toThrow('provider failure');
   });
 
-  it('routes an early break to onAbandoned, not onComplete', async () => {
+  it('routes an early break to onComplete, not onAbandoned', async () => {
     let abandoned = false;
     let completed = false;
     async function* gen() {
@@ -71,11 +88,11 @@ describe('wrapProviderStream — telemetry never breaks the consumer', () => {
     });
 
     for await (const _chunk of wrapped) {
-      break; // abandon after the first chunk
+      break; // stop after the first chunk
     }
 
-    expect(abandoned).toBe(true);
-    expect(completed).toBe(false);
+    expect(completed).toBe(true);
+    expect(abandoned).toBe(false);
   });
 
   it('calls onComplete (not onAbandoned) on a full drain', async () => {

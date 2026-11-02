@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `EmbeddingRecorder` — wraps an embeddings API call.
  *
@@ -7,7 +24,8 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
+import type { HandedDown } from '../context.js';
 import { ValidationError } from '../errors.js';
 import type { EmbeddingResult, EmbeddingStart } from '../models/embedding.js';
 import {
@@ -30,8 +48,9 @@ export class EmbeddingRecorder extends RecorderBase {
     seed: EmbeddingStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -44,7 +63,7 @@ export class EmbeddingRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(embeddingSpanName(this.seed.model.name));
 
@@ -57,14 +76,8 @@ export class EmbeddingRecorder extends RecorderBase {
 
     applyEmbeddingEndAttributes(this.span, result, capturedTexts);
 
-    if (stripped) {
-      // Re-strip identity attributes that may have been written at start so
-      // metadata_only matches generation/tool recorder behavior.
-      this.span.setAttribute('gen_ai.agent.name', '');
-    }
-
     // Privacy-gated exception recording.
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
 
     let classified: ClassifiedError;
     if (this.callError != null) {
@@ -82,6 +95,8 @@ export class EmbeddingRecorder extends RecorderBase {
       providerName: this.seed.model.provider,
       requestModel: this.seed.model.name,
       agentName: this.seed.agentName ?? '',
+      conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
     };
     const durationSeconds = Math.max(0, (completedAtMs - this.startedAtMs) / 1000);
     this.host.metrics.recordOperationDuration(durationSeconds, {

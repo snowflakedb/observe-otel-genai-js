@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenTelemetry instrumentation for the OpenAI Agents SDK (`@openai/agents`).
  *
@@ -253,14 +270,26 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
     this.wrapOwn(prototype, 'run', (original: Fn) => {
       return function run(this: unknown, ...args: unknown[]) {
         const processor = instrumentation.processor;
-        const [, , options] = args as [unknown, unknown, { stream?: boolean } | undefined];
-        const token = processor.beginRun(options?.stream === true);
+        const [agent, input, options] = args as [
+          { name?: string } | undefined,
+          { _conversationId?: string } | undefined,
+          { stream?: boolean; conversationId?: string } | undefined,
+        ];
+        // A resumed run takes its conversation id from the saved RunState, as the SDK does.
+        const conversationId = options?.conversationId ?? input?._conversationId;
+        const token = processor.beginRun(options?.stream === true, conversationId, agent?.name);
         const ctx = otelContext.active().setValue(RUN_TOKEN_KEY, token);
         const result = otelContext.with(ctx, () => original.apply(this, args)) as Promise<unknown>;
-        return result.catch((err: unknown) => {
-          void processor.onRunError(token, err);
-          throw err;
-        });
+        return result.then(
+          (value) => {
+            processor.setRunResult(token, value);
+            return value;
+          },
+          (err: unknown) => {
+            void processor.onRunError(token, err);
+            throw err;
+          },
+        );
       };
     });
   }

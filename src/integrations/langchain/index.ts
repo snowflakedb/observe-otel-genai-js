@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * LangChain.js adapter.
  *
@@ -9,14 +26,15 @@
  *  - `handleLLMStart`  → `client.startGeneration({...})`. Captures `runId` so
  *                        subsequent `handleLLMNewToken` / `handleLLMEnd` /
  *                        `handleLLMError` find the matching recorder.
- *  - `handleLLMNewToken` → first call invokes `recorder.setFirstTokenAt(...)`
- *                        for TTFT.
+ *  - `handleLLMNewToken` → any chunk marks the call as streaming; the first
+ *                        chunk with text sets `recorder.setFirstTokenAt(...)`.
  *  - `handleLLMEnd`    → `recorder.setResult(...)` + `recorder.end()`.
  *  - `handleLLMError`  → `recorder.setCallError(err)` + `recorder.end()`.
  *  - `handleToolStart` → `client.startToolExecution({...})`.
  *  - `handleToolEnd`   → `recorder.setResult({ result })` + `recorder.end()`.
  *  - `handleToolError` → `recorder.setExecError(err)` + `recorder.end()`.
- *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` lifecycle.
+ *  - `handleChainStart`/`End`/`Error` → optional `invokeAgent` or `invokeWorkflow`
+ *                        lifecycle (see `chainKind`).
  *  - `handleRetrieverStart` → `client.startRetrieval({...})`. The retrieval span
  *                        becomes the active parent, so an in-retriever query
  *                        rewrite (`chat`) and any descendants nest under it.
@@ -51,33 +69,30 @@ import type { AgentInvocationRecorder } from '../../recorders/agent.js';
 import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { RetrievalRecorder } from '../../recorders/retrieval.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
+import type { WorkflowInvocationRecorder } from '../../recorders/workflow.js';
 import { matchProvider } from '../_common/provider.js';
+import { toolDefinitions } from '../_common/tool-definitions.js';
+import {
+  CREATE_AGENT_INTEGRATION,
+  type GraphIdentity,
+  LANGGRAPH_DEFAULT_NAME,
+  graphIdentity,
+} from './_graph.js';
 
 export interface GenAIOtelCallbackHandlerOptions {
   client: Client;
-  /** Default agent name for all spans created by this handler. */
-  agentName?: string;
-  agentVersion?: string;
-  conversationId?: string;
-  conversationTitle?: string;
-  userId?: string;
   turnIndex?: number;
   turnRole?: string;
   contentCapture?: ContentCaptureMode;
   tags?: Record<string, string>;
   metadata?: Record<string, unknown>;
   /**
-   * When `true` (default), every top-level chain start becomes an
-   * `invoke_agent` span. Set to `false` to skip chain instrumentation and
-   * only capture LLM + tool spans.
+   * When `true` (default), every top-level chain, and every named LangGraph
+   * graph nested inside one, gets a span: `invoke_workflow` for a top-level graph
+   * that is not an agent, `invoke_agent` otherwise. Set to `false` to skip chain
+   * instrumentation and only capture LLM + tool spans.
    */
   captureChains?: boolean;
-  /**
-   * When `true`, nested chain runs (e.g. each LangGraph node) also become
-   * `invoke_agent` spans. Defaults to `false` so the trace stays focused on
-   * the outermost graph invocation. Set to `true` to get a per-node tree.
-   */
-  captureNestedChains?: boolean;
 }
 
 interface ModelHint {
@@ -97,7 +112,6 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   private readonly client: Client;
   private readonly defaults: Omit<GenAIOtelCallbackHandlerOptions, 'client'>;
   private readonly captureChains: boolean;
-  private readonly captureNestedChains: boolean;
 
   /** runId → recorder maps so handle*End/handle*Error can find their start. */
   private readonly llmRunMap = new Map<
@@ -105,7 +119,10 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     { rec: GenerationRecorder; firstTokenSeen: boolean }
   >();
   private readonly toolRunMap = new Map<string, ToolExecutionRecorder>();
-  private readonly chainRunMap = new Map<string, AgentInvocationRecorder>();
+  private readonly chainRunMap = new Map<
+    string,
+    AgentInvocationRecorder | WorkflowInvocationRecorder
+  >();
   private readonly retrieverRunMap = new Map<string, RetrievalRecorder>();
 
   /** runId → parentRunId for the whole run tree, including suppressed chains, so
@@ -115,14 +132,12 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   constructor(options: GenAIOtelCallbackHandlerOptions) {
     // Run callbacks inline in the caller's async context instead of on
     // LangChain's shared background queue, so concurrent runs don't leak each
-    // other's AsyncLocalStorage / OpenTelemetry context (parent trace,
-    // ambient conversationId).
+    // other's OpenTelemetry context (parent span and scope).
     super({ _awaitHandler: true });
     this.client = options.client;
-    const { client: _c, captureChains, captureNestedChains, ...rest } = options;
+    const { client: _c, captureChains, ...rest } = options;
     this.defaults = rest;
     this.captureChains = captureChains !== false;
-    this.captureNestedChains = captureNestedChains === true;
   }
 
   // ---------------------------------------------------------------------------
@@ -160,12 +175,13 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     return anc ? anc.withActiveContext(start) : start();
   }
 
-  /** `gen_ai.conversation.id`: handler `conversationId`, else the run's
-   *  `thread_id` (from `configurable.thread_id` via a checkpointer). */
-  private conversationId(metadata?: Record<string, unknown>): string | undefined {
-    if (this.defaults.conversationId) return this.defaults.conversationId;
-    const t = metadata?.thread_id;
-    return typeof t === 'string' && t.length > 0 ? t : undefined;
+  /** The run's own identity: `thread_id` (from `configurable.thread_id` via a
+   *  checkpointer) and `user_id` from the run metadata. */
+  private runIdentity(metadata?: Record<string, unknown>) {
+    return {
+      conversationId: nonEmpty(metadata?.thread_id),
+      userId: nonEmpty(metadata?.user_id),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -234,11 +250,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     this.runParent.set(runId, parentRunId);
     const seed = {
       model,
-      agentName: this.defaults.agentName,
-      agentVersion: this.defaults.agentVersion,
-      conversationId: this.conversationId(metadata),
-      conversationTitle: this.defaults.conversationTitle,
-      userId: this.defaults.userId,
+      ...this.runIdentity(metadata),
       turnIndex: this.defaults.turnIndex,
       turnRole: this.defaults.turnRole,
       contentCapture: this.defaults.contentCapture,
@@ -256,13 +268,11 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   override async handleLLMNewToken(token: string, _idx: unknown, runId: string): Promise<void> {
     const entry = this.llmRunMap.get(runId);
     if (!entry || entry.firstTokenSeen) return;
+    // Any streamed chunk proves the call is streaming, even a tool-call-only one with no text.
+    entry.rec.setResult({ mode: 'STREAM' });
     if (token.length === 0) return;
     entry.firstTokenSeen = true;
     entry.rec.setFirstTokenAt(Date.now());
-    // Receiving streamed tokens is itself proof the call is streaming. Upgrade
-    // the mode so gen_ai.request.stream and time_to_first_token land even when
-    // the provider didn't expose invocation_params.stream at start.
-    entry.rec.setResult({ mode: 'STREAM' });
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
@@ -307,9 +317,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
       this.client.startToolExecution({
         // runName also covers failures (no ToolMessage); handleToolEnd overrides on success.
         toolName: nonEmpty(runName) ?? toolNameFromSerialized(tool),
-        agentName: this.defaults.agentName,
-        agentVersion: this.defaults.agentVersion,
-        conversationId: this.conversationId(metadata),
+        ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
       }),
     );
@@ -338,7 +346,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
   }
 
   // ---------------------------------------------------------------------------
-  // Chain lifecycle (mapped to invoke_agent)
+  // Chain lifecycle (mapped to invoke_agent or invoke_workflow)
   // ---------------------------------------------------------------------------
 
   override async handleChainStart(
@@ -355,24 +363,32 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
     // can walk up to a real ancestor (see nearestRecorder).
     this.runParent.set(runId, parentRunId);
 
-    // Top-level chains become invoke_agent spans. Nested chains only do so when
-    // captureNestedChains is on (off by default, to keep the trace at the
-    // outer agent boundary).
     if (!this.captureChains) return;
-    if (parentRunId && !this.captureNestedChains) return;
+    const graph = graphIdentity(chain);
+    // As in the Python library, a createAgent graph is named by createAgent, not by
+    // a run that renames it, so its spans and metrics stay together.
+    const name = graph?.builtByCreateAgent ? graph.name : callerRunName(chain, runName);
+    const kind = chainKind(chain, name, parentRunId, metadata, graph);
+    if (!kind) return;
+    // A nested agent with no name is an unnamed createAgent graph (see chainKind),
+    // an agent of its own, so it must not take the outer agent's name.
+    const agentName = name ?? (parentRunId ? DEFAULT_AGENT_NAME : undefined);
 
+    const seed = {
+      input: chainInputToMessages(inputs),
+      ...this.runIdentity(metadata),
+      contentCapture: this.defaults.contentCapture,
+    };
     const rec = this.nested(parentRunId, () =>
-      this.client.invokeAgent({
-        agentName:
-          this.defaults.agentName ?? runName ?? toolNameFromSerialized(chain) ?? 'langchain-chain',
-        agentVersion: this.defaults.agentVersion,
-        input: chainInputToMessages(inputs),
-        conversationId: this.conversationId(metadata),
-        userId: this.defaults.userId,
-        contentCapture: this.defaults.contentCapture,
-        tags: this.defaults.tags,
-        metadata: this.defaults.metadata,
-      }),
+      kind === 'workflow'
+        ? this.client.invokeWorkflow({ workflowName: name, ...seed })
+        : this.client.invokeAgent({
+            agentName,
+            fallbackAgentName: DEFAULT_AGENT_NAME,
+            ...seed,
+            tags: this.defaults.tags,
+            metadata: this.defaults.metadata,
+          }),
     );
     this.chainRunMap.set(runId, rec);
   }
@@ -414,9 +430,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
         dataSourceId: dataSourceIdFromRetriever(retriever),
         topK: topKFromRetriever(retriever),
         queryText: typeof query === 'string' && query.length > 0 ? query : undefined,
-        agentName: this.defaults.agentName,
-        agentVersion: this.defaults.agentVersion,
-        conversationId: this.conversationId(metadata),
+        ...this.runIdentity(metadata),
         contentCapture: this.defaults.contentCapture,
         tags: this.defaults.tags,
         metadata: this.defaults.metadata,
@@ -534,16 +548,30 @@ function chainInputToMessages(inputs: ChainValues | undefined): Message[] {
  * of the graph state (empty / unrenderable → `[]`). Otherwise a string, or a
  * string `output`/`text` field, becomes one assistant message; any other shape
  * is JSON-encoded. Empty output returns `[]`.
+ *
+ * Tool results are never output. When the graph ends on tool messages (a
+ * `returnDirect` tool, an interrupt after the tools node) the answer is the AI
+ * message that requested them, and a chain that returns a bare `ToolMessage` has
+ * no model output.
  */
 function chainOutputToMessages(output: ChainValues | undefined): Message[] {
   if (output == null) return [];
   if (typeof output === 'string') return output === '' ? [] : [assistantTextMessage(output)];
   if (typeof output !== 'object') return [];
+  if (isLcToolMessage(output)) return [];
 
   const rec = output as Record<string, unknown>;
   if (Array.isArray(rec.messages)) {
     if (rec.messages.length === 0) return [];
-    return mapBaseMessages([rec.messages[rec.messages.length - 1]]);
+    let end = rec.messages.length;
+    while (end > 0 && isLcToolMessage(rec.messages[end - 1])) end--;
+    if (end === rec.messages.length) {
+      return mapBaseMessages([rec.messages[rec.messages.length - 1]]);
+    }
+    // Trailing tool messages were skipped: only a preceding AI message (the one
+    // that requested those calls) is model output; otherwise emit none.
+    const last = rec.messages[end - 1];
+    return end > 0 && lcMessageType(last) === 'ai' ? mapBaseMessages([last]) : [];
   }
 
   const candidate = rec.output ?? rec.text;
@@ -570,6 +598,18 @@ interface LCBaseMessage {
   content?: unknown;
   tool_calls?: Array<{ id?: string; name?: string; args?: unknown }>;
   tool_call_id?: string;
+}
+
+/** The LangChain message type (`human`, `ai`, `tool`, …), when `raw` is a message. */
+function lcMessageType(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const getType = (raw as LCBaseMessage)._getType;
+  return typeof getType === 'function' ? getType.call(raw) : undefined;
+}
+
+/** True for a LangChain `ToolMessage` or legacy `FunctionMessage`. */
+function isLcToolMessage(raw: unknown): boolean {
+  return lcRole(lcMessageType(raw)) === 'tool';
 }
 
 function lcRole(t: string | undefined): Message['role'] {
@@ -621,7 +661,7 @@ function mapBaseMessages(messages: readonly unknown[]): Message[] {
   for (const raw of messages) {
     if (!raw || typeof raw !== 'object') continue;
     const msg = raw as LCBaseMessage;
-    const role = lcRole(typeof msg._getType === 'function' ? msg._getType() : undefined);
+    const role = lcRole(lcMessageType(msg));
     if (role === 'tool') {
       out.push({
         role: 'tool',
@@ -705,7 +745,63 @@ function toolNameFromOutput(output: unknown): string | undefined {
   return typeof msg.name === 'string' && msg.name.length > 0 ? msg.name : undefined;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
+/**
+ * The chain's `runName` when the caller chose it. LangChain fills it in when the
+ * caller set none: with the runnable's class name (wrappers such as `withRetry()`
+ * or `RunnableWithMessageHistory` pass on a `Runnable*` class name of their own),
+ * or for a LangGraph graph with `LangGraph`. Those count as no name.
+ */
+function callerRunName(chain: Serialized, runName: string | undefined): string | undefined {
+  const id = serializedId(chain);
+  if (!runName || runName === id[id.length - 1] || runName.startsWith('Runnable')) return undefined;
+  if (id[0] === 'langgraph' && runName === LANGGRAPH_DEFAULT_NAME) return undefined;
+  return runName;
+}
+
+/** An agent's name when nothing names it. */
+const DEFAULT_AGENT_NAME = 'langchain';
+
+/**
+ * What a chain run is recorded as, if anything:
+ *  - A top-level graph is an agent when it shows it is one: a `createAgent` graph,
+ *    or a name with "agent" in it (the fill-in name `LangGraph` is no name). Any
+ *    other top-level graph chains steps together and is a workflow. Whether
+ *    `createAgent` built it comes from the graph itself when
+ *    `LangChainInstrumentation` recorded it, else from the run metadata, which a
+ *    run started inside a `createAgent` tool inherits.
+ *  - Any other top-level chain is an agent.
+ *  - A nested chain is a step of its parent, unless it is a named graph or a
+ *    `createAgent` graph: another agent, called from a tool or added as a node.
+ */
+function chainKind(
+  chain: Serialized,
+  name: string | undefined,
+  parentRunId: string | undefined,
+  metadata: Record<string, unknown> | undefined,
+  graph: GraphIdentity | undefined,
+): 'agent' | 'workflow' | undefined {
+  if (parentRunId) {
+    return isLangGraph(chain) && (name || graph?.builtByCreateAgent) ? 'agent' : undefined;
+  }
+  if (!isLangGraph(chain)) return 'agent';
+  const builtByCreateAgent = graph
+    ? graph.builtByCreateAgent
+    : strField(metadata, 'ls_integration') === CREATE_AGENT_INTEGRATION;
+  const isAgent = builtByCreateAgent || name?.toLowerCase().includes('agent');
+  return isAgent ? 'agent' : 'workflow';
+}
+
+/** A compiled LangGraph graph: `createAgent`, `StateGraph.compile()` or `entrypoint`. */
+function isLangGraph(chain: Serialized): boolean {
+  const id = serializedId(chain);
+  return id[0] === 'langgraph' && id[1] === 'pregel';
+}
+
+function serializedId(chain: Serialized): string[] {
+  return (chain as { id?: string[] }).id ?? [];
+}
+
+function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
@@ -729,7 +825,7 @@ const OUTPUT_TOKEN_KEYS: readonly string[] = [
 ];
 const RESPONSE_MODEL_KEYS: readonly string[] = ['model', 'model_name'];
 const CACHE_READ_KEYS: readonly string[] = ['cache_read_input_tokens', 'cacheReadInputTokens'];
-const CACHE_CREATION_KEYS: readonly string[] = [
+const CACHE_WRITE_KEYS: readonly string[] = [
   'cache_creation_input_tokens',
   'cacheCreationInputTokens',
   // Bedrock's spelling.
@@ -905,7 +1001,8 @@ interface MappedUsage {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  reasoningTokens?: number;
 }
 
 /**
@@ -924,23 +1021,24 @@ function mapLangChainUsage(output: LLMResult): MappedUsage | undefined {
   // llmOutput's 0 yields to the message's real count. Keep input and output
   // from a single source so they stay consistent.
   return (fromMessage.inputTokens ?? 0) > (fromLlmOutput.inputTokens ?? 0)
-    ? mergeCacheCounts(fromMessage, fromLlmOutput)
-    : mergeCacheCounts(fromLlmOutput, fromMessage);
+    ? mergeTokenDetails(fromMessage, fromLlmOutput)
+    : mergeTokenDetails(fromLlmOutput, fromMessage);
 }
 
-/** `primary` wins except on cache counts, where its zero would hide a real count
- *  on `secondary`. */
-function mergeCacheCounts(primary: MappedUsage, secondary: MappedUsage): MappedUsage {
+/** `primary` wins except on cache and reasoning counts, where its zero or
+ *  missing count would hide a real count on `secondary`. */
+function mergeTokenDetails(primary: MappedUsage, secondary: MappedUsage): MappedUsage {
   return {
     ...primary,
     cacheReadInputTokens: preferPositive(
       primary.cacheReadInputTokens,
       secondary.cacheReadInputTokens,
     ),
-    cacheCreationInputTokens: preferPositive(
-      primary.cacheCreationInputTokens,
-      secondary.cacheCreationInputTokens,
+    cacheWriteInputTokens: preferPositive(
+      primary.cacheWriteInputTokens,
+      secondary.cacheWriteInputTokens,
     ),
+    reasoningTokens: preferPositive(primary.reasoningTokens, secondary.reasoningTokens),
   };
 }
 
@@ -973,14 +1071,16 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
   // keys instead, so read the nested shape first and fall back to those.
   const details = readObject(u, 'input_token_details') ?? readObject(u, 'inputTokenDetails');
   const cacheReadInputTokens = numField(details, 'cache_read') ?? firstNum(u, CACHE_READ_KEYS);
-  const cacheCreationInputTokens =
-    numField(details, 'cache_creation') ?? firstNum(u, CACHE_CREATION_KEYS);
+  const cacheWriteInputTokens =
+    numField(details, 'cache_creation') ?? firstNum(u, CACHE_WRITE_KEYS);
+  const reasoningTokens = numField(readObject(u, 'output_token_details'), 'reasoning');
 
   if (
     inputTokens == null &&
     outputTokens == null &&
     cacheReadInputTokens == null &&
-    cacheCreationInputTokens == null
+    cacheWriteInputTokens == null &&
+    reasoningTokens == null
   ) {
     return undefined;
   }
@@ -988,7 +1088,8 @@ function readUsage(u: Record<string, unknown> | undefined): MappedUsage | undefi
     inputTokens,
     outputTokens,
     cacheReadInputTokens,
-    cacheCreationInputTokens,
+    cacheWriteInputTokens,
+    reasoningTokens,
   };
 }
 
@@ -1018,58 +1119,7 @@ function toolDefinitionsFromExtraParams(
   extraParams?: Record<string, unknown>,
 ): ToolDefinition[] | undefined {
   const invocation = extraParams?.invocation_params as Record<string, unknown> | undefined;
-  const rawTools = invocation?.tools;
-  if (!Array.isArray(rawTools) || rawTools.length === 0) return undefined;
-
-  const defs: ToolDefinition[] = [];
-  for (const raw of rawTools) {
-    const def = normalizeToolDefinition(raw);
-    if (def) defs.push(def);
-  }
-  return defs.length > 0 ? defs : undefined;
-}
-
-/**
- * Normalizes one provider-specific tool entry into `{ name, description?,
- * inputSchemaJson? }`. Handles the three shapes LangChain forwards:
- *   - OpenAI:    `{ type: 'function', function: { name, description, parameters } }`
- *   - Anthropic: `{ name, description, input_schema }`
- *   - already-normalized: `{ name, description, parameters }`
- * The JSON schema is stored as a JSON string (`inputSchemaJson`); the content
- * sink parses it back into `parameters` for the semconv shape.
- */
-function normalizeToolDefinition(raw: unknown): ToolDefinition | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const r = raw as Record<string, unknown>;
-
-  // OpenAI wraps the definition under `function`; other providers are flat.
-  const fn =
-    r.function && typeof r.function === 'object'
-      ? (r.function as Record<string, unknown>)
-      : undefined;
-  const src = fn ?? r;
-
-  const name = src.name;
-  if (typeof name !== 'string' || name.length === 0) return undefined;
-
-  const def: ToolDefinition = { name };
-
-  const description = src.description;
-  if (typeof description === 'string' && description.length > 0) def.description = description;
-
-  // `parameters` (OpenAI / normalized) or `input_schema` (Anthropic).
-  const schema = src.parameters ?? src.input_schema ?? src.inputSchema ?? src.schema;
-  if (schema != null) {
-    const encoded = lcJson(schema);
-    if (encoded != null) def.inputSchemaJson = encoded;
-  }
-
-  // The OTel schema requires `type`. OpenAI carries it at the top level
-  // (`type: 'function'`); Anthropic and bare/normalized tools don't, so default
-  // to the cross-provider function-tool type.
-  def.type = typeof r.type === 'string' && r.type.length > 0 ? r.type : 'function';
-
-  return def;
+  return toolDefinitions(invocation?.tools);
 }
 
 /** `gen_ai.response.model` — the model that served the call, which is more
@@ -1079,9 +1129,12 @@ function extractResponseModel(output: LLMResult): string | undefined {
   const llmOut = output.llmOutput as Record<string, unknown> | undefined;
   const message = firstGenerationMessage(output);
   const meta = responseMetadata(message);
+  const generationInfo = output.generations?.[0]?.[0]?.generationInfo;
   return (
     firstStr(llmOut, RESPONSE_MODEL_KEYS) ??
     firstStr(meta, RESPONSE_MODEL_KEYS) ??
+    // When LangChain streams inside invoke(), ChatOpenAI reports it only on the generation.
+    firstStr(generationInfo, RESPONSE_MODEL_KEYS) ??
     // Streaming ChatAnthropic reports it only here.
     strField(additionalKwargs(message), 'model')
   );
@@ -1129,9 +1182,15 @@ function extractStopReason(output: LLMResult): string | undefined {
 
 function extractResponseId(output: LLMResult): string | undefined {
   const llmOut = output.llmOutput as Record<string, unknown> | undefined;
-  if (!llmOut) return undefined;
-  if (typeof llmOut.id === 'string') return llmOut.id;
-  if (typeof (llmOut as { responseId?: string }).responseId === 'string')
-    return (llmOut as { responseId?: string }).responseId;
-  return undefined;
+  const message = firstGenerationMessage(output);
+  const known =
+    strField(llmOut, 'id') ??
+    strField(llmOut, 'responseId') ??
+    // ChatOpenAI on the Responses API, where the message id can be an output item's.
+    strField(responseMetadata(message), 'id');
+  if (known) return known;
+  // ChatOpenAI puts the response id on the message instead. When a message has
+  // none, LangChain fills in `run-<runId>`, which is not a response id.
+  const messageId = strField(message as Record<string, unknown> | undefined, 'id');
+  return messageId?.startsWith('run-') ? undefined : messageId;
 }

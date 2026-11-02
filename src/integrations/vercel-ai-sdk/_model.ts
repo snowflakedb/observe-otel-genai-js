@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Shared helpers for the Vercel AI SDK adapters (function wrappers in
  * `index.ts` and the callback hooks in `hooks.ts`).
@@ -68,10 +85,21 @@ export function embedModelRefFromAi(model: unknown): ModelRef {
   return modelRefFromAi(model);
 }
 
+/** AI SDK v7 usage, which nests cache and reasoning counts under the token details. */
+export interface AiUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+  outputTokenDetails?: { reasoningTokens?: number };
+  promptTokens?: number; // before AI SDK v5
+  completionTokens?: number; // before AI SDK v5
+}
+
 /**
- * Maps AI SDK usage (v7 top-level shape) to a partial `TokenUsage` object.
- * Handles both the legacy `promptTokens`/`completionTokens` (v5) and
- * current `inputTokens`/`outputTokens` (v6/v7) names.
+ * Maps AI SDK usage (v7 shape) to a partial `TokenUsage` object.
+ * Handles both the legacy `promptTokens`/`completionTokens` (v4) and
+ * current `inputTokens`/`outputTokens` (v5 and later) names.
  */
 export function mapAiUsage(usage: unknown):
   | {
@@ -79,18 +107,58 @@ export function mapAiUsage(usage: unknown):
       outputTokens?: number;
       totalTokens?: number;
       cacheReadInputTokens?: number;
-      cacheCreationInputTokens?: number;
+      cacheWriteInputTokens?: number;
       reasoningTokens?: number;
     }
   | undefined {
   if (!usage || typeof usage !== 'object') return undefined;
-  const u = usage as Record<string, number | undefined>;
+  const u = usage as AiUsage;
   return {
     inputTokens: u.promptTokens ?? u.inputTokens,
     outputTokens: u.completionTokens ?? u.outputTokens,
     totalTokens: u.totalTokens,
-    cacheReadInputTokens: u.cacheReadInputTokens,
-    cacheCreationInputTokens: u.cacheCreationInputTokens,
-    reasoningTokens: u.reasoningTokens,
+    cacheReadInputTokens: u.inputTokenDetails?.cacheReadTokens,
+    cacheWriteInputTokens: u.inputTokenDetails?.cacheWriteTokens,
+    reasoningTokens: u.outputTokenDetails?.reasoningTokens,
+  };
+}
+
+/** The AI SDK call settings a model call's span records. */
+export interface AiCallSettings {
+  maxOutputTokens?: number;
+  /** Before AI SDK v7. */
+  maxTokens?: number;
+  temperature?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stopSequences?: unknown;
+  seed?: number;
+}
+
+/** A generation's request parameters. */
+export type RequestParams = Pick<
+  GenerationStart,
+  | 'maxTokens'
+  | 'temperature'
+  | 'topP'
+  | 'frequencyPenalty'
+  | 'presencePenalty'
+  | 'stopSequences'
+  | 'seed'
+>;
+
+/** Maps AI SDK call settings to a generation's request parameters. */
+export function requestParams(settings: AiCallSettings): RequestParams {
+  return {
+    maxTokens: settings.maxOutputTokens ?? settings.maxTokens,
+    temperature: settings.temperature,
+    topP: settings.topP,
+    frequencyPenalty: settings.frequencyPenalty,
+    presencePenalty: settings.presencePenalty,
+    stopSequences: Array.isArray(settings.stopSequences)
+      ? settings.stopSequences.filter((x): x is string => typeof x === 'string')
+      : undefined,
+    seed: settings.seed,
   };
 }

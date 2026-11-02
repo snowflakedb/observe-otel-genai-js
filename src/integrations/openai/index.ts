@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenAI SDK adapter.
  *
@@ -65,6 +82,7 @@ export async function instrumentedChatCompletion(
     (p) => openai.chat.completions.create(p) as Promise<unknown>,
     resolved.params,
     resolved.options,
+    openai.baseURL,
   ) as Promise<ChatCompletionsResult>;
 }
 
@@ -93,6 +111,7 @@ export async function instrumentedEmbedding(
     (p) => openai.embeddings.create(p),
     resolved.params,
     resolved.options,
+    openai.baseURL,
   );
 }
 
@@ -140,7 +159,7 @@ function wrapCompletions(client: Client, openai: OpenAI, completions: unknown) {
           stripMetadata(params);
           const raw = create.call(openai.chat.completions, params, ...rest);
           return instrumentOrPassThrough(raw, (p) =>
-            instrumentChatCompletionApiPromise(client, p, params, options),
+            instrumentChatCompletionApiPromise(client, p, params, options, openai.baseURL),
           );
         };
       }
@@ -161,7 +180,7 @@ function wrapResponses(client: Client, openai: OpenAI, responses: unknown) {
           stripMetadata(params);
           const raw = create.call(openai.responses, params, ...rest);
           return instrumentOrPassThrough(raw, (p) =>
-            instrumentResponseApiPromise(client, p, params, options),
+            instrumentResponseApiPromise(client, p, params, options, openai.baseURL),
           );
         };
       }
@@ -182,7 +201,7 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
           stripMetadata(params);
           const raw = create.call(openai.embeddings, params, ...rest);
           return instrumentOrPassThrough(raw, (p) =>
-            instrumentEmbeddingApiPromise(client, p, params, options),
+            instrumentEmbeddingApiPromise(client, p, params, options, openai.baseURL),
           );
         };
       }
@@ -194,6 +213,11 @@ function wrapEmbeddings(client: Client, openai: OpenAI, embeddings: unknown) {
 // -----------------------------------------------------------------------------
 // Prototype-patch entry points (used by OpenAIInstrumentation)
 // -----------------------------------------------------------------------------
+
+/** The base URL of the client a patched resource method was called on. */
+function baseURLOf(resource: unknown): string | undefined {
+  return (resource as { _client?: { baseURL?: string } } | undefined)?._client?.baseURL;
+}
 
 /**
  * Builds a shimmer-style wrapper for `Completions.prototype.create`. The
@@ -218,7 +242,7 @@ export function patchChatCompletionsCreate(
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
       return instrumentOrPassThrough(raw, (p) =>
-        instrumentChatCompletionApiPromise(client, p, params, options),
+        instrumentChatCompletionApiPromise(client, p, params, options, baseURLOf(this)),
       );
     };
 }
@@ -245,7 +269,7 @@ export function patchResponsesCreate(
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
       return instrumentOrPassThrough(raw, (p) =>
-        instrumentResponseApiPromise(client, p, params, options),
+        instrumentResponseApiPromise(client, p, params, options, baseURLOf(this)),
       );
     };
 }
@@ -268,7 +292,7 @@ export function patchEmbeddingsCreate(
       stripMetadata(params);
       const raw = original.apply(this, [params, ...rest]);
       return instrumentOrPassThrough(raw, (p) =>
-        instrumentEmbeddingApiPromise(client, p, params, options),
+        instrumentEmbeddingApiPromise(client, p, params, options, baseURLOf(this)),
       );
     };
 }

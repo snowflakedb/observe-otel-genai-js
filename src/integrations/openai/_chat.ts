@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenAI Chat Completions (`client.chat.completions.create`) instrumentation:
  * the recording core and the mapping from chat messages to genai-otel
@@ -16,10 +33,12 @@ import {
   toolCallPart,
   toolResultPart,
 } from '../../models/message.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/metadata.js';
+import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
+import { toolDefinitions } from '../_common/tool-definitions.js';
 
 type OpenAIAdapterOptions = AdapterCallOptions;
 
@@ -55,9 +74,10 @@ export async function runChatCompletion(
   invoke: ChatCompletionsInvoke,
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): Promise<unknown> {
   const isStream = (params as { stream?: boolean }).stream === true;
-  const seed = buildChatSeed(params, options);
+  const seed = buildChatSeed(params, options, baseURL);
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
@@ -70,13 +90,14 @@ export async function runChatCompletion(
       await rec.end();
       throw err;
     }
-    return wrapProviderStream<typeof stream, ChatChunk>(stream, chatStreamHandlers(rec));
+    return wrapProviderStream<typeof stream, ChatChunk>(stream, chatStreamHandlers(rec, params));
   }
 
   await using rec = client.startGeneration(seed);
+  rec.setResult({ input: mapOpenAIInput(params.messages) });
   try {
     const result = (await invoke(params)) as ChatCompletionsResult;
-    recordChatResult(rec, params, result);
+    recordChatResult(rec, result);
     return result;
   } catch (err) {
     rec.setCallError(err);
@@ -97,14 +118,15 @@ export function instrumentChatCompletionApiPromise(
   apiPromise: ApiPromiseLike<unknown>,
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL?: string,
 ): unknown {
   const isStream = (params as { stream?: boolean }).stream === true;
-  const seed = buildChatSeed(params, options);
+  const seed = buildChatSeed(params, options, baseURL);
 
   if (isStream) {
     const rec = client.startStreamingGeneration(seed);
     rec.setResult({ input: mapOpenAIInput(params.messages) });
-    const handlers = chatStreamHandlers(rec);
+    const handlers = chatStreamHandlers(rec, params);
     return instrumentApiPromise(apiPromise, rec, (stream) =>
       wrapProviderStream<AsyncIterable<ChatChunk>, ChatChunk>(
         stream as AsyncIterable<ChatChunk>,
@@ -114,8 +136,9 @@ export function instrumentChatCompletionApiPromise(
   }
 
   const rec = client.startGeneration(seed);
+  rec.setResult({ input: mapOpenAIInput(params.messages) });
   return instrumentApiPromise(apiPromise, rec, (result) => {
-    recordChatResult(rec, params, result as ChatCompletionsResult);
+    recordChatResult(rec, result as ChatCompletionsResult);
     void rec.end();
     return result;
   });
@@ -125,6 +148,7 @@ export function instrumentChatCompletionApiPromise(
 function buildChatSeed(
   params: ChatCompletionsCreateParams,
   options: OpenAIAdapterOptions,
+  baseURL: string | undefined,
 ): GenerationStart {
   return {
     model: { provider: 'openai', name: params.model },
@@ -140,6 +164,9 @@ function buildChatSeed(
     seed: params.seed ?? undefined,
     choiceCount: params.n ?? undefined,
     toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
+    outputType: outputTypeOf(params.response_format?.type),
+    tools: toolDefinitions(params.tools),
+    ...serverOf(baseURL),
     ...identityFieldsFromOptions(options),
     contentCapture: options.contentCapture,
     tags: options.tags,
@@ -149,17 +176,12 @@ function buildChatSeed(
 }
 
 /** Records the result of a non-streaming chat completion onto the recorder. */
-function recordChatResult(
-  rec: ChatRecorder,
-  params: ChatCompletionsCreateParams,
-  result: ChatCompletionsResult,
-): void {
+function recordChatResult(rec: ChatRecorder, result: ChatCompletionsResult): void {
   rec.setResult({
     responseId: result.id,
     responseModel: result.model,
     stopReason: result.choices?.[0]?.finish_reason,
     usage: mapUsage(result.usage),
-    input: mapOpenAIInput(params.messages),
     output: mapOpenAIOutputMessage(result.choices?.[0]?.message as OAMessage | undefined),
   });
 }
@@ -169,7 +191,10 @@ function recordChatResult(
  * chunks for TTFT, accumulated text/tool-calls, and final usage, then finalizes
  * the recorder on completion / error / abandonment.
  */
-function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
+function chatStreamHandlers(
+  rec: ChatRecorder,
+  params: ChatCompletionsCreateParams,
+): StreamWrapOptions<ChatChunk> {
   let firstTokenSeen = false;
   let finalUsage: ChatUsageShape | undefined;
   let finalModel: string | undefined;
@@ -212,6 +237,10 @@ function chatStreamHandlers(rec: ChatRecorder): StreamWrapOptions<ChatChunk> {
         usage: mapUsage(finalUsage),
         output: buildStreamOutputMessages(outputText, toolAcc),
       });
+      // Usage was asked for but the caller stopped reading before it arrived.
+      if (params.stream_options?.include_usage && !finalUsage) {
+        rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
+      }
       await rec.end();
     },
     onError: async (err) => {
@@ -233,7 +262,7 @@ interface ChatUsageShape {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
   completion_tokens_details?: { reasoning_tokens?: number };
 }
 
@@ -244,6 +273,7 @@ function mapUsage(usage: ChatUsageShape | undefined) {
     outputTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,
     cacheReadInputTokens: usage.prompt_tokens_details?.cached_tokens,
+    cacheWriteInputTokens: usage.prompt_tokens_details?.cache_write_tokens,
     reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
   };
 }

@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Public entry point for `@genai-otel/core`.
  *
@@ -28,8 +45,7 @@ export {
   conversationTitleFromContext,
   contentCaptureModeFromContext,
   userIdFromContext,
-  withAgentName,
-  withAgentVersion,
+  withAgent,
   withContext,
   withContentCaptureMode,
   withConversationId,
@@ -82,9 +98,11 @@ export type { EmbeddingRecorder } from './recorders/embedding.js';
 export type { GenerationRecorder } from './recorders/generation.js';
 export type { RetrievalRecorder } from './recorders/retrieval.js';
 export type { ToolExecutionRecorder } from './recorders/tool.js';
+export type { WorkflowInvocationRecorder } from './recorders/workflow.js';
 
 // Models
 export type { AgentCreationStart, AgentInvocationStart } from './models/agent.js';
+export type { WorkflowInvocationStart } from './models/workflow.js';
 export type {
   Generation,
   GenerationMode,
@@ -153,7 +171,6 @@ export {
   ATTR_SYSTEM_INSTRUCTIONS,
   ATTR_TOOL_DEFINITIONS,
   ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
-  ATTR_USAGE_COST_USD,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_IS_PARTIAL,
   ATTR_USAGE_OUTPUT_TOKENS,
@@ -175,6 +192,7 @@ export {
   OP_EXECUTE_TOOL,
   OP_GENERATE_CONTENT,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
   OP_TEXT_COMPLETION,
   SDK_NAME,

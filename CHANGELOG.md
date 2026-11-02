@@ -6,7 +6,107 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Claude Agent SDK: each `invoke_agent` span now carries the input and output
+  tokens of its own agent's calls, the sum of its `chat` spans, and a subagent's
+  span carries its own. Before, the root span carried the SDK's run totals,
+  subagents included, with cache and reasoning counts, and subagent spans carried
+  none. An `invoke_agent` span is marked `genai.usage.is_partial` when any of its
+  calls is: usual for a subagent, which gets no stream events, and for every
+  agent without `includePartialMessages`. A resumed or continued run now gets its
+  tokens too.
+- Claude Agent SDK: a subagent's last call no longer takes its usage from the
+  delegation's tool result, so every subagent `chat` span has only its snapshot
+  and is marked `genai.usage.is_partial`. That usage is the subagent's final
+  reply's, which the SDK forwards only with `forwardSubagentText`, so without it
+  the usage landed on an earlier call.
+- Claude Agent SDK: the root `invoke_agent` span no longer carries
+  `genai.usage.cost_usd`, which is not a GenAI convention attribute, and the
+  `ATTR_USAGE_COST_USD` export is removed.
+- Metrics: `error.type` and `error.category` are now left off a data point when
+  the operation succeeded, as the GenAI conventions ask, instead of being written
+  as empty strings. To count successes, filter on `error.type` not being set
+  rather than on `error.type = ""`. Success data points change attribute set, so
+  their time series start anew at the upgrade; error rates are unaffected.
+- LangChain: with `LangChainInstrumentation`, a `createAgent` graph is named only by
+  `createAgent({ name })`, as in the Python library. A run that renames it, such as
+  `agent.invoke(input, { runName: 'step1' })`, no longer changes the agent name, so
+  one agent's spans and metrics are no longer split across run names. An unnamed
+  `createAgent` graph is named as any unnamed agent is, not by the run name. One
+  inside another agent, such as a subagent called from a tool, now gets its own
+  `invoke_agent langchain` span, and does not take the outer agent's name or an
+  enclosing `withAgent(...)` scope's; before, it had no span, and its model calls
+  carried the outer agent's name.
+- LangChain: `LangChainInstrumentation` also patches `@langchain/langgraph` (1.x):
+  it reads whether `createAgent` built a graph from the graph itself, not from the
+  run metadata, which runs started inside a `createAgent` tool inherit. A plain
+  graph run inside a `createAgent` tool with its own `callbacks` is now a workflow,
+  not an agent. A `createAgent` graph from `langchain` before 1.4.4, which marks
+  nothing on the graph, is known by its `model_request` node. Under ESM, also pass
+  `@langchain/langgraph/pregel` to `manuallyInstrument`, which now takes several
+  modules in one call.
+- LangChain: a top-level LangGraph graph is now recorded as `invoke_workflow`
+  unless it is an agent, meaning it was built with `createAgent` or has "agent" in
+  its name. Before, every top-level graph became `invoke_agent`, and an unnamed one
+  had no agent name, nor did any span or metric under it. The graph's name, if any,
+  is now `gen_ai.workflow.name`, and spans under a workflow get no agent name from
+  it. Nested graphs, and top-level chains that are not graphs, are recorded as
+  before. `createReactAgent` graphs leave no sign that they are agents, so they now
+  become workflows unless named as above; `createAgent` graphs stay agents.
+- Core: `gen_ai.workflow.name` is now kept under the `allow_list` content mode. It
+  is a name the application gives its workflow (an OpenAI Agents trace name), like
+  the agent name, which the list already keeps. Before, it was dropped while the
+  span name still showed it.
+- License changed from MIT to Apache 2.0.
+
 ### Added
+- Claude Agent SDK: the main thread's `chat` spans carry `gen_ai.tool.definitions`,
+  listing the tools the CLI reports at the start of each turn. The CLI gives only
+  tool names, so the definitions have no description or parameters.
+- Vercel AI SDK: `VercelAiSdkInstrumentation`
+  (`@genai-otel/core/vercel-ai-sdk/instrumentation`), an OpenTelemetry
+  instrumentation that registers `genaiTelemetryIntegration` with the AI SDK, so the
+  AI SDK can be set up with `registerInstrumentations` like the other integrations.
+  It patches nothing, works under CommonJS and ESM without a loader hook, and
+  `disable()` takes the integration off the AI SDK's list again.
+- Core: `invokeAgent` accepts `fallbackAgentName`, used only when the agent's own
+  name, the enclosing scope and the `Client` config give none. Spans inside the
+  agent take it too, but another agent inside it does not, so an unnamed agent from
+  one framework inside another keeps its own default. The LangChain, Vercel AI SDK
+  and Claude Agent SDK integrations pass their own name (`langchain`, `ai-sdk`,
+  `claude-agent-sdk`), so an agent nothing names still has a name on its spans and
+  metrics.
+- Core: `client.invokeWorkflow(seed)` and `client.invokeWorkflow(seed, fn)` record an
+  `invoke_workflow` span, for steps chained together that decide nothing on their
+  own. It works like `invokeAgent`, but has no agent name: it records
+  `gen_ai.workflow.name`, and spans inside it take its conversation id and user id
+  and keep the enclosing agent's name. A failed workflow's `error.type` is the
+  error's class name, as on the OpenAI Agents workflow span.
+- Core: workflow durations are recorded in `gen_ai.invoke_workflow.duration`, the
+  GenAI conventions' histogram for workflows, with buckets from 1 s to 2 h and
+  `gen_ai.workflow.name` when the workflow has one. The OpenAI Agents workflow
+  is recorded there too, not in `gen_ai.client.operation.duration`.
+- Core: `createAgent` accepts `userId`, and `create_agent` spans carry `user.id`,
+  falling back to a `withUserId(...)` scope, then the client config. Their
+  `gen_ai.client.operation.duration` data point carries it too when
+  `metricAttributes.userId` is on. Spans started inside `createAgent(seed, fn)`
+  get the same user id but keep the enclosing agent's name.
+- OpenAI: chat and embeddings spans record `server.address` and `server.port` from
+  the client's `baseURL`. Chat Completions spans also record
+  `gen_ai.tool.definitions` from the request's `tools`, and `gen_ai.output.type`
+  from `response_format` (`json` for `json_schema` and `json_object`, `text` for
+  `text`). Responses now also maps `json_object`, and records `text` when the
+  request names the text format.
+- Core: opt-in `user.id` on metrics. Set
+  `new Client({ metricAttributes: { userId: true } })` to add it to every histogram
+  data point whose operation has a user id. Off by default, since each user becomes
+  its own time series.
+- Tool, retrieval and embedding spans now carry `user.id`, and embedding spans
+  `gen_ai.conversation.id`. `startToolExecution`, `startRetrieval` and
+  `startEmbedding` accept `userId`; `startEmbedding` also accepts `conversationId`.
+- LangChain: the run's `metadata.user_id` is recorded as `user.id`.
+- OpenAI: `responses.create` records the request's own `conversation` as
+  `gen_ai.conversation.id`, unless `withMetadata` sets one.
 - Core: opt-in `gen_ai.conversation.id` on metrics. Set
   `new Client({ metricAttributes: { conversationId: true } })` to add it to every
   histogram data point whose operation has a conversation ID. Off by default, since
@@ -44,8 +144,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **OpenAI Agents SDK support.** `OpenAIAgentsInstrumentation`
   (`@genai-otel/core/openai-agents/instrumentation`) traces agent runs:
   `invoke_agent` for agents, `execute_tool` for tools, `chat` for model calls on
-  the AI SDK path, and an `invoke_agent` container span for each run, named after
-  the trace. On the OpenAI model paths the `chat` span comes from
+  the AI SDK path, and an `invoke_workflow` span for each run, with
+  `gen_ai.workflow.name`. The workflow is named after the trace, or after the agent
+  passed to `run()` when the run has no name. On the OpenAI model paths the `chat` span comes from
   `OpenAIInstrumentation`, so each model call is reported once.
   - Model calls and tool calls run inside their span's OTel context, so spans from
     other instrumentations nest under the agent or tool, streamed calls included.
@@ -54,7 +155,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Agent spans carry the agent's input and output messages under content capture.
   - Runs and `withTrace` blocks that reject are closed with the error, since the
     SDK leaves them open. Failures the run recovers from do not fail the run.
-  - A streamed run that fails reports the error on its container.
+  - A streamed run that fails reports the error on its workflow span.
+  - Each run records `gen_ai.invoke_workflow.duration`, so runs have their own
+    count, error and duration series.
+  - The workflow span carries `user.id` from the `withUserId(...)` scope the trace
+    opens in, else the client config, as does its duration data point when
+    `metricAttributes.userId` is on.
   - The processor stays registered when the SDK's processor list is replaced, so
     `setTraceProcessors([])` turns off the export to OpenAI and keeps these spans.
   - Time-to-first-token on the AI SDK path, measured from the first delta event.
@@ -68,6 +174,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/content-retention.md`.
 
 ### Changed
+- **Cache-write tokens use only the `cache_write` name.** `chat` spans no longer
+  carry `gen_ai.usage.cache_creation.input_tokens`; read
+  `gen_ai.usage.cache_write.input_tokens` instead, which `allow_list` mode now keeps.
+  On `gen_ai.client.token.usage`, the `gen_ai.token.type` value `cache_creation` is
+  now `cache_write`.
+- **`TokenUsage.cacheCreationInputTokens` is renamed to `cacheWriteInputTokens`.**
+  Code that records generations by hand and passes cache-write counts in
+  `setResult({ usage })` must use the new name; the old one is ignored.
 - **`metadata_only` is now the default content-capture mode.** A `Client` with no
   `contentCaptureMode`, and the `default` mode's fallthrough, no longer capture
   prompts and completions: spans keep their metadata but carry no messages,
@@ -76,21 +190,197 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   messages. To capture content again, set `contentCaptureMode: 'no_tool_content'`
   (prompts and completions) or `'full'` (also tool arguments/results and
   retrieval content) on the `Client`, per call, or with `withContentCaptureMode`.
-- Content attributes are now capped at 1,048,576 characters each by default,
-  large enough that typical prompts and completions are never trimmed. Content
-  over the cap is trimmed with the existing `.truncated` /
-  `.original_size_bytes` markers. `DEFAULT_MAX_CONTENT_LENGTH` changes from
-  32,768 to this value and is now applied by default. Set
-  `contentCapture: { maxContentLength: 0 }` to turn the cap off, or another
-  value to change it.
-- `ClientConfig.contentCapture` accepts a partial object, so
-  `{ maxContentLength: 8192 }` is enough; unset fields keep their defaults.
+- **Core: agent name, agent version, conversation id, conversation title and user
+  id now resolve in one order**: the span's own value (passed to
+  `startGeneration`, `invokeAgent` and the like), the enclosing `withX(...)`
+  scope, then the `Client` config. Empty strings count as unset. See "Identity
+  resolution" in `docs/semconv-mapping.md`.
+  - An agent version is used only from a place that also sets the agent name,
+    and only if that is the name the span ends up with. So `Client({ agentVersion })`
+    without `agentName`, or `startGeneration({ agentVersion })` without
+    `agentName`, no longer produces a version, and a span whose agent name is
+    `checkout` no longer takes the version of a `Client` that names another agent.
+  - `invoke_agent` spans take the agent name from the scope or the `Client` when
+    none is passed, so `AgentInvocationStart.agentName` is now optional.
+- **`withAgentName` and `withAgentVersion` are replaced by `withAgent(name,
+  version?)`.** A scope that names an agent drops the outer scope's version, so
+  `withAgent('inner', fn)` inside `withAgent('outer', '1', fn)` has no version.
+  An empty value in a scope keeps the outer scope's value.
+- **`OpenAIInstrumentation` no longer takes identity options** (`agentName`,
+  `agentVersion`, `conversationId`, `conversationTitle`, `userId`). They ranked a
+  whole-process setting above the app's own `withX(...)` scope. Set identity with
+  `withMetadata` on the call, a scope around it, or the `Client`.
+- **LangChain: the handler and `LangChainInstrumentation` no longer take identity
+  options** (`agentName`, `agentVersion`, `conversationId`, `conversationTitle`,
+  `userId`). The run's own `runName`, `thread_id` and `metadata.user_id` give the
+  identity, and an enclosing `withX(...)` scope or the `Client` fills in the rest.
+  The handler no longer makes up agent names: the runnable's class name, other
+  `Runnable*` names, `LangGraph` for an unnamed graph, and `langchain-chain` no
+  longer count, so an unnamed chain takes the name of an enclosing `withAgent(...)`
+  scope or the `Client`'s `agentName`, or is named `langchain`.
+- **LangChain: the `captureNestedChains` option is removed.** It turned every step
+  inside a graph into an `invoke_agent` span named after the step (`__start__`,
+  `model_request`, …), and the `chat` spans under a step then took the step's name
+  as their agent name. A named LangGraph graph inside another agent now gets its
+  own span without it (see Fixed).
+- Vercel AI SDK telemetry: a call whose `deriveOptions` returns no agent name (by
+  default: no `functionId` and no `runtimeContext.agent`) is no longer named
+  `agent`. Its `invoke_agent` span takes the name from an enclosing
+  `withAgent(...)` scope or the `Client`'s `agentName`, and is named `ai-sdk` when
+  nothing names it.
+- **Claude Agent SDK: `ClaudeAgentSdkInstrumentation` no longer takes identity
+  options.** Pass them to `wrapQuery`, or wrap the call in a `withX(...)` scope.
+  An unnamed run now takes the `Client`'s `agentName`, and is named
+  `claude-agent-sdk` only when nothing names it. The CLI session id is now the
+  conversation id only when neither `wrapQuery` nor an enclosing scope sets one,
+  and subagent spans no longer carry the main agent's version.
+- Core: `withAgent`, `withConversationId` and the other scope helpers now keep
+  their values in the OpenTelemetry context, so they need a context manager
+  registered, as span parenting does. Restoring a saved context now restores the
+  scope too.
+- Claude Agent SDK: spans use the scope `query()` was called in, even when the
+  stream is read outside it.
 - Spans that succeed now leave their status unset instead of setting it to OK, as
   the OpenTelemetry conventions recommend for instrumentation libraries.
 - LangChain adapter: provider matching now also ignores `.` in provider ids.
 
 ### Fixed
-- OpenAI Agents integration: the run container span read its content-capture mode
+- Vercel AI SDK: `gen_ai.output.messages` holds only what the model returned.
+  A `chat` span's output is the step's text, reasoning and tool calls; the
+  `invoke_agent` span's output is the final step's; `wrapGenerateText` and
+  `wrapStreamText` follow the same rule. Before, the results and errors of the
+  app's tools, which the AI SDK runs inside the step after the model call ended,
+  came out as a trailing `tool` message, and the `invoke_agent` span merged every
+  step's tool calls and results into its output. Tool results stay on the
+  `execute_tool` span and in the next `chat` span's input messages. Results of
+  tools the provider runs itself (`providerExecuted`, such as web search) are
+  model output and stay, inside the assistant message. This changes the shape
+  of recorded output messages for tool loops.
+- LangChain adapter: a chain's output messages never include a tool result. When
+  the graph state ends on `ToolMessage`s (a `returnDirect` tool, an interrupt
+  after the tools node), the output is the AI message that requested the calls;
+  a chain that returns a bare `ToolMessage` records no output messages.
+- LangChain adapter: `chat` spans now record reasoning tokens as
+  `gen_ai.usage.reasoning.output_tokens`, and `gen_ai.client.token.usage` counts
+  them as `reasoning`. LangChain reports them in the message's
+  `usage_metadata.output_token_details.reasoning` (for example `ChatOpenAI` on a
+  reasoning model). Before, the adapter did not read them.
+- Vercel AI SDK: `chat` and `generate_content` spans, from both the telemetry
+  integration and the wrappers, now record cache-read, cache-write and reasoning
+  tokens, and `gen_ai.client.token.usage` counts them. AI SDK v7 reports them
+  under `usage.inputTokenDetails` and `usage.outputTokenDetails`. Before, the
+  adapter read field names that no AI SDK version has, so these counts were
+  always missing.
+- Anthropic: `chat` spans now record reasoning tokens from
+  `usage.output_tokens_details.thinking_tokens`, for normal and streamed calls.
+  Before, the adapter did not read them.
+- OpenAI: Chat Completions spans now record cache-write tokens from
+  `usage.prompt_tokens_details.cache_write_tokens`, as Responses spans already
+  did. Before, the adapter did not read them.
+- Claude Agent SDK: `ClaudeAgentSdkInstrumentation` now also patches the
+  `@anthropic-ai/claude-agent-sdk/core` entry, which the SDK ships from 0.3.282.
+  Before, a `query()` imported from `/core` was not traced.
+- Vercel AI SDK: `wrapStreamText` now stops the time to first token at the first
+  chunk that carries output, as the AI SDK does. Before, it stopped at the stream's
+  opening `start` chunk, which arrives before the model answers, so it reported
+  close to zero.
+- Vercel AI SDK: `wrapGenerateText` and `wrapStreamText` record the call's `prompt`
+  or `messages` as `gen_ai.input.messages`, also when the call fails, and the final
+  reply as `gen_ai.output.messages`, when content capture is on. They also take the
+  system prompt from v7's `instructions`, not only from `system`, and follow the AI
+  SDK's `recordInputs` / `recordOutputs` like the telemetry integration. Before,
+  they recorded no messages.
+- Vercel AI SDK: `streamText` and `streamObject` spans from the telemetry
+  integration record the time to first token the AI SDK measures, which also feeds
+  the `gen_ai.client.time_to_first_token` metric. Before, only `wrapStreamText` did.
+- Vercel AI SDK: chat spans from the telemetry integration now record the tools
+  each model call is sent as `gen_ai.tool.definitions`: names only under
+  `no_tool_content`, with descriptions and parameters under `full`. Before, they
+  recorded none. With the AI SDK's `recordInputs: false` they are left out, as
+  the system prompt is.
+- Vercel AI SDK: chat and `generate_content` spans from the telemetry integration
+  record the request parameters each model call used (`temperature`,
+  `maxOutputTokens`, `topP`, penalties and seed; stop sequences on `chat` spans only),
+  including those `prepareStep` sets for one step, as the wrappers do. Before, they
+  recorded none. `wrapGenerateObject` now records all of them too, not only the
+  first three.
+- Core: metric labels are trimmed, as span attributes already were. Before, a
+  value with leading or trailing spaces, such as an agent name `" planner "`, was
+  trimmed on the span but kept its spaces on the metric, so filtering on the span's
+  value missed the metric series. A `gen_ai.conversation.id` or `user.id` that the
+  client opted into and that is only spaces is now left off the metric, as it is on
+  the span. An error type passed to `setErrorType` is trimmed too, on both.
+- OpenAI Agents: a streamed run that fails now records the error's class name, such
+  as `AuthenticationError`, as `error.type` on its workflow span, as a non-streamed
+  run does. Before, it recorded `_OTHER`, because the SDK reports a
+  streamed run's failure only as text that names no class.
+- Core: a `withContentCaptureMode` scope now applies to every span started inside
+  it, even one that ends after the scope exits, such as a call whose promise is
+  returned from the scope rather than awaited in it. Before, the mode was read when
+  the span ended, so that call recorded no content. A scope entered only around
+  `end()` no longer applies.
+- OpenAI and Anthropic: a stream the caller stops reading early (`break`) now ends
+  its span without an error, keeping the output read so far. Before, it was marked
+  as a failed call ("stream was never consumed"), which counted toward error rates.
+  A stream stopped before its final usage arrives has no output token count and is
+  marked `genai.usage.is_partial`.
+- OpenAI and Anthropic: a non-streamed call that fails now records its input
+  messages. Before, they were recorded only with the reply, so a failed call
+  showed nothing of what was sent.
+- LangChain: `ChatOpenAI` calls now record `gen_ai.response.id`, read from the
+  reply message. Before, it was read only from `llmOutput`, where `ChatOpenAI`
+  usually puts none.
+- Vercel AI SDK: `generateText` and `generateObject` steps no longer carry
+  `gen_ai.request.stream: true`. Before, every step was recorded as streamed.
+- Vercel AI SDK: tool results in input messages are recorded as the tool
+  returned them, such as `{ answer: 42 }`. Before, they kept the AI SDK's
+  wrapper, `{ type: 'json', value: { answer: 42 } }`.
+- Vercel AI SDK: `embed`, `embedMany` and `rerank` no longer get an `invoke_agent`
+  span from the telemetry integration. Before, each got one, and a failed `embed`
+  counted as a failed agent. `embed` and `embedMany` now get one `embeddings` span
+  per embedding model call instead, with the input count, token count, dimensions
+  and the identity from `deriveOptions`; a failed call gets a failed span, a
+  retried one leaves none.
+- Vercel AI SDK: a call that fails outside the model call, such as in `prepareStep`,
+  now records the error's message, not `[object Object]`. Before, if another call
+  was running at the same time, its span was never ended and never sent.
+- Vercel AI SDK: a model call that fails and then succeeds on retry, such as after
+  a rate limit, no longer marks the call as failed. Before, the first failed
+  attempt ended the call's spans with an error, and the successful reply was lost.
+- Vercel AI SDK: a step's `chat` span now ends when the model replies, before the
+  step's tools run, and `execute_tool` spans sit next to `chat` under `invoke_agent`.
+  Before, tool spans were created under `chat`, which stayed open until the tools
+  returned, so `chat` durations and `gen_ai.client.operation.duration` included tool
+  time. With `emitOperationSpan: false`, tool spans still sit under `chat`. Tool
+  calls approved in an earlier turn, which run before the first step, now get an
+  `execute_tool` span too.
+- LangChain: a named LangGraph graph run inside another agent, called from a tool
+  or added as a graph node, now gets its own `invoke_agent` span. Before, it was
+  skipped as an inner step, and its model calls carried the outer agent's name.
+- Claude Agent SDK: a streamed prompt (an async iterable passed to `query()` or
+  `streamInput()`) is now recorded as the run's input and in each `chat` span's
+  conversation. Before, only a string prompt was.
+- OpenAI Agents: a run that fails with an `openai` API error now records its class
+  (`AuthenticationError`, `RateLimitError`, …) as `error.type` on the workflow span,
+  instead of `Error`. Those classes leave `name` as `Error`. Agent and tool spans,
+  which see only the error's text, record their own category instead of `Error`.
+- LangChain: a streamed call that returns only a tool call now records
+  `gen_ai.request.stream`, and a ChatOpenAI call that LangChain streams inside
+  `invoke()` records `gen_ai.response.model`, which it then reports only on the
+  generation.
+- Core: spans started inside `client.invokeAgent(seed, fn)` or a recorder's
+  `withActiveContext(fn)` now take that recorder's agent name and version,
+  conversation id and title, and user id as their enclosing scope, unless they
+  set their own, on the span and its metrics. Only the recorder's own and
+  inherited values are handed down, never the `Client` config. `create_agent`
+  hands nothing down.
+- OpenAI Agents: the `conversationId` passed to `run()`, or kept in a resumed run's
+  state, becomes the run's `gen_ai.conversation.id`, ahead of `groupId`. The SDK
+  sends it as the Responses `conversation`, which the chat spans record, so before
+  this the agent spans and the chat spans under them could carry different ids.
+- Embedding spans no longer drop `gen_ai.agent.name` under `metadata_only`. The
+  agent name is metadata, and the other span types already keep it.
+- OpenAI Agents integration: the run's workflow span read its content-capture mode
   from the processor option alone, falling back to the client default only when
   unset. So a processor set to `default`, or a `metadata_only` scope opened with
   `withContentCaptureMode`, still put the raw error message on its status. It now
@@ -103,6 +393,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and stays out until it is tested.
 
 ### Known
+- Claude Agent SDK: while `ClaudeAgentSdkInstrumentation` is on, options passed to
+  `wrapQuery` (including identity) are ignored, since `query` is already wrapped. Set
+  identity with a `withX(...)` scope around the call instead.
+- With both the LangChain integration and the OpenAI integration on, a LangChain
+  model call through the `openai` package is recorded twice: one `chat` span from
+  each, in two separate traces, so token counts on metrics are doubled. An app that
+  calls OpenAI through LangChain should register only one of the two.
 - `gen_ai.tool.call.id` is not emitted on `execute_tool` spans from the OpenAI
   Agents SDK. Its `FunctionSpanData` is `{ name, input, output, mcp_data }` and
   carries no call id, so the only way to supply one is to scrape the preceding
@@ -371,9 +668,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Docs
 - Corrected the metric count (4 to 5 histograms) and added the
   `gen_ai.client.tool_execution.duration` row across the README, blueprint, and
-  semconv-mapping docs. Removed private design-doc links and un-staled the
-  blueprint's framework-adapter scope. Added a contributor-agreement placeholder
-  to `CONTRIBUTING.md` (pending OSPO).
+  semconv-mapping docs. Updated the blueprint's framework-adapter scope. Added a
+  contributor-agreement section to `CONTRIBUTING.md`.
 
 ## [0.1.7] - 2026-06-25
 

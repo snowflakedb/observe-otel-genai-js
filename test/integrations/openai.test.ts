@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for the per-call helpers `instrumentedChatCompletion` and
  * `instrumentedEmbedding`.
@@ -18,6 +35,7 @@ import {
   instrumentedEmbedding,
 } from '../../src/integrations/openai/index.js';
 import {
+  ATTR_EMBEDDING_INPUT_TEXTS,
   ATTR_OPERATION_NAME,
   ATTR_PROVIDER_NAME,
   ATTR_REQUEST_MODEL,
@@ -146,6 +164,27 @@ describe('OpenAI adapter — instrumentedChatCompletion', () => {
     expect(span?.attributes['error.type']).toBe('provider_call_error');
     expect(span?.attributes['error.category']).toBe('rate_limit');
   });
+
+  it('records the input messages of a call that fails', async () => {
+    const fake = makeFakeOpenAI({
+      chat: async () => {
+        throw Object.assign(new Error('bad request'), { status: 400 });
+      },
+    });
+
+    await expect(
+      instrumentedChatCompletion(
+        h.client,
+        fake,
+        { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] },
+        { contentCapture: 'no_tool_content' },
+      ),
+    ).rejects.toThrow('bad request');
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input[0].parts[0].content).toBe('hi');
+  });
 });
 
 describe('OpenAI adapter — instrumentedEmbedding', () => {
@@ -175,5 +214,28 @@ describe('OpenAI adapter — instrumentedEmbedding', () => {
     expect(span?.attributes['gen_ai.embeddings.input_count']).toBe(1);
     expect(span?.attributes['gen_ai.embeddings.dimension.count']).toBe(3072);
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(5);
+  });
+
+  it('honors a per-call metadata_only override over the client-wide mode', async () => {
+    await h.shutdown();
+    h = createHarness({
+      contentCaptureMode: 'full',
+      embeddingCapture: { captureInput: true, maxInputItems: 10, maxTextLength: 100 },
+    });
+    const fake = makeFakeOpenAI({
+      embeddings: async () => ({
+        model: 'text-embedding-3-small',
+        data: [{ embedding: [0.1, 0.2] }],
+        usage: { prompt_tokens: 2, total_tokens: 2 },
+      }),
+    });
+    const params = { model: 'text-embedding-3-small', input: 'secret text' };
+
+    await instrumentedEmbedding(h.client, fake, params);
+    await instrumentedEmbedding(h.client, fake, params, { contentCapture: 'metadata_only' });
+
+    const [captured, stripped] = h.spans.getFinishedSpans();
+    expect(captured?.attributes[ATTR_EMBEDDING_INPUT_TEXTS]).toEqual(['secret text']);
+    expect(stripped?.attributes[ATTR_EMBEDDING_INPUT_TEXTS]).toBeUndefined();
   });
 });

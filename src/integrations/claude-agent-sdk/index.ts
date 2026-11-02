@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Claude Agent SDK adapter.
  *
@@ -15,16 +32,16 @@
  *           chat <model>
  *
  * A `result` message is a checkpoint, not the end of the run: a background task can
- * keep the run going past it, and each result's totals cover the whole call so far.
- * The run ends when the stream does.
+ * keep the run going past it. The run ends when the stream does.
  */
 
 import { type Context, context, diag } from '@opentelemetry/api';
 
 import type { Client } from '../../client.js';
 import { resolveContentCaptureMode } from '../../content/capture.js';
-import { contentCaptureModeFromContext } from '../../context.js';
-import type { GenerationStart } from '../../models/generation.js';
+import { contentCaptureModeFromContext, conversationIdFromContext } from '../../context.js';
+import { serializeError } from '../../errors/serialize.js';
+import type { GenerationStart, ToolDefinition } from '../../models/generation.js';
 import type { Message, Part } from '../../models/message.js';
 import { textPart } from '../../models/message.js';
 import type { TokenUsage } from '../../models/usage.js';
@@ -34,7 +51,6 @@ import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import {
   ATTR_CONVERSATION_COMPACTED,
   ATTR_REQUEST_REASONING_LEVEL,
-  ATTR_USAGE_COST_USD,
   ATTR_USAGE_IS_PARTIAL,
 } from '../../semconv.js';
 import { usageAttributes } from '../../spans/attributes.js';
@@ -44,7 +60,6 @@ import { isTracedQuery, markTraced } from './traced-queries.js';
 import type {
   AgentContentBlock,
   AgentMessage,
-  AgentModelUsage,
   AgentQueryFn,
   AgentQueryOptions,
   AgentQueryParams,
@@ -53,10 +68,11 @@ import type {
   AgentWarmQuery,
 } from './types.js';
 
-const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
-
 /** The model the CLI puts on the assistant message it makes up for a failed API call. */
 const SYNTHETIC_MODEL = '<synthetic>';
+
+/** The main agent's name when nothing names it, as in the Python library. */
+const DEFAULT_AGENT_NAME = 'claude-agent-sdk';
 
 /**
  * How many messages each chat span replays as its input. Every span re-sends the
@@ -107,10 +123,16 @@ export function wrapQuery<F extends AgentQueryFn>(
 ): F {
   if (isTracedQuery(query)) return query;
   const traced = (params: Parameters<F>[0]) => {
-    const run = new AgentRun(client, options, params as AgentQueryParams);
+    const queryParams = params as AgentQueryParams;
+    const run = new AgentRun(client, options, queryParams);
+    const { prompt } = queryParams;
     let stream: AsyncIterable<unknown>;
     try {
-      stream = query(params);
+      stream = query(
+        (isAsyncIterable(prompt)
+          ? { ...queryParams, prompt: run.recordPrompt(prompt) }
+          : params) as Parameters<F>[0],
+      );
     } catch (err) {
       void run.end(err).catch(logRecordingFailure);
       throw err;
@@ -188,6 +210,8 @@ function observeIteration<T extends object>(stream: T, run: AgentRun): T {
             run.markInterrupted();
             return target.interrupt?.();
           };
+        case 'streamInput':
+          return (input: AsyncIterable<unknown>) => target.streamInput?.(run.recordPrompt(input));
       }
       const value = Reflect.get(target, prop, target);
       return typeof value === 'function' ? value.bind(target) : value;
@@ -197,7 +221,12 @@ function observeIteration<T extends object>(stream: T, run: AgentRun): T {
 
 /** The members of the SDK's `Query` the proxy intercepts. */
 type SdkQuery = Partial<
-  AsyncGenerator<unknown> & AsyncDisposable & { close(): void; interrupt(): Promise<unknown> }
+  AsyncGenerator<unknown> &
+    AsyncDisposable & {
+      close(): void;
+      interrupt(): Promise<unknown>;
+      streamInput(input: AsyncIterable<unknown>): Promise<void>;
+    }
 >;
 
 function logRecordingFailure(err: unknown): void {
@@ -211,7 +240,8 @@ function logRecordingFailure(err: unknown): void {
 /** One agent's conversation: the main thread, or a subagent. */
 interface AgentThread {
   agent: AgentInvocationRecorder;
-  agentName: string;
+  /** Unset on the main thread, whose name comes from the caller. */
+  subagentName?: string;
   isMain: boolean;
   /** Replayed as each chat span's input messages. */
   history: Message[];
@@ -219,6 +249,10 @@ interface AgentThread {
   readyAt: number;
   call?: ModelCall;
   lastModel?: string;
+  /** This agent's own calls, summed as each one closes; its subagents count separately. */
+  usage: TokenUsage;
+  /** Some call had only a snapshot, so `usage` leaves out its output tokens. */
+  usageIsPartial: boolean;
 }
 
 /** The API call in flight on a thread. */
@@ -254,9 +288,9 @@ class AgentRun {
   private readonly client: Client;
   private readonly config: ClaudeAgentSdkOptions;
   private readonly queryOptions: AgentQueryOptions;
-  private readonly prompt: unknown;
+  /** The caller's prompt as messages; a streamed prompt adds them as the SDK reads it. */
+  private readonly promptInput: Message[];
   private readonly provider: string;
-  private readonly agentName: string;
   private readonly startedAt = Date.now();
   /** Where `query()` was called. The root opens later, on the first message. */
   private readonly callerContext: Context = context.active();
@@ -269,10 +303,9 @@ class AgentRun {
 
   private sessionId: string | undefined;
   private model: string | undefined;
+  /** The main agent's tools, from `init`. The CLI reports names only. */
+  private toolDefinitions: ToolDefinition[] | undefined;
   private compacted = false;
-  /** The latest result's cumulative totals, and what earlier resets zeroed. */
-  private latestTotals: RunTotals | undefined;
-  private totalsBeforeReset: RunTotals = { usage: {}, costUsd: 0 };
   private sawResult = false;
   /** The caller ended the run with `close()` or `return()`, which is not a failure. */
   private stoppedByCaller = false;
@@ -290,9 +323,30 @@ class AgentRun {
     this.client = client;
     this.config = config;
     this.queryOptions = params.options ?? {};
-    this.prompt = params.prompt;
+    this.promptInput = promptMessages(params.prompt);
     this.provider = resolveProvider(this.queryOptions);
-    this.agentName = config.agentName ?? DEFAULT_AGENT_NAME;
+  }
+
+  /** Passes a streamed prompt through unchanged, recording each user message as it is read. */
+  async *recordPrompt(prompt: AsyncIterable<unknown>): AsyncGenerator<unknown, void> {
+    for await (const msg of prompt) {
+      try {
+        this.onPromptMessage(msg as AgentMessage);
+      } catch (err) {
+        logRecordingFailure(err);
+      }
+      yield msg;
+    }
+  }
+
+  private onPromptMessage(msg: AgentMessage): void {
+    if (msg.type !== 'user' || msg.parent_tool_use_id) return;
+    const message = blocksToMessage(blocksOf(msg.message?.content), 'user');
+    if (!message) return;
+    this.promptInput.push(message);
+    // The root opens on the CLI's first message; until then the input waits here.
+    this.root?.setInput([...this.promptInput]);
+    if (this.main) remember(this.main, message);
   }
 
   markStoppedByCaller(): void {
@@ -310,7 +364,8 @@ class AgentRun {
     try {
       for await (const msg of stream) {
         try {
-          this.onMessage(msg);
+          // Spans open as the caller reads, so record in the context `query()` was called in.
+          context.with(this.callerContext, () => this.onMessage(msg));
         } catch (err) {
           logRecordingFailure(err);
         }
@@ -321,9 +376,11 @@ class AgentRun {
       error = err;
       throw err;
     } finally {
-      await this.end(error ?? (completed ? this.missingResultError() : undefined)).catch(
-        logRecordingFailure,
-      );
+      await context
+        .with(this.callerContext, () =>
+          this.end(error ?? (completed ? this.missingResultError() : undefined)),
+        )
+        .catch(logRecordingFailure);
     }
   }
 
@@ -353,10 +410,7 @@ class AgentRun {
         this.onResult(msg);
         break;
       case 'conversation_reset':
-        // A /clear zeroes the running totals; what came before still counts for this run.
-        this.totalsBeforeReset = addTotals(this.totalsBeforeReset, this.latestTotals);
-        this.latestTotals = undefined;
-        // The next call starts from an empty conversation, not a compacted one.
+        // A /clear: the next call starts from an empty conversation, not a compacted one.
         this.mainThread().history = [];
         this.compacted = false;
         break;
@@ -421,10 +475,6 @@ class AgentRun {
         tool.receipt = block.content ?? '';
         continue;
       }
-      // A subagent gets no stream events; this is the only final usage its last call gets.
-      const call = tool?.subagent?.call;
-      const usage = usageOf(msg.tool_use_result);
-      if (call && usage) call.finalUsage = usage;
       const error = block.is_error ? new Error('tool error') : tool?.finished?.error;
       this.closeTool(id, block.content, error);
     }
@@ -454,6 +504,7 @@ class AgentRun {
       case 'init':
         this.sessionId = msg.session_id;
         this.model = msg.model;
+        this.toolDefinitions = msg.tools?.map(initToolDefinition);
         // A new turn: an interrupt sent while idle has no result to excuse.
         this.interrupted = false;
         // The CLI is up; the first request goes out now.
@@ -511,7 +562,6 @@ class AgentRun {
     }
     this.closeCall(main);
 
-    this.recordTotals(root, msg);
     root.setOutput(
       !msg.is_error && typeof msg.result === 'string' && msg.result
         ? [{ role: 'assistant', parts: [textPart(msg.result)] }]
@@ -521,17 +571,15 @@ class AgentRun {
   }
 
   /**
-   * The results' totals cover more than this call when the session was resumed or
-   * continued: its first result already includes the earlier runs, by an amount the
-   * stream never states. Those runs get no totals rather than wrong ones.
+   * An agent's own tokens: the calls it made, not those of the subagents it ran.
+   * Input and output only: the GenAI conventions keep cache and reasoning counts off
+   * agent spans, since they add up across models and calls.
    */
-  private recordTotals(root: AgentInvocationRecorder, msg: AgentMessage): void {
-    if (this.queryOptions.resume || this.queryOptions.continue) return;
-    this.latestTotals = { usage: sumModelUsage(msg.modelUsage), costUsd: msg.total_cost_usd ?? 0 };
-    const run = addTotals(this.totalsBeforeReset, this.latestTotals);
-    root.setAttributes({
-      ...usageAttributes(run.usage),
-      ...(run.costUsd ? { [ATTR_USAGE_COST_USD]: run.costUsd } : {}),
+  private recordAgentUsage(thread: AgentThread): void {
+    const { inputTokens, outputTokens } = thread.usage;
+    thread.agent.setAttributes({
+      ...usageAttributes({ inputTokens, outputTokens }),
+      ...(thread.usageIsPartial ? { [ATTR_USAGE_IS_PARTIAL]: true } : {}),
     });
   }
 
@@ -540,12 +588,14 @@ class AgentRun {
   /** Opened on the first message, so the span can carry the session id from `init`. */
   private openRoot(): AgentInvocationRecorder {
     if (this.root) return this.root;
+    // Also opened by end() when the caller closes the stream before reading it.
     this.root = context.with(this.callerContext, () =>
       this.client.invokeAgent({
-        ...this.sharedSeed(this.agentName),
+        ...this.sharedSeed(),
+        fallbackAgentName: DEFAULT_AGENT_NAME,
         requestProvider: this.provider,
         requestModel: this.queryOptions.model ?? this.model,
-        input: promptMessages(this.prompt),
+        input: [...this.promptInput],
         parentGenerationIds: this.config.parentGenerationIds,
         startedAt: this.startedAt,
       }),
@@ -557,10 +607,11 @@ class AgentRun {
   private mainThread(): AgentThread {
     this.main ??= {
       agent: this.openRoot(),
-      agentName: this.agentName,
       isMain: true,
-      history: promptMessages(this.prompt),
+      history: [...this.promptInput],
       readyAt: this.startedAt,
+      usage: {},
+      usageIsPartial: false,
     };
     return this.main;
   }
@@ -597,16 +648,19 @@ class AgentRun {
     );
     return {
       agent,
-      agentName: name,
+      subagentName: name,
       isMain: false,
       history: [...input],
       readyAt: tool.startedAt,
+      usage: {},
+      usageIsPartial: false,
     };
   }
 
   private finishSubagent(thread: AgentThread, report: unknown, error: Error | undefined): void {
     this.closeToolsOf(thread, error);
     this.closeCall(thread);
+    this.recordAgentUsage(thread);
     const output = this.capturesToolContent()
       ? blocksToMessage(blocksOf(report), 'assistant')
       : undefined;
@@ -628,7 +682,7 @@ class AgentRun {
     const now = Date.now();
     const resolvedModel = model ?? thread.lastModel ?? this.model ?? 'unknown';
     const seed: GenerationStart = {
-      ...this.sharedSeed(thread.agentName),
+      ...this.sharedSeed(thread.subagentName),
       ...(thread.isMain ? this.mainRequestSettings() : {}),
       model: { provider: this.provider, name: resolvedModel },
       conversationTitle: this.config.conversationTitle,
@@ -663,12 +717,17 @@ class AgentRun {
     const output = blocksToMessage(call.blocks, 'assistant');
     // A snapshot's input figures are final, but its output count is taken as the reply
     // starts, so it is left out rather than reported low.
-    const usage = call.finalUsage
-      ? { ...call.usage, ...call.finalUsage }
-      : { ...call.usage, output_tokens: undefined };
+    const usage = toTokenUsage(
+      call.finalUsage
+        ? { ...call.usage, ...call.finalUsage }
+        : { ...call.usage, output_tokens: undefined },
+    );
+    thread.usage = addUsage(thread.usage, usage);
+    // A failed API call reports no usage at all, so it leaves nothing out.
+    if (call.usage && !call.finalUsage) thread.usageIsPartial = true;
     call.rec.setResult({
       output: output ? [output] : [],
-      usage: toTokenUsage(usage),
+      usage,
       responseModel: call.model,
       stopReason: call.stopReason ?? (hasToolUse(call.blocks) ? 'tool_use' : undefined),
     });
@@ -691,12 +750,10 @@ class AgentRun {
       this.client.startToolExecution({
         toolName: name,
         toolCallId: id,
-        toolType: name.startsWith('mcp__') ? 'extension' : 'function',
+        toolType: toolType(name),
         requestProvider: this.provider,
         requestModel: thread.call?.model,
-        conversationId: this.conversationId,
-        agentName: thread.agentName,
-        agentVersion: this.config.agentVersion,
+        ...this.identity(thread.subagentName),
         contentCapture: this.config.contentCapture,
         startedAt,
       }),
@@ -752,6 +809,7 @@ class AgentRun {
       // call cut off mid-stream shares the failure.
       if (failure && this.expectsStreamEvents(this.main)) this.main.call?.rec.setCallError(failure);
       this.closeCall(this.main);
+      this.recordAgentUsage(this.main);
     }
 
     // A run that ends before its first message still gets a span: the CLI did start.
@@ -763,27 +821,35 @@ class AgentRun {
 
   // --- helpers --------------------------------------------------------------
 
-  private get conversationId(): string | undefined {
-    return this.config.conversationId ?? this.sessionId;
+  /**
+   * Identity for a thread's spans. A subagent is its own agent, so it takes only
+   * its name. The CLI session id is the conversation id only when neither the
+   * options nor the enclosing scope give one.
+   */
+  private identity(subagentName?: string) {
+    const { agentName, agentVersion, userId, conversationId } = this.config;
+    return {
+      ...(subagentName === undefined ? { agentName, agentVersion } : { agentName: subagentName }),
+      userId,
+      conversationId: conversationId || conversationIdFromContext() || this.sessionId,
+    };
   }
 
-  /** Seed fields every agent and chat span in the run carries. */
-  private sharedSeed(agentName: string) {
+  /** Seed fields every agent and chat span in a thread carries. */
+  private sharedSeed(subagentName?: string) {
     return {
-      agentName,
-      agentVersion: this.config.agentVersion,
-      userId: this.config.userId,
-      conversationId: this.conversationId,
+      ...this.identity(subagentName),
       contentCapture: this.config.contentCapture,
       tags: this.config.tags,
       metadata: this.config.metadata,
     };
   }
 
-  /** Request settings from the caller's options, which only the main thread uses. */
+  /** Request settings that only the main thread uses: subagents have their own. */
   private mainRequestSettings(): Partial<GenerationStart> {
     const { systemPrompt, thinking } = this.queryOptions;
     return {
+      tools: this.toolDefinitions,
       systemPrompt: callerSystemPrompt(systemPrompt),
       thinkingEnabled: thinking?.type === 'enabled' ? true : undefined,
       thinkingBudgetTokens: thinking?.budgetTokens,
@@ -813,6 +879,16 @@ class AgentRun {
 // -----------------------------------------------------------------------------
 // Mapping
 // -----------------------------------------------------------------------------
+
+function toolType(name: string): string {
+  return name.startsWith('mcp__') ? 'extension' : 'function';
+}
+
+/** `init` lists the delegation tool by its old name, `Task`; the model calls it `Agent`. */
+function initToolDefinition(name: string): ToolDefinition {
+  const callName = name === 'Task' ? 'Agent' : name;
+  return { name: callName, type: toolType(callName) };
+}
 
 /**
  * The system prompt the caller wrote in full: a string, or the custom form. A preset
@@ -844,12 +920,6 @@ function hasToolUse(blocks: AgentContentBlock[]): boolean {
   return blocks.some((b) => b.type === 'tool_use');
 }
 
-function usageOf(toolUseResult: unknown): AgentUsage | undefined {
-  if (typeof toolUseResult !== 'object' || toolUseResult === null) return undefined;
-  const { usage } = toolUseResult as { usage?: unknown };
-  return typeof usage === 'object' && usage !== null ? (usage as AgentUsage) : undefined;
-}
-
 function blocksOf(content: unknown): AgentContentBlock[] {
   if (Array.isArray(content)) return content as AgentContentBlock[];
   if (typeof content === 'string' && content) return [{ type: 'text', text: content }];
@@ -861,9 +931,17 @@ function blocksToMessage(blocks: AgentContentBlock[], role: Message['role']): Me
   return parts.length > 0 ? { role, parts } : undefined;
 }
 
-/** A string prompt; a streamed prompt is not replayed onto spans. */
+/** A string prompt. A streamed prompt's messages are added by `recordPrompt` as the SDK reads them. */
 function promptMessages(prompt: unknown): Message[] {
-  return typeof prompt === 'string' && prompt ? [{ role: 'user', parts: [textPart(prompt)] }] : [];
+  const message =
+    typeof prompt === 'string' ? blocksToMessage(blocksOf(prompt), 'user') : undefined;
+  return message ? [message] : [];
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof (value as AsyncIterable<unknown> | undefined)?.[Symbol.asyncIterator] === 'function'
+  );
 }
 
 /**
@@ -877,18 +955,9 @@ function toTokenUsage(usage: AgentUsage): TokenUsage {
     inputTokens: (usage.input_tokens ?? 0) + read + write,
     outputTokens: usage.output_tokens ?? 0,
     cacheReadInputTokens: read,
-    cacheCreationInputTokens: write,
+    cacheWriteInputTokens: write,
     reasoningTokens: usage.output_tokens_details?.thinking_tokens || undefined,
   };
-}
-
-interface RunTotals {
-  usage: TokenUsage;
-  costUsd: number;
-}
-
-function addTotals(a: RunTotals, b: RunTotals | undefined): RunTotals {
-  return b ? { usage: addUsage(a.usage, b.usage), costUsd: a.costUsd + b.costUsd } : a;
 }
 
 function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
@@ -897,23 +966,9 @@ function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
     inputTokens: sum('inputTokens'),
     outputTokens: sum('outputTokens'),
     cacheReadInputTokens: sum('cacheReadInputTokens'),
-    cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+    cacheWriteInputTokens: sum('cacheWriteInputTokens'),
     reasoningTokens: sum('reasoningTokens') || undefined,
   };
-}
-
-/** `modelUsage` covers subagents too, and is cumulative over the whole call. */
-function sumModelUsage(modelUsage: Record<string, AgentModelUsage> | undefined): TokenUsage {
-  const perModel = Object.values(modelUsage ?? {}).map((m) =>
-    toTokenUsage({
-      input_tokens: m.inputTokens,
-      output_tokens: m.outputTokens,
-      cache_read_input_tokens: m.cacheReadInputTokens,
-      cache_creation_input_tokens: m.cacheCreationInputTokens,
-      output_tokens_details: { thinking_tokens: m.thinkingTokens },
-    }),
-  );
-  return perModel.reduce(addUsage, {});
 }
 
 /**
@@ -933,7 +988,7 @@ function resultError(msg: AgentMessage): Error | undefined {
 }
 
 function asError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
+  return err instanceof Error ? err : new Error(serializeError(err));
 }
 
 function pickString(v: unknown): string | undefined {

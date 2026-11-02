@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `wrapOpenAI` tests against the REAL `openai` SDK with an injected `fetch` (no
  * network), so every call here goes through a genuine `APIPromise`, the only shape
@@ -15,11 +32,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withMetadata, wrapOpenAI } from '../../src/integrations/openai/index.js';
 import {
   ATTR_ERROR_CATEGORY,
+  ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
   ATTR_USAGE_INPUT_TOKENS,
+  ATTR_USAGE_IS_PARTIAL,
   ATTR_USAGE_OUTPUT_TOKENS,
   OP_CHAT,
 } from '../../src/semconv.js';
@@ -254,6 +273,27 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(output[0].parts[0].content).toBe('hi');
   });
 
+  it('records a chat stream the caller breaks out of without an error', async () => {
+    nextResponse = () => sseResponse(CHAT_CHUNKS);
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    const stream = await openai.chat.completions.create({
+      ...CHAT_PARAMS,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    for await (const _ of stream) break;
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBe(true);
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].parts[0].content).toBe('hi');
+  });
+
   it('embeddings.create(...).withResponse() still works and records a span', async () => {
     nextResponse = () => jsonResponse(EMBEDDING_RESPONSE);
     const openai = wrapOpenAI(h.client, makeClient());
@@ -421,6 +461,21 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.attributes['error.type']).toBe('provider_call_error');
+    const input = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(input[0].parts[0].content).toBe('hi');
+  });
+
+  it('records the input messages of a chat.completions.create that fails', async () => {
+    nextResponse = () => errorResponse(400, 'bad request');
+    const openai = wrapOpenAI(h.client, makeClient());
+
+    await expect(openai.chat.completions.create(CHAT_PARAMS)).rejects.toThrow(/bad request/);
+    await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.attributes['error.type']).toBe('provider_call_error');
+    const input = JSON.parse(span!.attributes[ATTR_INPUT_MESSAGES] as string);
+    expect(input[0].parts[0].content).toBe('hi');
   });
 
   // The failures below arrive inside a 200, so only the response content says the call failed.
@@ -592,7 +647,7 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
   });
 
-  it('still records a break before any final response as abandoned', async () => {
+  it('records a break before any final response without an error', async () => {
     nextResponse = () =>
       sseResponse([{ type: 'response.output_text.delta', delta: 'he', sequence_number: 1 }]);
     const openai = wrapOpenAI(h.client, makeClient());
@@ -600,6 +655,27 @@ describe('OpenAI adapter — APIPromise preservation (real SDK)', () => {
     const stream = await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
     for await (const _ of stream) break;
     await tick();
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes['error.type']).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBe(true);
+  });
+
+  it('records a Responses stream nobody reads as a failed call', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      nextResponse = () =>
+        sseResponse([
+          { type: 'response.completed', response: responsesMessage(), sequence_number: 1 },
+        ]);
+      const openai = wrapOpenAI(h.client, makeClient());
+
+      await openai.responses.create({ model: 'gpt-x', input: 'hi', stream: true });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const [span] = h.spans.getFinishedSpans();
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);

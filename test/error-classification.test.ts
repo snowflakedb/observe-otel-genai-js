@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import { describe, expect, it } from 'vitest';
 import { classifyError } from '../src/errors/classify.js';
 import {
@@ -59,5 +76,25 @@ describe('classifyError', () => {
   it('detects "timeout" in error messages', () => {
     expect(classifyError(new Error('deadline exceeded'))).toBe(ERR_CATEGORY_TIMEOUT);
     expect(classifyError(new Error('socket timeout'))).toBe(ERR_CATEGORY_TIMEOUT);
+  });
+
+  it('returns rate_limit when a message accompanies status 429', () => {
+    expect(classifyError({ status: 429, message: 'slow down' })).toBe(ERR_CATEGORY_RATE_LIMIT);
+  });
+
+  it('reads timeout text from a string message or error field', () => {
+    expect(classifyError({ message: 'deadline exceeded' })).toBe(ERR_CATEGORY_TIMEOUT);
+    expect(classifyError({ error: 'deadline exceeded' })).toBe(ERR_CATEGORY_TIMEOUT);
+  });
+
+  it('reads an HTTP status from a string message', () => {
+    expect(classifyError({ message: 'HTTP 502 Bad Gateway' })).toBe(ERR_CATEGORY_SERVER);
+  });
+
+  it('does not classify a JSON payload from an incidental 3-digit number', () => {
+    expect(classifyError({ code: 503, reason: 'overloaded' })).toBe(ERR_CATEGORY_SDK);
+    expect(classifyError({ message: { detail: 'deadline exceeded' }, code: 503 })).toBe(
+      ERR_CATEGORY_SDK,
+    );
   });
 });

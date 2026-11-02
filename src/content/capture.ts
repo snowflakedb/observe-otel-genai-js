@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Content-capture policy.
  *
@@ -43,9 +60,12 @@ export interface ContentCapture {
   /** When false, no content is emitted at all (`metadata_only` equivalent). */
   enabled: boolean;
   /**
-   * Cap (in characters) on each content attribute. Defaults to
-   * `DEFAULT_MAX_CONTENT_LENGTH`. Set `0` or a non-finite value (e.g.
-   * `Infinity`) to turn the cap off and emit content in full.
+   * Optional cap (in characters) on each content payload. When unset, `0`, or
+   * non-finite, content is emitted in full with no truncation — matching
+   * OpenTelemetry's own default (unbounded attribute values) and deferring size
+   * policy to the SDK's `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` and the backend.
+   * Set a finite value to opt into truncation (e.g. to stay under a strict
+   * backend per-attribute limit or the OTLP message-size ceiling).
    */
   maxContentLength?: number;
   /** How to truncate string payloads when a finite `maxContentLength` is set. */
@@ -53,15 +73,15 @@ export interface ContentCapture {
 }
 
 /**
- * Default cap on each content attribute: 1,048,576 characters. Kept large so
- * it only trims content that would otherwise make a span too big to export.
+ * A reasonable cap for callers who want to opt into truncation. NOT applied by
+ * default — `defaultContentCapture()` leaves `maxContentLength` unset (unlimited).
  */
-export const DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024;
+export const DEFAULT_MAX_CONTENT_LENGTH = 32 * 1024;
 
 export function defaultContentCapture(): ContentCapture {
   return {
     enabled: true,
-    maxContentLength: DEFAULT_MAX_CONTENT_LENGTH,
+    // Unlimited by default — no built-in truncation.
     truncationStrategy: 'middle',
   };
 }
@@ -162,6 +182,11 @@ export function applyContentAttribute(
     span.setAttribute(`${key}.truncated`, true);
     span.setAttribute(`${key}.original_size_bytes`, result.originalSizeBytes);
   }
+}
+
+/** True for the modes that leave all content out: `metadata_only` and `allow_list`. */
+export function omitsContent(mode: ContentCaptureMode): boolean {
+  return mode === 'metadata_only' || mode === 'allow_list';
 }
 
 /**

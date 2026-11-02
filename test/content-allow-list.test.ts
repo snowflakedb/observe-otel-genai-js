@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for the `allow_list` content mode: every span the client creates must
  * reach the exporter with allowlisted attribute keys only, no content,
@@ -9,12 +26,12 @@
 
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
 import { AllowListSpan, CONTENT_ALLOW_LIST } from '../src/content/allow-list.js';
-import { withAgentName, withContentCaptureMode } from '../src/context.js';
+import { withAgent, withContentCaptureMode } from '../src/context.js';
 import {
   assistantTextMessage,
   textPart,
@@ -52,8 +69,6 @@ const NOT_ALLOWLISTED: Record<string, string> = {
   'gen_ai.conversation.compacted': 'pending privacy review',
   'gen_ai.request.reasoning.level': 'pending privacy review',
   'gen_ai.response.time_to_first_chunk': 'pending privacy review',
-  'gen_ai.usage.cache_write.input_tokens': 'pending privacy review',
-  'genai.usage.cost_usd': 'pending privacy review',
   'genai.usage.is_partial': 'pending privacy review',
   'gen_ai.embeddings.input_count': 'pending privacy review',
   'gen_ai.embeddings.dimension.count': 'pending privacy review',
@@ -186,6 +201,11 @@ async function driveEverySpanType(client: Client): Promise<void> {
     }),
   ).rejects.toThrow('secret thrown by the agent');
 
+  const workflow = client.invokeWorkflow({ workflowName: 'rag', input: secretMessages() });
+  workflow.setOutput([assistantTextMessage('secret workflow answer')]);
+  workflow.setError(new Error('secret workflow error'));
+  await workflow.end();
+
   const creation = client.createAgent({ agentName: 'planner' });
   creation.setError(new Error('secret setup error'));
   await creation.end();
@@ -231,6 +251,7 @@ describe('allow_list content mode', () => {
       'execute_tool search',
       'invoke_agent callback-agent',
       'invoke_agent planner',
+      'invoke_workflow rag',
       'retrieval kb',
     ]);
     for (const span of spans) {
@@ -252,6 +273,8 @@ describe('allow_list content mode', () => {
       .flatMap((rm) => rm.scopeMetrics)
       .flatMap((sm) => sm.metrics);
     expect(metrics.length).toBeGreaterThan(0);
+    const labels = metrics.flatMap((m) => m.dataPoints.map((p) => p.attributes));
+    expect(labels.some((a) => a['gen_ai.workflow.name'] === 'rag')).toBe(true);
     for (const metric of metrics) {
       for (const point of metric.dataPoints) {
         for (const key of Object.keys(point.attributes)) {
@@ -272,11 +295,12 @@ describe('allow_list content mode', () => {
     expect(chat.attributes['gen_ai.request.temperature']).toBe(0.2);
     expect(chat.attributes['error.type']).toBe('provider_call_error');
     expect(spanNamed('invoke_agent planner').links).toHaveLength(1);
+    expect(spanNamed('invoke_workflow rag').attributes['gen_ai.workflow.name']).toBe('rag');
   });
 
-  it('keeps allowlisted metadata that metadata_only clears', async () => {
+  it('keeps the agent name on embedding spans', async () => {
     useHarness({ contentCaptureMode: 'allow_list' });
-    await withAgentName('planner', () =>
+    await withAgent('planner', () =>
       h.client.startEmbedding({ model: { provider: 'openai', name: 'embed-3' } }).end(),
     );
 
@@ -334,6 +358,31 @@ describe('allow_list content mode', () => {
       expectAllowListed(span);
       expect(span.events.map((e) => e.attributes)).toEqual([{ 'exception.type': 'TypeError' }]);
     });
+  });
+
+  it('passes no content attributes to the filter', async () => {
+    useHarness({ contentCaptureMode: 'allow_list' });
+    const setAttribute = vi.spyOn(AllowListSpan.prototype, 'setAttribute');
+    const setAttributes = vi.spyOn(AllowListSpan.prototype, 'setAttributes');
+    let written: string[];
+    try {
+      await driveEverySpanType(h.client);
+      written = [
+        ...setAttribute.mock.calls.map(([key]) => key),
+        ...setAttributes.mock.calls.flatMap(([attributes]) => Object.keys(attributes)),
+      ];
+    } finally {
+      setAttribute.mockRestore();
+      setAttributes.mockRestore();
+    }
+
+    const contentKeys = [
+      ...CONTENT_KEYS,
+      'gen_ai.retrieval.query.text',
+      'gen_ai.retrieval.documents',
+    ];
+    expect(written.length).toBeGreaterThan(0);
+    expect(written.filter((key) => contentKeys.includes(key))).toEqual([]);
   });
 });
 

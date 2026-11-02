@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Vercel AI SDK adapter.
  *
@@ -6,12 +23,15 @@
  * 1. **Telemetry integration** (recommended) — `genaiTelemetryIntegration(client)`
  *    registered once via the AI SDK's `registerTelemetry(...)`. Every
  *    `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in
- *    the process then emits genai-otel spans (`invoke_agent` → `chat` →
- *    `execute_tool`) with no per-call-site wiring.
+ *    the process then emits genai-otel spans (`invoke_agent`, with `chat` and
+ *    `execute_tool` spans under it) with no per-call-site wiring.
  *
  * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap a
  *    single top-level AI SDK call and emit one generation span per invocation,
  *    without global registration.
+ *
+ * `VercelAiSdkInstrumentation` (`./instrumentation`) registers the integration for
+ * setups that list their OpenTelemetry instrumentations in one place.
  *
  * Usage (integration):
  *   import { registerTelemetry } from 'ai';
@@ -26,6 +46,8 @@
  */
 
 import {
+  type TextStreamPart,
+  type ToolSet,
   embed as aiEmbed,
   embedMany as aiEmbedMany,
   generateObject as aiGenerateObject,
@@ -40,13 +62,14 @@ import {
 
 import type { Client } from '../../client.js';
 import { OP_CHAT, OP_GENERATE_CONTENT } from '../../semconv.js';
-import { toAgentInputMessages } from './_map.js';
+import { mapCallPrompt, mapStepOutput, toAgentInputMessages } from './_map.js';
 import {
   type VercelAdapterOptions,
   embedModelRefFromAi,
   identityFields,
   mapAiUsage,
   modelRefFromAi,
+  requestParams,
 } from './_model.js';
 
 export type { VercelAdapterOptions };
@@ -82,24 +105,20 @@ export async function wrapGenerateText(
     model,
     operationName: OP_CHAT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params),
-    temperature: params.temperature,
-    topP: params.topP,
-    frequencyPenalty: params.frequencyPenalty,
-    presencePenalty: params.presencePenalty,
-    stopSequences: normalizeStopSequences(params.stopSequences),
-    seed: params.seed,
-    systemPrompt: typeof params.system === 'string' ? params.system : undefined,
+    ...requestParams(params),
+    systemPrompt: recording(params).inputs ? systemPromptOf(params) : undefined,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   });
+  if (recording(params).inputs) rec.setResult({ input: mapCallPrompt(params) });
 
   try {
     const result = (await aiGenerateText(
       params as unknown as Parameters<typeof aiGenerateText>[0],
     )) as GenerateTextResult;
     rec.setResult({
+      output: recording(params).outputs ? finalReply(result.steps) : undefined,
       responseId: result.response?.id,
       responseModel: result.response?.modelId,
       stopReason: result.finishReason,
@@ -135,18 +154,14 @@ export function wrapStreamText(
     model,
     operationName: OP_CHAT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params),
-    temperature: params.temperature,
-    topP: params.topP,
-    frequencyPenalty: params.frequencyPenalty,
-    presencePenalty: params.presencePenalty,
-    stopSequences: normalizeStopSequences(params.stopSequences),
-    seed: params.seed,
-    systemPrompt: typeof params.system === 'string' ? params.system : undefined,
+    ...requestParams(params),
+    systemPrompt: recording(params).inputs ? systemPromptOf(params) : undefined,
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
   });
+
+  if (recording(params).inputs) rec.setResult({ input: mapCallPrompt(params) });
 
   let firstTokenRecorded = false;
   const userOnChunk = params.onChunk;
@@ -156,7 +171,7 @@ export function wrapStreamText(
   return aiStreamText({
     ...params,
     onChunk: (...args) => {
-      if (!firstTokenRecorded) {
+      if (!firstTokenRecorded && isOutputChunk(args[0].chunk)) {
         firstTokenRecorded = true;
         rec.setFirstTokenAt(Date.now());
       }
@@ -173,6 +188,7 @@ export function wrapStreamText(
     },
     onEnd: async (event) => {
       rec.setResult({
+        output: recording(params).outputs ? finalReply(event.steps) : undefined,
         responseId: event.response?.id,
         responseModel: event.response?.modelId,
         stopReason: event.finishReason,
@@ -214,9 +230,7 @@ export async function wrapGenerateObject(
     model,
     operationName: OP_GENERATE_CONTENT,
     ...identityFields(options),
-    maxTokens: readMaxTokens(params as unknown as { maxTokens?: number; maxOutputTokens?: number }),
-    temperature: (params as { temperature?: number }).temperature,
-    topP: (params as { topP?: number }).topP,
+    ...requestParams(params),
     tags: options.tags,
     metadata: options.metadata,
     parentGenerationIds: options.parentGenerationIds,
@@ -259,6 +273,8 @@ export async function wrapEmbed(
     model,
     agentName: options.agentName,
     agentVersion: options.agentVersion,
+    conversationId: options.conversationId,
+    userId: options.userId,
     tags: options.tags,
     metadata: options.metadata,
   });
@@ -290,6 +306,8 @@ export async function wrapEmbedMany(
     model,
     agentName: options.agentName,
     agentVersion: options.agentVersion,
+    conversationId: options.conversationId,
+    userId: options.userId,
     tags: options.tags,
     metadata: options.metadata,
   });
@@ -313,19 +331,45 @@ export async function wrapEmbedMany(
   }
 }
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-function normalizeStopSequences(s: unknown): string[] | undefined {
-  if (Array.isArray(s)) return s.filter((x): x is string => typeof x === 'string');
-  return undefined;
+/** The AI SDK's per-call `recordInputs` / `recordOutputs` switches, on by default. */
+function recording(params: GenerateTextParams | StreamTextParams): {
+  inputs: boolean;
+  outputs: boolean;
+} {
+  const telemetry = params.telemetry ?? params.experimental_telemetry;
+  return {
+    inputs: telemetry?.recordInputs !== false,
+    outputs: telemetry?.recordOutputs !== false,
+  };
 }
 
-/** Reads `maxOutputTokens` (AI SDK v7) or legacy `maxTokens`. */
-function readMaxTokens(p: {
-  maxTokens?: number;
-  maxOutputTokens?: number;
-}): number | undefined {
-  return p.maxOutputTokens ?? p.maxTokens;
+/** The call's system prompt, from `instructions` (AI SDK v7) or `system`, when it is text. */
+function systemPromptOf(params: GenerateTextParams | StreamTextParams): string | undefined {
+  const system = params.instructions ?? params.system;
+  return typeof system === 'string' ? system : undefined;
+}
+
+/** The reply of the call's last step; earlier steps' tool calls led up to it. */
+function finalReply(steps: ReadonlyArray<{ content: Parameters<typeof mapStepOutput>[0] }>) {
+  return mapStepOutput(steps.at(-1)?.content ?? []);
+}
+
+/**
+ * Whether a stream chunk carries output, as the AI SDK counts it for its own time
+ * to first output. The stream opens with chunks such as `start` that carry none.
+ */
+function isOutputChunk(chunk: TextStreamPart<ToolSet>): boolean {
+  switch (chunk.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return chunk.text.length > 0;
+    case 'tool-input-delta':
+      return chunk.delta.length > 0;
+    case 'file':
+    case 'reasoning-file':
+    case 'tool-call':
+      return true;
+    default:
+      return false;
+  }
 }

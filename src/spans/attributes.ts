@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Span-attribute helpers.
  *
@@ -15,6 +32,7 @@ import type { Generation, GenerationStart } from '../models/generation.js';
 import type { RetrievalStart } from '../models/retrieval.js';
 import type { ToolExecutionStart } from '../models/tool.js';
 import type { TokenUsage } from '../models/usage.js';
+import type { WorkflowInvocationStart } from '../models/workflow.js';
 import {
   ATTR_AGENT_DESCRIPTION,
   ATTR_AGENT_ID,
@@ -58,17 +76,18 @@ import {
   ATTR_TOOL_DESCRIPTION,
   ATTR_TOOL_NAME,
   ATTR_TOOL_TYPE,
-  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
   ATTR_USAGE_REASONING_TOKENS,
   ATTR_USER_ID,
+  ATTR_WORKFLOW_NAME,
   OP_CREATE_AGENT,
   OP_EMBEDDINGS,
   OP_EXECUTE_TOOL,
   OP_INVOKE_AGENT,
+  OP_INVOKE_WORKFLOW,
   OP_RETRIEVAL,
   SDK_NAME,
 } from '../semconv.js';
@@ -177,8 +196,7 @@ export function applyGenerationAttributes(span: Span, view: GenerationAttributeV
 }
 
 /**
- * Token usage as span attributes, skipping zeros. Cache-write tokens go under both
- * the older `cache_creation` name and the current `cache_write` one.
+ * Token usage as span attributes, skipping zeros.
  */
 export function usageAttributes(usage: TokenUsage): Attributes {
   const attrs: Attributes = {};
@@ -187,9 +205,8 @@ export function usageAttributes(usage: TokenUsage): Attributes {
   if (usage.cacheReadInputTokens) {
     attrs[ATTR_USAGE_CACHE_READ_INPUT_TOKENS] = usage.cacheReadInputTokens;
   }
-  if (usage.cacheCreationInputTokens) {
-    attrs[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS] = usage.cacheCreationInputTokens;
-    attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cacheCreationInputTokens;
+  if (usage.cacheWriteInputTokens) {
+    attrs[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = usage.cacheWriteInputTokens;
   }
   if (usage.reasoningTokens) attrs[ATTR_USAGE_REASONING_TOKENS] = usage.reasoningTokens;
   return attrs;
@@ -206,7 +223,11 @@ export function applyEmbeddingStartAttributes(span: Span, start: EmbeddingStart)
   setStr(span, ATTR_REQUEST_MODEL, start.model.name);
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
+  setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
   setNum(span, ATTR_EMBEDDING_DIMENSION_COUNT, start.dimensions);
+  setStr(span, ATTR_SERVER_ADDRESS, start.serverAddress);
+  setNum(span, ATTR_SERVER_PORT, start.serverPort);
   if (start.encodingFormat && start.encodingFormat.trim() !== '') {
     span.setAttribute(ATTR_REQUEST_ENCODING_FORMATS, [start.encodingFormat.trim()]);
   }
@@ -242,6 +263,7 @@ export function applyToolAttributes(span: Span, start: ToolExecutionStart) {
   setStr(span, ATTR_CONVERSATION_TITLE, start.conversationTitle);
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
+  setStr(span, ATTR_USER_ID, start.userId);
   setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
   setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
 }
@@ -272,6 +294,19 @@ export function applyAgentAttributes(span: Span, start: AgentInvocationStart) {
 }
 
 // -----------------------------------------------------------------------------
+// Workflow invocation
+// -----------------------------------------------------------------------------
+
+export function applyWorkflowAttributes(span: Span, start: WorkflowInvocationStart) {
+  setStr(span, ATTR_OPERATION_NAME, OP_INVOKE_WORKFLOW);
+  setStr(span, ATTR_SDK_NAME, SDK_NAME);
+
+  setStr(span, ATTR_WORKFLOW_NAME, start.workflowName);
+  setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
+}
+
+// -----------------------------------------------------------------------------
 // Agent creation
 // -----------------------------------------------------------------------------
 
@@ -285,6 +320,7 @@ export function applyAgentCreationAttributes(span: Span, start: AgentCreationSta
   setStr(span, ATTR_AGENT_DESCRIPTION, start.agentDescription);
   setStr(span, ATTR_PROVIDER_NAME, start.requestProvider);
   setStr(span, ATTR_REQUEST_MODEL, start.requestModel);
+  setStr(span, ATTR_USER_ID, start.userId);
 }
 
 // -----------------------------------------------------------------------------
@@ -301,6 +337,7 @@ export function applyRetrievalAttributes(span: Span, start: RetrievalStart) {
   setStr(span, ATTR_AGENT_NAME, start.agentName);
   setStr(span, ATTR_AGENT_VERSION, start.agentVersion);
   setStr(span, ATTR_CONVERSATION_ID, start.conversationId);
+  setStr(span, ATTR_USER_ID, start.userId);
   setNum(span, ATTR_RETRIEVAL_TOP_K, start.topK);
 }
 

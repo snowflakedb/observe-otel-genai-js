@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Spawned by `langchain-cjs-autopatch.test.ts` via `tsx`.
  *
@@ -24,7 +41,7 @@ provider.register();
 
 // Register BEFORE @langchain/core is required, so the hook can intercept it.
 registerInstrumentations({
-  instrumentations: [new LangChainInstrumentation({ agentName: 'cjs-auto' })],
+  instrumentations: [new LangChainInstrumentation()],
 });
 
 // Only now pull in @langchain/core. This require is what the hook patches.
@@ -33,7 +50,7 @@ const { awaitAllCallbacks } = require('@langchain/core/callbacks/promises');
 
 async function main() {
   const echo = RunnableLambda.from((x: unknown) => x);
-  await echo.invoke({ q: 'hello' });
+  await echo.withConfig({ runName: 'cjs-auto' }).invoke({ q: 'hello' });
   await awaitAllCallbacks();
 
   const spans = exporter

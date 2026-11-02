@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for `ClaudeAgentSdkInstrumentation`.
  *
@@ -8,6 +25,7 @@
 
 import { DiagLogLevel, diag } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withAgent } from '../../src/context.js';
 
 import { ClaudeAgentSdkInstrumentation } from '../../src/integrations/claude-agent-sdk/instrumentation.js';
 import type {
@@ -93,12 +111,30 @@ function patchModule(
   mod: unknown,
   version = '0.3.239',
 ): void {
-  const def = (
+  definition(instrumentation).patch?.(mod, version);
+}
+
+/** Runs the patch for the `/core` entry, which the hook applies as a file of the package. */
+function patchCoreEntry(
+  instrumentation: ClaudeAgentSdkInstrumentation,
+  mod: unknown,
+  version = '0.3.239',
+): void {
+  const core = definition(instrumentation).files.find(
+    (f) => f.name === '@anthropic-ai/claude-agent-sdk/core.mjs',
+  );
+  if (!core) throw new Error('no file entry for the /core entry');
+  core.patch(mod, version);
+}
+
+type Patch = (m: unknown, v?: string) => unknown;
+
+function definition(instrumentation: ClaudeAgentSdkInstrumentation) {
+  return (
     instrumentation as unknown as {
-      init(): { patch?: (m: unknown, v?: string) => unknown };
+      init(): { patch?: Patch; files: { name: string; patch: Patch }[] };
     }
   ).init();
-  def.patch?.(mod, version);
 }
 
 async function drain(it: AsyncIterable<AgentMessage>): Promise<AgentMessage[]> {
@@ -122,21 +158,40 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
   it('patches the query export and emits the full span tree with no call-site wiring', async () => {
     const mod = mutableModule();
-    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client, agentName: 'auto' });
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
     patchModule(instrumentation, mod);
 
-    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    await withAgent('auto', () => drain(mod.query({ prompt: 'hello', options: { model: MODEL } })));
 
     const names = h.spans.getFinishedSpans().map((s) => s.name);
     expect(names).toContain('invoke_agent auto');
     expect(names).toContain(`chat ${MODEL}`);
   });
 
+  it('patches the query export of the /core entry', async () => {
+    const mod = mutableModule();
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchCoreEntry(instrumentation, mod);
+
+    await withAgent('core', () => drain(mod.query({ prompt: 'hello', options: { model: MODEL } })));
+    expect(agentSpans(h).map((s) => s.name)).toEqual(['invoke_agent core']);
+  });
+
+  it('restores the /core entry on disable', () => {
+    const mod = mutableModule();
+    const before = mod.query;
+    instrumentation = new ClaudeAgentSdkInstrumentation({ client: h.client });
+    patchCoreEntry(instrumentation, mod);
+    expect(mod.query).not.toBe(before);
+
+    instrumentation.disable();
+    expect(mod.query).toBe(before);
+  });
+
   it('passes adapter options through to the adapter', async () => {
     const mod = mutableModule();
     instrumentation = new ClaudeAgentSdkInstrumentation({
       client: h.client,
-      agentName: 'configured',
       contentCapture: 'metadata_only',
       enabled: true,
     });
@@ -144,7 +199,7 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
     await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
 
-    const turn = h.spans.getFinishedSpans().find((s) => s.name === 'invoke_agent configured');
+    const turn = h.spans.getFinishedSpans().find((s) => s.name.startsWith('invoke_agent'));
     expect(turn).toBeDefined();
     expect(turn?.attributes['gen_ai.input.messages']).toBeUndefined();
   });
@@ -298,10 +353,12 @@ describe('ClaudeAgentSdkInstrumentation', () => {
 
   it('creates its own client when none is supplied', async () => {
     const mod = mutableModule();
-    instrumentation = new ClaudeAgentSdkInstrumentation({ agentName: 'self-client' });
+    instrumentation = new ClaudeAgentSdkInstrumentation();
     patchModule(instrumentation, mod);
 
-    await drain(mod.query({ prompt: 'hello', options: { model: MODEL } }));
+    await withAgent('self-client', () =>
+      drain(mod.query({ prompt: 'hello', options: { model: MODEL } })),
+    );
 
     // The self-created client uses the globally-registered providers, which the
     // harness owns, so its spans land in the harness exporter.

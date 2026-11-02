@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenAI Responses API (`client.responses.create`) instrumentation.
  *
@@ -26,10 +43,11 @@ import {
   toolResultPart,
 } from '../../models/message.js';
 import type { TokenUsage } from '../../models/usage.js';
-import { OP_CHAT } from '../../semconv.js';
+import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
 import { identityFieldsFromOptions } from '../_common/metadata.js';
+import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 
 type ResponseCreateParams = OpenAI.Responses.ResponseCreateParams;
@@ -50,13 +68,14 @@ export function instrumentResponseApiPromise(
   apiPromise: ApiPromiseLike<unknown>,
   params: ResponseCreateParams,
   options: AdapterCallOptions,
+  baseURL?: string,
 ): unknown {
-  const seed = buildResponsesSeed(params, options);
+  const seed = buildResponsesSeed(params, options, baseURL);
 
   if (isStreaming(params)) {
     const rec = client.startStreamingGeneration(seed);
     rec.setResult({ input: mapResponsesInput(params) });
-    const handlers = responsesStreamHandlers(rec, params);
+    const handlers = responsesStreamHandlers(rec);
     return instrumentApiPromise(apiPromise, rec, (stream) =>
       wrapProviderStream<AsyncIterable<ResponseStreamEvent>, ResponseStreamEvent>(
         stream as AsyncIterable<ResponseStreamEvent>,
@@ -66,8 +85,9 @@ export function instrumentResponseApiPromise(
   }
 
   const rec = client.startGeneration(seed);
+  rec.setResult({ input: mapResponsesInput(params) });
   return instrumentApiPromise(apiPromise, rec, (result) => {
-    recordResponseResult(rec, params, result as ResponseResult);
+    recordResponseResult(rec, result as ResponseResult);
     void rec.end();
     return result;
   });
@@ -81,6 +101,7 @@ function isStreaming(params: ResponseCreateParams): boolean {
 function buildResponsesSeed(
   params: ResponseCreateParams,
   options: AdapterCallOptions,
+  baseURL: string | undefined,
 ): GenerationStart {
   const p = params as ResponseCreateParams & {
     max_output_tokens?: number | null;
@@ -89,6 +110,7 @@ function buildResponsesSeed(
     instructions?: string | null;
     tool_choice?: unknown;
     text?: { format?: { type?: string } };
+    conversation?: string | { id?: string } | null;
   };
   return {
     model: { provider: 'openai', name: typeof p.model === 'string' ? p.model : '' },
@@ -101,9 +123,14 @@ function buildResponsesSeed(
     // what `gen_ai.system_instructions` is for. Chat Completions instead rides it
     // inline in `messages` as a system-role turn.
     systemPrompt: p.instructions ?? undefined,
-    outputType: p.text?.format?.type === 'json_schema' ? 'json' : undefined,
+    outputType: outputTypeOf(p.text?.format?.type),
     tools: mapResponsesTools(p.tools),
+    ...serverOf(baseURL),
     ...identityFieldsFromOptions(options),
+    // The request's own conversation, unless withMetadata names one.
+    conversationId:
+      options.conversationId ||
+      (typeof p.conversation === 'string' ? p.conversation : p.conversation?.id),
     contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,
@@ -112,17 +139,12 @@ function buildResponsesSeed(
 }
 
 /** Records a final Responses result onto the recorder, streamed or not. */
-function recordResponseResult(
-  rec: GenerationRecorder,
-  params: ResponseCreateParams,
-  result: ResponseResult,
-): void {
+function recordResponseResult(rec: GenerationRecorder, result: ResponseResult): void {
   rec.setResult({
     responseId: result.id,
     responseModel: result.model,
     stopReason: responsesStopReason(result),
     usage: mapResponsesUsage(result.usage),
-    input: mapResponsesInput(params),
     output: mapResponsesOutput(result.output),
   });
   if (result.status === 'failed' || result.error) {
@@ -163,23 +185,22 @@ function responsesErrorStatus(code: string | null | undefined): number {
  * handler: OpenAI assembles the response for us, so there is nothing to stitch
  * together from deltas.
  */
-function responsesStreamHandlers(
-  rec: GenerationRecorder,
-  params: ResponseCreateParams,
-): StreamWrapOptions<ResponseStreamEvent> {
+function responsesStreamHandlers(rec: GenerationRecorder): StreamWrapOptions<ResponseStreamEvent> {
   let firstTokenSeen = false;
   let finalResponse: ResponseResult | undefined;
   let streamError: Error | undefined;
 
   const finish = async ({ abandoned = false, error }: { abandoned?: boolean; error?: unknown }) => {
-    if (finalResponse) recordResponseResult(rec, params, finalResponse);
+    if (finalResponse) recordResponseResult(rec, finalResponse);
     // The most specific cause wins: the final response's own error, then the
     // `error` event, then a transport error.
     const cause = streamError ?? error;
     if (cause && !finalResponse?.error) rec.setCallError(cause);
-    // Leaving the loop after the final response or an error is not abandonment.
-    if (abandoned && !finalResponse && !streamError) {
+    if (abandoned) {
       rec.setCallError(new Error('openai responses stream was never consumed'));
+    } else if (!finalResponse && !cause) {
+      // The caller stopped reading before the final response, which carries the usage.
+      rec.setAttributes({ [ATTR_USAGE_IS_PARTIAL]: true });
     }
     await rec.end();
   };
@@ -230,7 +251,7 @@ function mapResponsesUsage(usage: ResponsesUsageShape | undefined | null): Token
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
     cacheReadInputTokens: usage.input_tokens_details?.cached_tokens,
-    cacheCreationInputTokens: usage.input_tokens_details?.cache_write_tokens,
+    cacheWriteInputTokens: usage.input_tokens_details?.cache_write_tokens,
     reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
   };
 }

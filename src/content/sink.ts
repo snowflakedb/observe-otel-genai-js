@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Content sink — emits a generation's prompt/completion content onto a span as
  * structured `gen_ai.input.messages` / `gen_ai.output.messages` /
@@ -7,11 +24,11 @@
  * when the SDK does not support complex (nested) attribute values — which is
  * the case for OpenTelemetry JS today — so the values are JSON-encoded here.
  *
- * Size policy: when the encoded value is longer than `maxContentLength`
- * (`DEFAULT_MAX_CONTENT_LENGTH` unless changed), it is trimmed to fit while
- * staying valid JSON — long string leaves (message text, tool
- * arguments/results) are shortened in place so the message structure is
- * preserved and the attribute remains parseable.
+ * Size policy: by default there is no cap (matching OTel's own unbounded
+ * attribute-value default). When a finite `maxContentLength` is configured, the
+ * encoded value is trimmed to fit while staying valid JSON — long string leaves
+ * (message text, tool arguments/results) are shortened in place so the message
+ * structure is preserved and the attribute remains parseable.
  */
 
 import type { Span } from '@opentelemetry/api';

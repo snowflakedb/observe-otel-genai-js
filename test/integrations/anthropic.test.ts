@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Tests for the Anthropic adapter.
  *
@@ -6,6 +23,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import { SpanStatusCode } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -18,10 +36,12 @@ import {
   ATTR_REQUEST_MODEL,
   ATTR_RESPONSE_ID,
   ATTR_RESPONSE_MODEL,
-  ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS,
   ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
+  ATTR_USAGE_IS_PARTIAL,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
 } from '../../src/semconv.js';
 import { type Harness, createHarness } from '../_harness.js';
 
@@ -54,6 +74,7 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
         output_tokens: 4,
         cache_creation_input_tokens: 100,
         cache_read_input_tokens: 50,
+        output_tokens_details: { thinking_tokens: 3 },
       },
     }));
 
@@ -71,8 +92,9 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     expect(span?.attributes[ATTR_RESPONSE_ID]).toBe('msg_01abc');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(10);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(4);
-    expect(span?.attributes[ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBe(100);
+    expect(span?.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(100);
     expect(span?.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(50);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(3);
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
   });
 
@@ -100,6 +122,25 @@ describe('Anthropic adapter — instrumentedMessageCreate', () => {
     const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
     expect(output[0].role).toBe('assistant');
     expect(output[0].parts[0].content).toBe('hi back');
+  });
+
+  it('records the input messages of a call that fails', async () => {
+    const fake = makeFakeAnthropic(async () => {
+      throw Object.assign(new Error('overloaded'), { status: 529 });
+    });
+
+    await expect(
+      instrumentedMessageCreate(
+        h.client,
+        fake,
+        { model: 'claude', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+        { contentCapture: 'no_tool_content' },
+      ),
+    ).rejects.toThrow('overloaded');
+
+    const [span] = h.spans.getFinishedSpans();
+    const input = JSON.parse(span!.attributes['gen_ai.input.messages'] as string);
+    expect(input[0].parts[0].content).toBe('hi');
   });
 
   it('captures system prompt from string', async () => {
@@ -157,7 +198,7 @@ describe('Anthropic adapter — streaming', () => {
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
-          usage: { output_tokens: 1 },
+          usage: { output_tokens: 1, output_tokens_details: { thinking_tokens: 1 } },
         };
         yield { type: 'message_stop' };
       }
@@ -180,7 +221,54 @@ describe('Anthropic adapter — streaming', () => {
     expect(span?.attributes[ATTR_RESPONSE_MODEL]).toBe('claude-stream');
     expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(12);
     expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(1);
+    expect(span?.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(1);
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBeUndefined();
     expect(span?.attributes['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
+    const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
+    expect(output[0].parts[0].content).toBe('hi');
+  });
+
+  it('leaves out the output count when the caller stops before message_delta', async () => {
+    const fake = makeFakeAnthropic(async () => {
+      async function* gen() {
+        yield {
+          type: 'message_start',
+          message: {
+            id: 'msg_stream_2',
+            model: 'claude-stream',
+            role: 'assistant',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 12, output_tokens: 1 },
+          },
+        };
+        yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } };
+        yield {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 5 },
+        };
+      }
+      return gen();
+    });
+
+    const wrapped = wrapAnthropic(h.client, fake);
+    const stream = (await wrapped.messages.create({
+      model: 'claude-stream',
+      max_tokens: 16,
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any)) as unknown as AsyncIterable<{ type: string }>;
+
+    for await (const e of stream) {
+      if (e.type === 'content_block_delta') break;
+    }
+
+    const [span] = h.spans.getFinishedSpans();
+    expect(span?.status.code).not.toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(12);
+    expect(span?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBeUndefined();
+    expect(span?.attributes[ATTR_USAGE_IS_PARTIAL]).toBe(true);
     const output = JSON.parse(span!.attributes['gen_ai.output.messages'] as string);
     expect(output[0].parts[0].content).toBe('hi');
   });

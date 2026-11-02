@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `GenerationRecorder` — wraps an LLM call (streaming or non-streaming).
  *
@@ -14,9 +31,11 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitGenerationContent } from '../content/sink.js';
+import type { HandedDown } from '../context.js';
 import { ValidationError } from '../errors.js';
+import { serializeError } from '../errors/serialize.js';
 import type { Generation, GenerationStart, ModelRef } from '../models/generation.js';
 import type { Message } from '../models/message.js';
 import { normalizeUsage } from '../models/usage.js';
@@ -27,8 +46,8 @@ import {
   ERR_TYPE_PROVIDER_CALL,
   ERR_TYPE_VALIDATION,
   OP_CHAT,
-  TOKEN_TYPE_CACHE_CREATION,
   TOKEN_TYPE_CACHE_READ,
+  TOKEN_TYPE_CACHE_WRITE,
   TOKEN_TYPE_INPUT,
   TOKEN_TYPE_OUTPUT,
   TOKEN_TYPE_REASONING,
@@ -52,8 +71,9 @@ export class GenerationRecorder extends RecorderBase {
     seed: GenerationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -101,12 +121,10 @@ export class GenerationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const isMetadataOnly = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     // 1. Merge seed + result into the final generation payload.
     const generation = this.mergeSeedAndResult(completedAtMs);
-
-    const stripped = isMetadataOnly;
 
     // 2. Update span name to reflect final operation + model.
     this.span.updateName(
@@ -146,8 +164,8 @@ export class GenerationRecorder extends RecorderBase {
     if (ttft !== undefined) this.span.setAttribute(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK, ttft);
 
     // 5. Privacy-gated exception recording.
-    this.recordExceptionIfAny(this.callError, stripped);
-    this.recordExceptionIfAny(this.mappingError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
+    this.recordExceptionIfAny(this.mappingError, mode);
 
     // 6. Status + error metric labels.
     let classified: import('./base.js').ClassifiedError;
@@ -220,7 +238,7 @@ export class GenerationRecorder extends RecorderBase {
       completedAt: completedAtMs,
       tags,
       metadata,
-      callError: this.callError != null ? stringifyForCallError(this.callError) : '',
+      callError: this.callError != null ? serializeError(this.callError) : '',
       parentGenerationIds: this.normalizeParentIds(seed.parentGenerationIds),
       effectiveVersion: result.effectiveVersion ?? seed.effectiveVersion ?? '',
     };
@@ -259,6 +277,7 @@ export class GenerationRecorder extends RecorderBase {
       requestModel: generation.model?.name ?? '',
       agentName: generation.agentName ?? '',
       conversationId: generation.conversationId,
+      userId: generation.userId,
     };
 
     this.host.metrics.recordOperationDuration(durationSeconds, {
@@ -276,8 +295,8 @@ export class GenerationRecorder extends RecorderBase {
       labels,
     );
     this.host.metrics.recordTokenUsage(
-      usage.cacheCreationInputTokens ?? 0,
-      TOKEN_TYPE_CACHE_CREATION,
+      usage.cacheWriteInputTokens ?? 0,
+      TOKEN_TYPE_CACHE_WRITE,
       labels,
     );
     this.host.metrics.recordTokenUsage(usage.reasoningTokens ?? 0, TOKEN_TYPE_REASONING, labels);
@@ -305,14 +324,4 @@ function countToolCalls(messages: Message[]): number {
     }
   }
   return n;
-}
-
-function stringifyForCallError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  try {
-    return String(err);
-  } catch {
-    return '';
-  }
 }

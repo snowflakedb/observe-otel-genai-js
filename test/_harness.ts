@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * Shared test harness — wires up in-memory OTel exporters so each test can
  * assert on emitted spans / metrics without hitting the network.
@@ -23,6 +40,7 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 import { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
+import { METRIC_ATTR_TOKEN_TYPE, METRIC_TOKEN_USAGE } from '../src/semconv.js';
 
 export interface Harness {
   client: Client;
@@ -111,4 +129,13 @@ export function createHarness(input?: ClientConfig): Harness {
  */
 export function findSpan(spans: InMemorySpanExporter, predicate: (name: string) => boolean) {
   return spans.getFinishedSpans().find((s) => predicate(s.name));
+}
+
+/** The `gen_ai.token.type` values recorded on the token usage histogram. */
+export async function tokenTypes(h: Harness): Promise<unknown[]> {
+  return (await h.collectMetrics())
+    .flatMap((rm) => rm.scopeMetrics)
+    .flatMap((sm) => sm.metrics)
+    .filter((m) => m.descriptor.name === METRIC_TOKEN_USAGE)
+    .flatMap((m) => m.dataPoints.map((p) => p.attributes[METRIC_ATTR_TOKEN_TYPE]));
 }

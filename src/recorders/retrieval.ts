@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `RetrievalRecorder` — wraps a `retrieval` span (kind CLIENT): a RAG context
  * fetch from a vector DB / search system. `setDocuments` records the results;
@@ -6,8 +23,9 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitRetrievalContent } from '../content/sink.js';
+import type { HandedDown } from '../context.js';
 import type { RetrievalDocument, RetrievalResult, RetrievalStart } from '../models/retrieval.js';
 import { ERR_TYPE_PROVIDER_CALL, OP_RETRIEVAL } from '../semconv.js';
 import { applyRetrievalAttributes } from '../spans/attributes.js';
@@ -24,8 +42,9 @@ export class RetrievalRecorder extends RecorderBase {
     seed: RetrievalStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -42,7 +61,7 @@ export class RetrievalRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
     // retrieval carries external content with similar sensitivity to tool payloads,
     // so users who opt out of tool content are opted out of retrieval content too.
     const allowRetrievalContent = !stripped && mode !== 'no_tool_content';
@@ -56,7 +75,7 @@ export class RetrievalRecorder extends RecorderBase {
       emitRetrievalContent(this.span, this.seed.queryText, result.documents, captureConfig);
     }
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped)
@@ -70,6 +89,7 @@ export class RetrievalRecorder extends RecorderBase {
       requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName ?? '',
       conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

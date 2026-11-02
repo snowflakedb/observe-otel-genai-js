@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * OpenTelemetry GenAI semantic-conventions attribute names and constants.
  *
@@ -28,18 +45,12 @@ export const ATTR_AGENT_NAME = 'gen_ai.agent.name';
 export const ATTR_AGENT_VERSION = 'gen_ai.agent.version';
 export const ATTR_AGENT_ID = 'gen_ai.agent.id';
 export const ATTR_AGENT_DESCRIPTION = 'gen_ai.agent.description';
+export const ATTR_WORKFLOW_NAME = 'gen_ai.workflow.name';
 export const ATTR_USER_ID = 'user.id';
 export const ATTR_SDK_NAME = 'genai.sdk.name';
 export const ATTR_GENERATION_ID = 'genai.generation.id';
 export const ATTR_PARENT_GENERATION_IDS = 'genai.parent_generation_ids';
 
-/**
- * Provider-reported cost of an operation, in USD. GenAI semconv defines no cost
- * attribute, so this is a library extension. Only a few providers report real
- * cost (the Claude Agent SDK's `modelUsage[*].costUSD`, Bedrock); emit it when
- * the number comes from the provider, never when it is estimated locally.
- */
-export const ATTR_USAGE_COST_USD = 'genai.usage.cost_usd';
 /**
  * Marks token counts that are the provider's mid-stream figures rather than its
  * final ones, so a consumer knows not to trust them as authoritative totals.
@@ -82,8 +93,6 @@ export const ATTR_FINISH_REASONS = 'gen_ai.response.finish_reasons';
 export const ATTR_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 export const ATTR_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
 export const ATTR_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens';
-export const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS = 'gen_ai.usage.cache_creation.input_tokens';
-/** Current semconv name for cache-write tokens; `cache_creation` above is the older one. */
 export const ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_write.input_tokens';
 export const ATTR_USAGE_REASONING_TOKENS = 'gen_ai.usage.reasoning.output_tokens';
 
@@ -134,6 +143,7 @@ export const OP_GENERATE_CONTENT = 'generate_content';
 export const OP_EMBEDDINGS = 'embeddings';
 export const OP_EXECUTE_TOOL = 'execute_tool';
 export const OP_INVOKE_AGENT = 'invoke_agent';
+export const OP_INVOKE_WORKFLOW = 'invoke_workflow';
 export const OP_CREATE_AGENT = 'create_agent';
 export const OP_RETRIEVAL = 'retrieval';
 
@@ -144,6 +154,7 @@ export type OperationName =
   | typeof OP_EMBEDDINGS
   | typeof OP_EXECUTE_TOOL
   | typeof OP_INVOKE_AGENT
+  | typeof OP_INVOKE_WORKFLOW
   | typeof OP_CREATE_AGENT
   | typeof OP_RETRIEVAL;
 
@@ -156,20 +167,21 @@ export const METRIC_TOKEN_USAGE = 'gen_ai.client.token.usage';
 export const METRIC_TIME_TO_FIRST_TOKEN = 'gen_ai.client.time_to_first_token';
 export const METRIC_TOOL_CALLS_PER_OPERATION = 'gen_ai.client.tool_calls_per_operation';
 export const METRIC_TOOL_EXECUTION_DURATION = 'gen_ai.client.tool_execution.duration';
+export const METRIC_INVOKE_WORKFLOW_DURATION = 'gen_ai.invoke_workflow.duration';
 
 export const METRIC_ATTR_TOKEN_TYPE = 'gen_ai.token.type';
 
 export const TOKEN_TYPE_INPUT = 'input';
 export const TOKEN_TYPE_OUTPUT = 'output';
 export const TOKEN_TYPE_CACHE_READ = 'cache_read';
-export const TOKEN_TYPE_CACHE_CREATION = 'cache_creation';
+export const TOKEN_TYPE_CACHE_WRITE = 'cache_write';
 export const TOKEN_TYPE_REASONING = 'reasoning';
 
 export type TokenType =
   | typeof TOKEN_TYPE_INPUT
   | typeof TOKEN_TYPE_OUTPUT
   | typeof TOKEN_TYPE_CACHE_READ
-  | typeof TOKEN_TYPE_CACHE_CREATION
+  | typeof TOKEN_TYPE_CACHE_WRITE
   | typeof TOKEN_TYPE_REASONING;
 
 /**
@@ -178,6 +190,14 @@ export type TokenType =
  */
 export const DURATION_BUCKETS_SECONDS: readonly number[] = [
   0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+];
+
+/**
+ * Workflow duration buckets in seconds, 1s to 2h, as the GenAI conventions advise
+ * for `gen_ai.invoke_workflow.duration`: a workflow often runs for minutes.
+ */
+export const WORKFLOW_DURATION_BUCKETS_SECONDS: readonly number[] = [
+  1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200,
 ];
 
 /**

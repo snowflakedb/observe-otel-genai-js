@@ -1,23 +1,70 @@
-import { trace } from '@opentelemetry/api';
-import { generateObject, generateText, registerTelemetry, streamText, tool } from 'ai';
-import { MockLanguageModelV3 } from 'ai/test';
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { SpanStatusCode, trace } from '@opentelemetry/api';
+import {
+  APICallError,
+  type Tool,
+  embed,
+  embedMany,
+  generateObject,
+  generateText,
+  jsonSchema,
+  registerTelemetry,
+  streamObject,
+  streamText,
+  tool,
+} from 'ai';
+import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { withAgent } from '../../src/context.js';
 import {
   type DeriveOptionsEvent,
   genaiTelemetryIntegration,
 } from '../../src/integrations/vercel-ai-sdk/index.js';
 import {
+  ATTR_EMBEDDING_DIMENSION_COUNT,
+  ATTR_EMBEDDING_INPUT_COUNT,
+  ATTR_EMBEDDING_INPUT_TEXTS,
   ATTR_INPUT_MESSAGES,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_MESSAGES,
   ATTR_PROVIDER_NAME,
+  ATTR_REQUEST_MAX_TOKENS,
+  ATTR_REQUEST_SEED,
+  ATTR_REQUEST_STOP_SEQUENCES,
+  ATTR_REQUEST_STREAM,
+  ATTR_REQUEST_TEMPERATURE,
+  ATTR_REQUEST_TOP_P,
+  ATTR_RESPONSE_TIME_TO_FIRST_CHUNK,
+  ATTR_SYSTEM_INSTRUCTIONS,
+  ATTR_TOOL_CALL_ARGUMENTS,
+  ATTR_TOOL_CALL_RESULT,
+  ATTR_TOOL_DEFINITIONS,
+  ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
+  ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS,
   ATTR_USAGE_INPUT_TOKENS,
   ATTR_USAGE_OUTPUT_TOKENS,
+  ATTR_USAGE_REASONING_TOKENS,
   OP_GENERATE_CONTENT,
 } from '../../src/semconv.js';
-import { type Harness, createHarness } from '../_harness.js';
+import { type Harness, createHarness, tokenTypes } from '../_harness.js';
 
 // ---------------------------------------------------------------------------
 // Mock model builders (AI SDK v7 provider shapes)
@@ -26,14 +73,23 @@ import { type Harness, createHarness } from '../_harness.js';
 function v7Finish(unified: 'stop' | 'tool-calls') {
   return { unified, raw: unified };
 }
-function v7Usage(i: number, o: number) {
+function v7Usage(
+  i: number,
+  o: number,
+  d: { cacheRead?: number; cacheWrite?: number; reasoning?: number } = {},
+) {
   return {
-    inputTokens: { total: i, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-    outputTokens: { total: o, text: undefined, reasoning: undefined },
+    inputTokens: { total: i, noCache: undefined, cacheRead: d.cacheRead, cacheWrite: d.cacheWrite },
+    outputTokens: { total: o, text: undefined, reasoning: d.reasoning },
   };
 }
 
-function textStreamModel(text: string, provider = 'mock', modelId = 'mock-stream') {
+function textStreamModel(
+  text: string,
+  provider = 'mock',
+  modelId = 'mock-stream',
+  usage = v7Usage(5, 2),
+) {
   return new MockLanguageModelV3({
     provider,
     modelId,
@@ -44,7 +100,7 @@ function textStreamModel(text: string, provider = 'mock', modelId = 'mock-stream
           c.enqueue({ type: 'text-start', id: '0' });
           c.enqueue({ type: 'text-delta', id: '0', delta: text });
           c.enqueue({ type: 'text-end', id: '0' });
-          c.enqueue({ type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(5, 2) });
+          c.enqueue({ type: 'finish', finishReason: v7Finish('stop'), usage });
           c.close();
         },
       }),
@@ -107,6 +163,13 @@ function clearIntegrations() {
     undefined;
 }
 
+function msOf([seconds, nanos]: [number, number]): number {
+  return seconds * 1000 + nanos / 1e6;
+}
+
+const byStart = (spans: ReturnType<typeof byName>) =>
+  [...spans].sort((a, b) => msOf(a.startTime) - msOf(b.startTime));
+
 const byName = (h: Harness, prefix: string) =>
   h.spans.getFinishedSpans().filter((s) => s.name.startsWith(prefix));
 const oneByName = (h: Harness, prefix: string) =>
@@ -140,6 +203,24 @@ describe('genaiTelemetryIntegration', () => {
     expect(agent!.attributes[ATTR_OUTPUT_MESSAGES]).toBeDefined();
   });
 
+  it('records cache and reasoning token counts', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const usage = v7Usage(20, 9, { cacheRead: 6, cacheWrite: 2, reasoning: 5 });
+    const model = textStreamModel('hi', 'mock', 'mock-stream', usage);
+    await drain(streamText({ model, prompt: 'hi' }));
+
+    const chat = oneByName(h, 'chat');
+    expect(chat!.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(20);
+    expect(chat!.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(9);
+    expect(chat!.attributes[ATTR_USAGE_CACHE_READ_INPUT_TOKENS]).toBe(6);
+    expect(chat!.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS]).toBe(2);
+    expect(chat!.attributes[ATTR_USAGE_REASONING_TOKENS]).toBe(5);
+
+    expect(await tokenTypes(h)).toEqual(
+      expect.arrayContaining(['cache_read', 'cache_write', 'reasoning']),
+    );
+  });
+
   it('works for non-streaming generateText', async () => {
     registerTelemetry(genaiTelemetryIntegration(h.client));
     const model = new MockLanguageModelV3({
@@ -157,6 +238,122 @@ describe('genaiTelemetryIntegration', () => {
     expect(out.text).toBe('hello');
     expect(oneByName(h, 'invoke_agent')).toBeDefined();
     expect(oneByName(h, 'chat')?.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(9);
+  });
+
+  it('records time to first token on streamText chat spans only', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(streamText({ model: textStreamModel('hi'), prompt: 'hi' }));
+    const streamed = oneByName(h, 'chat');
+    expect(streamed?.attributes[ATTR_RESPONSE_TIME_TO_FIRST_CHUNK]).toEqual(expect.any(Number));
+    h.resetSpans();
+
+    await generateText({
+      model: new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [{ type: 'text', text: 'hi' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        }),
+      }),
+      prompt: 'hi',
+    });
+    expect(oneByName(h, 'chat')?.attributes).not.toHaveProperty(ATTR_RESPONSE_TIME_TO_FIRST_CHUNK);
+
+    const metrics = (await h.collectMetrics())[0]!.scopeMetrics.flatMap((sm) => sm.metrics);
+    const ttft = metrics.find((m) => m.descriptor.name === 'gen_ai.client.time_to_first_token');
+    expect(ttft?.dataPoints).toHaveLength(1);
+  });
+
+  it('records time to first token on streamObject spans', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const result = streamObject({
+      model: textStreamModel('{"ok":true}'),
+      schema: z.object({ ok: z.boolean() }),
+      prompt: 'hi',
+    });
+    for await (const _ of result.partialObjectStream) {
+      /* drain */
+    }
+    await result.object;
+    const span = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_GENERATE_CONTENT);
+    expect(span?.attributes[ATTR_RESPONSE_TIME_TO_FIRST_CHUNK]).toEqual(expect.any(Number));
+  });
+
+  it("records the call's request parameters on each model call's span", async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const jsonModel = () =>
+      new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [{ type: 'text', text: '{"ok":true}' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        }),
+      });
+    const settings = {
+      temperature: 0.3,
+      maxOutputTokens: 50,
+      topP: 0.9,
+      seed: 7,
+      stopSequences: ['END'],
+    };
+    await generateText({ model: jsonModel(), prompt: 'hi', ...settings });
+    await drain(streamText({ model: textStreamModel('hi'), prompt: 'hi', ...settings }));
+    await generateObject({
+      model: jsonModel(),
+      schema: z.object({ ok: z.boolean() }),
+      prompt: 'hi',
+      ...settings,
+    });
+
+    const calls = h.spans
+      .getFinishedSpans()
+      .filter((s) => s.attributes[ATTR_OPERATION_NAME] !== 'invoke_agent');
+    expect(calls).toHaveLength(3);
+    for (const span of calls) {
+      expect(span.attributes, span.name).toMatchObject({
+        [ATTR_REQUEST_TEMPERATURE]: 0.3,
+        [ATTR_REQUEST_MAX_TOKENS]: 50,
+        [ATTR_REQUEST_TOP_P]: 0.9,
+        [ATTR_REQUEST_SEED]: 7,
+      });
+    }
+    // generateObject does not report its stop sequences to telemetry.
+    for (const span of calls.filter((s) => s.name.startsWith('chat'))) {
+      expect(span.attributes[ATTR_REQUEST_STOP_SEQUENCES], span.name).toEqual(['END']);
+    }
+  });
+
+  it("records a step's own settings when prepareStep changes them", async () => {
+    // AI SDK versions after 7.0.18 let prepareStep change a step's settings; the
+    // model call's start event then carries them. Driven by hand to cover that.
+    const telemetry = genaiTelemetryIntegration(h.client) as Record<
+      string,
+      (e: unknown) => unknown
+    >;
+    const model = { provider: 'mock', modelId: 'mock-1' };
+    telemetry.onStart!({
+      callId: 'c1',
+      operationId: 'ai.generateText',
+      ...model,
+      temperature: 0.3,
+    });
+    telemetry.onStepStart!({ callId: 'c1', stepNumber: 0, ...model, messages: [] });
+    telemetry.onLanguageModelCallStart!({ callId: 'c1', ...model, temperature: 0 });
+    await telemetry.onStepEnd!({
+      callId: 'c1',
+      stepNumber: 0,
+      content: [],
+      toolCalls: [],
+      toolResults: [],
+      finishReason: 'stop',
+    });
+    await telemetry.onEnd!({ callId: 'c1' });
+
+    expect(oneByName(h, 'chat')?.attributes[ATTR_REQUEST_TEMPERATURE]).toBe(0);
   });
 
   it('normalizes provider names on operation and generation spans', async () => {
@@ -178,7 +375,30 @@ describe('genaiTelemetryIntegration', () => {
     expect(oneByName(h, 'chat')?.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
   });
 
-  it('nests execute_tool under chat under invoke_agent in a 2-step tool loop', async () => {
+  it('records only the tool names under no_tool_content', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => 'pong',
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+    for (const chat of byName(h, 'chat')) {
+      expect(JSON.parse(String(chat.attributes[ATTR_TOOL_DEFINITIONS]))).toEqual([
+        { type: 'function', name: 'ping' },
+      ]);
+    }
+  });
+
+  it('puts execute_tool next to chat under invoke_agent in a 2-step tool loop', async () => {
     registerTelemetry(genaiTelemetryIntegration(h.client));
     await drain(
       streamText({
@@ -204,10 +424,7 @@ describe('genaiTelemetryIntegration', () => {
     expect(chats.every((c) => c.parentSpanContext?.spanId === agent!.spanContext().spanId)).toBe(
       true,
     );
-    const toolParent = chats.find(
-      (c) => c.spanContext().spanId === toolSpan!.parentSpanContext?.spanId,
-    );
-    expect(toolParent).toBeDefined();
+    expect(toolSpan!.parentSpanContext?.spanId).toBe(agent!.spanContext().spanId);
   });
 
   it('parents spans created inside tool.execute under the execute_tool span', async () => {
@@ -341,6 +558,105 @@ describe('genaiTelemetryIntegration', () => {
     expect(chat!.parentSpanContext).toBeUndefined();
   });
 
+  it('puts execute_tool under its chat span when emitOperationSpan is false', async () => {
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, {
+        emitOperationSpan: false,
+        deriveOptions: () => ({ agentName: 'my-agent' }),
+      }),
+    );
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: { ping: tool({ inputSchema: z.object({}), execute: async () => 'pong' }) },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [firstChat] = byStart(byName(h, 'chat'));
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(toolSpan?.parentSpanContext?.spanId).toBe(firstChat!.spanContext().spanId);
+    expect(toolSpan?.attributes['gen_ai.agent.name']).toBe('my-agent');
+  });
+
+  it('puts a tool call with no execute under invoke_agent', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-ask',
+      doGenerate: async () => ({
+        content: [{ type: 'tool-call', toolCallId: 'a0', toolName: 'ask', input: '{}' }],
+        finishReason: v7Finish('tool-calls'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+    });
+    await generateText({
+      model,
+      prompt: 'ask me',
+      tools: { ask: tool({ inputSchema: z.object({}) }) },
+    });
+
+    const agent = oneByName(h, 'invoke_agent');
+    expect(oneByName(h, 'execute_tool')?.parentSpanContext?.spanId).toBe(
+      agent!.spanContext().spanId,
+    );
+  });
+
+  it('marks steps as streamed only for streamText and streamObject', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-both',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+      doStream: textStreamModel('{"ok":true}').doStream,
+    });
+    const schema = z.object({ ok: z.boolean() });
+
+    await generateText({ model, prompt: 'a', telemetry: { functionId: 'gen-text' } as never });
+    await drain(
+      streamText({ model, prompt: 'b', telemetry: { functionId: 'stream-text' } as never }),
+    );
+    await generateObject({
+      model,
+      schema,
+      prompt: 'c',
+      telemetry: { functionId: 'gen-obj' } as never,
+    });
+    const streamed = streamObject({
+      model,
+      schema,
+      prompt: 'd',
+      telemetry: { functionId: 'stream-obj' } as never,
+    });
+    for await (const _ of streamed.partialObjectStream) {
+      /* drain */
+    }
+    await streamed.object;
+
+    const streamFlag = Object.fromEntries(
+      h.spans
+        .getFinishedSpans()
+        .filter((s) => !s.name.startsWith('invoke_agent'))
+        .map((s) => [
+          s.attributes['gen_ai.agent.name'],
+          s.attributes[ATTR_REQUEST_STREAM] === true,
+        ]),
+    );
+    expect(streamFlag).toEqual({
+      'gen-text': false,
+      'stream-text': true,
+      'gen-obj': false,
+      'stream-obj': true,
+    });
+  });
+
   it('captures a generate_content span for generateObject', async () => {
     registerTelemetry(genaiTelemetryIntegration(h.client));
     const model = new MockLanguageModelV3({
@@ -382,7 +698,927 @@ describe('genaiTelemetryIntegration', () => {
     await expect(generateText({ model, prompt: 'hi', maxRetries: 0 })).rejects.toThrow(
       'provider boom',
     );
+    expect(oneByName(h, 'invoke_agent')?.status.code).toBe(2 /* ERROR */);
+    expect(oneByName(h, 'chat')?.status.code).toBe(2 /* ERROR */);
+    expect(h.openSpanCount()).toBe(0);
+  });
+
+  it('does not mark a call as failed when its model call succeeds on retry', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    let attempts = 0;
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-retry',
+      doGenerate: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new APICallError({
+            message: 'rate limited',
+            url: 'https://example.test',
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { 'retry-after-ms': '0' },
+            isRetryable: true,
+          });
+        }
+        return {
+          content: [{ type: 'text', text: 'hello' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(3, 1),
+          warnings: [],
+        };
+      },
+    });
+
+    await generateText({ model, prompt: 'hi', maxRetries: 1 });
+
+    expect(attempts).toBe(2);
+    expect(oneByName(h, 'invoke_agent')?.status.code).not.toBe(2);
+    const chat = oneByName(h, 'chat');
+    expect(chat?.status.code).not.toBe(2);
+    expect(chat?.attributes[ATTR_USAGE_OUTPUT_TOKENS]).toBe(1);
+  });
+
+  it('records the error of an operation that fails outside the model call', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await expect(
+      generateText({
+        model: textStreamModel('unused'),
+        prompt: 'hi',
+        prepareStep: () => {
+          throw new Error('prepare boom');
+        },
+      }),
+    ).rejects.toThrow('prepare boom');
+
     const agent = oneByName(h, 'invoke_agent');
     expect(agent?.status.code).toBe(2 /* ERROR */);
+    expect(agent?.status.message).toBe('prepare boom');
+  });
+
+  it('records the error on the call that failed while another call is running', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowModel = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-slow',
+      doGenerate: async () => {
+        await released;
+        return {
+          content: [{ type: 'text', text: 'fine' }],
+          finishReason: v7Finish('stop'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        };
+      },
+    });
+    const ok = generateText({
+      model: slowModel,
+      prompt: 'a',
+      telemetry: { functionId: 'ok-agent' } as never,
+    });
+
+    await expect(
+      generateText({
+        model: textStreamModel('unused'),
+        prompt: 'b',
+        telemetry: { functionId: 'bad-agent' } as never,
+        prepareStep: () => {
+          throw new Error('prepare boom');
+        },
+      }),
+    ).rejects.toThrow('prepare boom');
+    release();
+    await ok;
+
+    const agents = byName(h, 'invoke_agent');
+    expect(agents.map((s) => s.name).sort()).toEqual([
+      'invoke_agent bad-agent',
+      'invoke_agent ok-agent',
+    ]);
+    const bad = agents.find((s) => s.name === 'invoke_agent bad-agent');
+    const good = agents.find((s) => s.name === 'invoke_agent ok-agent');
+    expect(bad?.status).toMatchObject({ code: 2, message: 'prepare boom' });
+    expect(good?.status.code).not.toBe(2);
+  });
+
+  /** An embedding model that fails its first `failures` calls. */
+  const embedModel = (failures = 0) => {
+    let calls = 0;
+    return new MockEmbeddingModelV3({
+      provider: 'mock',
+      modelId: 'mock-embed',
+      maxEmbeddingsPerCall: 2,
+      doEmbed: async ({ values }: { values: string[] }) => {
+        if (calls++ < failures) {
+          throw new APICallError({
+            message: 'embed boom',
+            url: 'https://example.test',
+            requestBodyValues: {},
+            statusCode: 503,
+            isRetryable: true,
+          });
+        }
+        return { embeddings: values.map(() => [0.1, 0.2]), usage: { tokens: 3 }, warnings: [] };
+      },
+    });
+  };
+  const embeddingSpans = () =>
+    h.spans.getFinishedSpans().filter((s) => s.attributes[ATTR_OPERATION_NAME] === 'embeddings');
+
+  it('records one embeddings span per model call of embed and embedMany', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await embed({ model: embedModel(), value: 'hi' });
+    await embedMany({ model: embedModel(), values: ['a', 'b', 'c'] });
+
+    const spans = embeddingSpans();
+    // embedMany sends three values in two calls of at most two.
+    expect(spans.map((s) => s.attributes[ATTR_EMBEDDING_INPUT_COUNT])).toEqual([1, 2, 1]);
+    for (const span of spans) {
+      expect(span.name).toBe('embeddings mock-embed');
+      expect(span.attributes[ATTR_USAGE_INPUT_TOKENS]).toBe(3);
+      expect(span.attributes[ATTR_EMBEDDING_DIMENSION_COUNT]).toBe(2);
+    }
+    expect(h.spans.getFinishedSpans()).toHaveLength(3);
+  });
+
+  it('keeps every call of an embedMany whose parallel calls embed the same text', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    const model = new MockEmbeddingModelV3({
+      maxEmbeddingsPerCall: 1,
+      supportsParallelCalls: true,
+      doEmbed: async ({ values }: { values: string[] }) => ({
+        embeddings: values.map(() => [0.1]),
+        usage: { tokens: 1 },
+        warnings: [],
+      }),
+    });
+    await embedMany({ model, values: ['a', 'a', 'b'] });
+    expect(embeddingSpans()).toHaveLength(3);
+  });
+
+  it('records a failed embed as a failed embeddings span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await expect(embed({ model: embedModel(1), value: 'hi', maxRetries: 0 })).rejects.toThrow(
+      'embed boom',
+    );
+    const [span] = embeddingSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(h.spans.getFinishedSpans()).toHaveLength(1);
+  });
+
+  it('leaves no failed span for a call the AI SDK retried', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await embed({ model: embedModel(1), value: 'hi', maxRetries: 1 });
+    const spans = embeddingSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status.code).toBe(SpanStatusCode.UNSET);
+  });
+
+  it('records one failed span when every attempt fails', async () => {
+    // Driven by hand: the AI SDK waits seconds between real retries.
+    const telemetry = genaiTelemetryIntegration(h.client) as Record<
+      string,
+      (e: unknown) => unknown
+    >;
+    const call = { callId: 'e1', provider: 'mock', modelId: 'mock-embed', values: ['hi'] };
+    telemetry.onStart!({
+      callId: 'e1',
+      operationId: 'ai.embed',
+      provider: 'mock',
+      modelId: 'mock-embed',
+    });
+    telemetry.onEmbedStart!({ ...call, embedCallId: 'attempt-1' });
+    telemetry.onEmbedStart!({ ...call, embedCallId: 'attempt-2' });
+    await telemetry.onError!({ callId: 'e1', error: new Error('embed boom') });
+
+    const spans = embeddingSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('nests an embed made inside a tool under its execute_tool span', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            inputSchema: z.object({}),
+            execute: async () => {
+              await embed({ model: embedModel(), value: 'hi' });
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(embeddingSpans()[0]?.parentSpanContext?.spanId).toBe(toolSpan?.spanContext().spanId);
+  });
+
+  it('gives an embeddings span the identity deriveOptions returns', async () => {
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, { deriveOptions: () => ({ agentName: 'indexer' }) }),
+    );
+    await embed({ model: embedModel(), value: 'hi' });
+    expect(embeddingSpans()[0]?.attributes['gen_ai.agent.name']).toBe('indexer');
+  });
+});
+
+describe('genaiTelemetryIntegration embed input texts', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({
+      contentCaptureMode: 'full',
+      embeddingCapture: { captureInput: true, maxInputItems: 10, maxTextLength: 100 },
+    });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const model = new MockEmbeddingModelV3({
+    doEmbed: async ({ values }: { values: string[] }) => ({
+      embeddings: values.map(() => [0.1]),
+      usage: { tokens: 1 },
+      warnings: [],
+    }),
+  });
+  const inputTexts = () => h.spans.getFinishedSpans()[0]?.attributes[ATTR_EMBEDDING_INPUT_TEXTS];
+
+  it('records the input texts by default', async () => {
+    await embed({ model, value: 'hi' });
+    expect(inputTexts()).toEqual(['hi']);
+  });
+
+  it('leaves them out when recordInputs is false', async () => {
+    await embed({ model, value: 'hi', telemetry: { recordInputs: false } });
+    expect(inputTexts()).toBeUndefined();
+  });
+});
+
+describe('genaiTelemetryIntegration step timing', () => {
+  let h: Harness;
+  let clock: number;
+  beforeEach(() => {
+    clock = 1_000_000;
+    h = createHarness({ contentCaptureMode: 'no_tool_content', now: () => clock });
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  // Each model call takes 100ms and each tool 5s on the fake clock.
+  const ping = tool({
+    inputSchema: z.object({}),
+    execute: async () => {
+      clock += 5000;
+      return 'pong';
+    },
+  });
+
+  /** Step `i` asks for `toolCalls[i]` parallel `ping` calls; the step after the last answers. */
+  function timedToolModel(toolCalls: number[]) {
+    let step = 0;
+    return new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-timed',
+      doGenerate: async () => {
+        clock += 100;
+        const calls = toolCalls[step] ?? 0;
+        step += 1;
+        if (calls === 0) {
+          return {
+            content: [{ type: 'text', text: 'done' }],
+            finishReason: v7Finish('stop'),
+            usage: v7Usage(2, 1),
+            warnings: [],
+          };
+        }
+        return {
+          content: Array.from({ length: calls }, (_, i) => ({
+            type: 'tool-call' as const,
+            toolCallId: `step${step}-call${i}`,
+            toolName: 'ping',
+            input: '{}',
+          })),
+          finishReason: v7Finish('tool-calls'),
+          usage: v7Usage(2, 1),
+          warnings: [],
+        };
+      },
+    });
+  }
+
+  it('ends each chat span before its own tools start', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await generateText({
+      model: timedToolModel([2, 1]),
+      prompt: 'ping please',
+      tools: { ping },
+      stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 3) as never,
+    });
+
+    const agent = oneByName(h, 'invoke_agent');
+    const chats = byStart(byName(h, 'chat'));
+    const tools = byName(h, 'execute_tool');
+    expect(chats).toHaveLength(3);
+    expect(tools).toHaveLength(3);
+    for (const chat of chats) expect(msOf(chat.endTime) - msOf(chat.startTime)).toBe(100);
+    for (const t of tools) {
+      expect(t.parentSpanContext?.spanId).toBe(agent!.spanContext().spanId);
+      const step = String(t.attributes['gen_ai.tool.call.id']).startsWith('step1') ? 0 : 1;
+      expect(msOf(t.startTime)).toBeGreaterThanOrEqual(msOf(chats[step]!.endTime));
+    }
+  });
+
+  it('leaves tool time out of the chat duration metric', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await generateText({
+      model: timedToolModel([1]),
+      prompt: 'ping please',
+      tools: { ping },
+      stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+    });
+
+    const duration = (await h.collectMetrics())
+      .flatMap((rm) => rm.scopeMetrics)
+      .flatMap((sm) => sm.metrics)
+      .find((m) => m.descriptor.name === 'gen_ai.client.operation.duration');
+    const chatSeconds = (duration?.dataPoints ?? [])
+      .filter((p) => p.attributes['gen_ai.operation.name'] === 'chat')
+      .reduce((sum, p) => sum + (p.value as { sum: number }).sum, 0);
+    expect(chatSeconds).toBeCloseTo(0.2, 5);
+  });
+
+  it('ends a streamed chat span before its tool starts', async () => {
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: { ping },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [firstChat] = byStart(byName(h, 'chat'));
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(msOf(firstChat!.endTime)).toBe(msOf(firstChat!.startTime));
+    expect(msOf(toolSpan!.endTime) - msOf(toolSpan!.startTime)).toBe(5000);
+  });
+});
+
+describe('genaiTelemetryIntegration identity', () => {
+  let h: Harness;
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const run = (telemetry?: Record<string, unknown>) =>
+    drain(
+      streamText({ model: textStreamModel('hi'), prompt: 'hi', telemetry: telemetry as never }),
+    );
+
+  it("names a call with no functionId after the client's agent", async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await run();
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent shop-bot');
+    expect(oneByName(h, 'chat')?.attributes['gen_ai.agent.name']).toBe('shop-bot');
+  });
+
+  it('takes the name of an enclosing scope when deriveOptions gives none', async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await withAgent('scoped', () => run());
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent scoped');
+  });
+
+  it('names a call nothing names ai-sdk, and its chat span too', async () => {
+    h = createHarness();
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await run();
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent ai-sdk');
+    expect(oneByName(h, 'chat')?.attributes['gen_ai.agent.name']).toBe('ai-sdk');
+  });
+
+  it('lets functionId beat the enclosing scope and the client', async () => {
+    h = createHarness({ agentName: 'shop-bot' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+    await withAgent('scoped', () => run({ functionId: 'query-card' }));
+    expect(oneByName(h, 'invoke_agent')?.name).toBe('invoke_agent query-card');
+  });
+
+  it("hands the operation's identity to its tool spans and to a nested generateText", async () => {
+    h = createHarness();
+    const deriveOptions = (e: DeriveOptionsEvent) =>
+      e.functionId === 'outer-agent'
+        ? { agentName: e.functionId, conversationId: 'conv-1', userId: 'u-1' }
+        : {};
+    registerTelemetry(genaiTelemetryIntegration(h.client, { deriveOptions }));
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        telemetry: { functionId: 'outer-agent' } as never,
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => {
+              await generateText({
+                model: textStreamModel('nested', 'mock', 'nested-gen'),
+                prompt: 'from tool',
+              });
+              return 'pong';
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const nestedChat = h.spans
+      .getFinishedSpans()
+      .find(
+        (s) => s.attributes['gen_ai.request.model'] === 'nested-gen' && s.name.startsWith('chat'),
+      );
+    for (const span of [oneByName(h, 'execute_tool'), nestedChat]) {
+      expect(span?.attributes['gen_ai.agent.name']).toBe('outer-agent');
+      expect(span?.attributes['gen_ai.conversation.id']).toBe('conv-1');
+      expect(span?.attributes['user.id']).toBe('u-1');
+    }
+  });
+
+  it("keeps the client's version when deriveOptions gives the client's agent name", async () => {
+    h = createHarness({ agentName: 'o11y', agentVersion: 'agent-v1' });
+    registerTelemetry(
+      genaiTelemetryIntegration(h.client, { deriveOptions: () => ({ agentName: 'o11y' }) }),
+    );
+    await run({ functionId: 'o11y-agent' });
+    for (const name of ['invoke_agent', 'chat']) {
+      expect(oneByName(h, name)?.attributes['gen_ai.agent.name']).toBe('o11y');
+      expect(oneByName(h, name)?.attributes['gen_ai.agent.version']).toBe('agent-v1');
+    }
+  });
+});
+
+describe('genaiTelemetryIntegration recordInputs / recordOutputs', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const runToolLoop = (telemetry?: { recordInputs?: boolean; recordOutputs?: boolean }) =>
+    drain(
+      streamText({
+        model: toolLoopModel(),
+        system: 'be terse',
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            description: 'ping',
+            inputSchema: z.object({}),
+            execute: async () => 'pong',
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+        telemetry,
+      }),
+    );
+
+  /** The response of each tool result in a span's input messages. */
+  const toolResponses = (span: { attributes: Record<string, unknown> } | undefined) =>
+    (
+      JSON.parse(String(span?.attributes[ATTR_INPUT_MESSAGES] ?? '[]')) as Array<{
+        parts: Array<{ type: string; response?: unknown }>;
+      }>
+    )
+      .flatMap((m) => m.parts)
+      .filter((p) => p.type === 'tool_call_response')
+      .map((p) => p.response);
+
+  it("records a tool's result in the next model call as the tool returned it", async () => {
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({ inputSchema: z.object({}), execute: async () => ({ answer: 42 }) }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [, secondChat] = byStart(byName(h, 'chat'));
+    expect(toolResponses(secondChat)).toEqual([{ answer: 42 }]);
+  });
+
+  it('records a tool result in the messages the caller passes as the tool returned it', async () => {
+    await drain(
+      streamText({
+        model: textStreamModel('ok'),
+        messages: [
+          { role: 'user', content: 'ping please' },
+          {
+            role: 'assistant',
+            content: [{ type: 'tool-call', toolCallId: 't0', toolName: 'ping', input: {} }],
+          },
+          {
+            role: 'tool',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 't0',
+                toolName: 'ping',
+                output: { type: 'text', value: 'pong' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(toolResponses(oneByName(h, 'invoke_agent'))).toEqual(['pong']);
+    expect(toolResponses(oneByName(h, 'chat'))).toEqual(['pong']);
+  });
+
+  it("records a failed tool's error in the next model call as plain text", async () => {
+    await drain(
+      streamText({
+        model: toolLoopModel(),
+        prompt: 'ping please',
+        tools: {
+          ping: tool({
+            inputSchema: z.object({}),
+            execute: async (): Promise<string> => {
+              throw new Error('ping failed');
+            },
+          }),
+        },
+        stopWhen: (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never,
+      }),
+    );
+
+    const [, secondChat] = byStart(byName(h, 'chat'));
+    expect(toolResponses(secondChat)).toEqual([expect.stringContaining('ping failed')]);
+  });
+
+  it('records a JSON tool result in a generateObject prompt as the tool returned it', async () => {
+    const model = new MockLanguageModelV3({
+      provider: 'mock',
+      modelId: 'mock-obj',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(2, 1),
+        warnings: [],
+      }),
+    });
+
+    await generateObject({
+      model,
+      schema: z.object({ ok: z.boolean() }),
+      messages: [
+        { role: 'user', content: 'check' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool-call', toolCallId: 't0', toolName: 'lookup', input: {} }],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 't0',
+              toolName: 'lookup',
+              output: { type: 'json', value: '42' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const generateContent = h.spans
+      .getFinishedSpans()
+      .find((s) => s.attributes[ATTR_OPERATION_NAME] === OP_GENERATE_CONTENT);
+    expect(toolResponses(generateContent)).toEqual(['42']);
+  });
+
+  it('records the system prompt, tool arguments and tool result by default', async () => {
+    await runToolLoop();
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(oneByName(h, 'chat')?.attributes[ATTR_SYSTEM_INSTRUCTIONS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
+  });
+
+  it('records the tool definitions each model call is sent', async () => {
+    await runToolLoop();
+    const chats = byName(h, 'chat');
+    expect(chats).toHaveLength(2);
+    for (const chat of chats) {
+      expect(JSON.parse(String(chat.attributes[ATTR_TOOL_DEFINITIONS]))).toEqual([
+        {
+          type: 'function',
+          name: 'ping',
+          description: 'ping',
+          parameters: expect.objectContaining({ type: 'object' }),
+        },
+      ]);
+    }
+  });
+
+  it('omits the system prompt, tool definitions and tool arguments when recordInputs is false', async () => {
+    await runToolLoop({ recordInputs: false });
+    const toolSpan = oneByName(h, 'execute_tool');
+    for (const chat of byName(h, 'chat')) {
+      expect(chat.attributes[ATTR_SYSTEM_INSTRUCTIONS]).toBeUndefined();
+      expect(chat.attributes[ATTR_TOOL_DEFINITIONS]).toBeUndefined();
+    }
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeUndefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeDefined();
+  });
+
+  it('omits the tool result when recordOutputs is false', async () => {
+    await runToolLoop({ recordOutputs: false });
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]).toBeDefined();
+    expect(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gen_ai.output.messages carries only what the model returned
+// ---------------------------------------------------------------------------
+
+// The two-step tool loop seen in a bug-bash trace: step 0 calls `lookup_order`,
+// the AI SDK runs the tool, step 1 answers in text.
+const TOOL_CALL_ID = 'toolu_bdrk_013vjehTnYdzZGbFW3u8zrn4';
+const ORDER = { item: 'Ethiopia Yirgacheffe, 1 kg', status: 'delivered', total: 38 };
+const ANSWER =
+  'Your order 1001 has been delivered! It was for 1 kg of Ethiopia Yirgacheffe coffee beans totaling $38.';
+
+const lookupOrderTools = (execute: () => Promise<unknown> = async () => ORDER) => ({
+  lookup_order: tool({
+    description: 'Look up an order by id',
+    inputSchema: z.object({ order_id: z.string() }),
+    execute,
+  }),
+});
+
+const LOOKUP_CALL = {
+  type: 'tool-call',
+  toolCallId: TOOL_CALL_ID,
+  toolName: 'lookup_order',
+  input: '{"order_id":"1001"}',
+} as const;
+
+/** Streaming two-step model: step 0 calls lookup_order, step 1 answers. */
+function lookupOrderStreamModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'amazon-bedrock',
+    modelId: 'claude-haiku-4-5',
+    doStream: async () => {
+      call += 1;
+      const parts: unknown[] =
+        call === 1
+          ? [
+              { type: 'stream-start', warnings: [] },
+              LOOKUP_CALL,
+              { type: 'finish', finishReason: v7Finish('tool-calls'), usage: v7Usage(40, 10) },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: '0' },
+              { type: 'text-delta', id: '0', delta: ANSWER },
+              { type: 'text-end', id: '0' },
+              { type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(60, 20) },
+            ];
+      return {
+        stream: new ReadableStream({
+          start(c) {
+            for (const p of parts) c.enqueue(p as never);
+            c.close();
+          },
+        }),
+      };
+    },
+  });
+}
+
+/** Non-streaming equivalent of {@link lookupOrderStreamModel}. */
+function lookupOrderGenerateModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'amazon-bedrock',
+    modelId: 'claude-haiku-4-5',
+    doGenerate: async () => {
+      call += 1;
+      return call === 1
+        ? {
+            content: [LOOKUP_CALL],
+            finishReason: v7Finish('tool-calls'),
+            usage: v7Usage(40, 10),
+            warnings: [],
+          }
+        : {
+            content: [{ type: 'text', text: ANSWER }],
+            finishReason: v7Finish('stop'),
+            usage: v7Usage(60, 20),
+            warnings: [],
+          };
+    },
+  });
+}
+
+interface ParsedMessage {
+  role: string;
+  parts: Array<Record<string, unknown>>;
+  finish_reason?: string;
+}
+
+const parseMessages = (raw: unknown): ParsedMessage[] | undefined =>
+  raw === undefined ? undefined : (JSON.parse(raw as string) as ParsedMessage[]);
+
+const LOOKUP_CALL_PART = {
+  type: 'tool_call',
+  name: 'lookup_order',
+  id: TOOL_CALL_ID,
+  arguments: { order_id: '1001' },
+};
+const TOOL_CALL_OUTPUT: ParsedMessage[] = [
+  { role: 'assistant', parts: [LOOKUP_CALL_PART], finish_reason: 'tool-calls' },
+];
+const ANSWER_OUTPUT: ParsedMessage[] = [
+  { role: 'assistant', parts: [{ type: 'text', content: ANSWER }], finish_reason: 'stop' },
+];
+
+const twoSteps = (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never;
+const oneStep = (({ steps }: { steps: unknown[] }) => steps.length >= 1) as never;
+
+describe('genaiTelemetryIntegration output messages are model output only', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness({ contentCaptureMode: 'full' });
+    registerTelemetry(genaiTelemetryIntegration(h.client));
+  });
+  afterEach(async () => {
+    clearIntegrations();
+    await h.shutdown();
+  });
+
+  const outputOf = (span: ReturnType<typeof oneByName>) =>
+    parseMessages(span?.attributes[ATTR_OUTPUT_MESSAGES]);
+
+  function expectTwoStepToolLoop(): void {
+    const [step0, step1] = byStart(byName(h, 'chat'));
+
+    // Step 0: only the tool call. The tool ran after this model call ended.
+    expect(outputOf(step0)).toEqual(TOOL_CALL_OUTPUT);
+    // Step 1: only the final text answer.
+    expect(outputOf(step1)).toEqual(ANSWER_OUTPUT);
+
+    // Step 1's input still carries the tool round-trip sent to the model.
+    const step1In = parseMessages(step1?.attributes[ATTR_INPUT_MESSAGES]) ?? [];
+    expect(step1In.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(step1In[1]?.parts).toEqual([LOOKUP_CALL_PART]);
+    expect(step1In[2]?.parts).toEqual([
+      { type: 'tool_call_response', id: TOOL_CALL_ID, response: ORDER },
+    ]);
+
+    // Agent: the final answer alone, without step 0's tool call or the result.
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(ANSWER_OUTPUT);
+
+    // The tool round-trip is on the execute_tool span.
+    const toolSpan = oneByName(h, 'execute_tool');
+    expect(JSON.parse(String(toolSpan?.attributes[ATTR_TOOL_CALL_ARGUMENTS]))).toEqual({
+      order_id: '1001',
+    });
+    expect(JSON.parse(String(toolSpan?.attributes[ATTR_TOOL_CALL_RESULT]))).toEqual(ORDER);
+  }
+
+  it('streamText: chat and agent outputs leave out the tool result', async () => {
+    await drain(
+      streamText({
+        model: lookupOrderStreamModel(),
+        prompt: 'order id 1001, tell me the status',
+        tools: lookupOrderTools(),
+        stopWhen: twoSteps,
+        telemetry: { functionId: 'bean-there-support' },
+      }),
+    );
+    expectTwoStepToolLoop();
+  });
+
+  it('generateText: chat and agent outputs leave out the tool result', async () => {
+    const out = await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(),
+      stopWhen: twoSteps,
+      telemetry: { functionId: 'bean-there-support' },
+    });
+    expect(out.text).toBe(ANSWER);
+    expectTwoStepToolLoop();
+  });
+
+  it('leaves a failed tool out of the step output', async () => {
+    await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(async () => {
+        throw new Error('orders db down');
+      }),
+      stopWhen: twoSteps,
+    });
+    const [step0] = byStart(byName(h, 'chat'));
+    expect(outputOf(step0)).toEqual(TOOL_CALL_OUTPUT);
+    expect(oneByName(h, 'execute_tool')?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('records the final tool call as the agent output when the run stops on it', async () => {
+    await generateText({
+      model: lookupOrderGenerateModel(),
+      prompt: 'order id 1001, tell me the status',
+      tools: lookupOrderTools(),
+      stopWhen: oneStep,
+    });
+    expect(outputOf(oneByName(h, 'chat'))).toEqual(TOOL_CALL_OUTPUT);
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(TOOL_CALL_OUTPUT);
+  });
+
+  it("keeps a provider-executed tool's result in the model's message", async () => {
+    // A built-in tool (e.g. web search) runs at the provider, so its result is
+    // part of what the model returned.
+    const model = new MockLanguageModelV3({
+      provider: 'anthropic.messages',
+      modelId: 'claude-haiku-4-5',
+      doGenerate: async () => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'srv1',
+            toolName: 'web_search',
+            input: '{"query":"otel"}',
+            providerExecuted: true,
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'srv1',
+            toolName: 'web_search',
+            result: [{ url: 'https://opentelemetry.io' }],
+          },
+          { type: 'text', text: 'Found it.' },
+        ],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(5, 5),
+        warnings: [],
+      }),
+    });
+    const webSearch = {
+      type: 'provider' as const,
+      id: 'anthropic.web_search',
+      args: {},
+      isProviderExecuted: true,
+      inputSchema: jsonSchema({ type: 'object' }),
+      outputSchema: jsonSchema({}),
+    } as Tool;
+    await generateText({ model, prompt: 'search otel', tools: { web_search: webSearch } });
+
+    const expected: ParsedMessage[] = [
+      {
+        role: 'assistant',
+        parts: [
+          { type: 'tool_call', name: 'web_search', id: 'srv1', arguments: { query: 'otel' } },
+          {
+            type: 'tool_call_response',
+            id: 'srv1',
+            response: [{ url: 'https://opentelemetry.io' }],
+          },
+          { type: 'text', content: 'Found it.' },
+        ],
+        finish_reason: 'stop',
+      },
+    ];
+    expect(outputOf(oneByName(h, 'chat'))).toEqual(expected);
+    expect(outputOf(oneByName(h, 'invoke_agent'))).toEqual(expected);
   });
 });

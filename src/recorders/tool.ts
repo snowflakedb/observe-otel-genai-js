@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `ToolExecutionRecorder` — wraps an `execute_tool` span.
  *
@@ -7,9 +24,15 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import { type ContentCaptureMode, applyContentAttribute } from '../content/capture.js';
+import {
+  type ContentCaptureMode,
+  applyContentAttribute,
+  omitsContent,
+} from '../content/capture.js';
+import type { HandedDown } from '../context.js';
 import type { ToolExecutionEnd, ToolExecutionStart } from '../models/tool.js';
 import {
+  ATTR_CONVERSATION_TITLE,
   ATTR_TOOL_CALL_ARGUMENTS,
   ATTR_TOOL_CALL_RESULT,
   ERR_TYPE_TOOL_EXECUTION,
@@ -28,8 +51,9 @@ export class ToolExecutionRecorder extends RecorderBase {
     seed: ToolExecutionStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -63,7 +87,7 @@ export class ToolExecutionRecorder extends RecorderBase {
     this.completedAtMs = completedAtMs;
 
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
     const allowToolContent = !stripped && mode !== 'no_tool_content';
 
     this.span.updateName(toolSpanName(this.seed.toolName));
@@ -81,9 +105,13 @@ export class ToolExecutionRecorder extends RecorderBase {
 
     // Apply tool attributes (final pass).
     applyToolAttributes(this.span, this.seed);
+    if (stripped) {
+      // The title is free text, so overwrite the value set at span start.
+      this.span.setAttribute(ATTR_CONVERSATION_TITLE, '');
+    }
 
     // Status + metrics.
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_TOOL_EXECUTION, stripped)
@@ -97,6 +125,7 @@ export class ToolExecutionRecorder extends RecorderBase {
       toolName: this.seed.toolName,
       agentName: this.seed.agentName ?? '',
       conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });

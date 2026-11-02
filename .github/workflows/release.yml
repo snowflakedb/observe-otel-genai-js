@@ -1,3 +1,18 @@
+# Copyright 2026 Snowflake Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Release
 
 on:
@@ -11,18 +26,31 @@ jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      # Only publish a real tag on main whose name matches package.json.
+      - name: Verify release tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git rev-parse --verify --quiet "refs/tags/$TAG" > /dev/null
+          git merge-base --is-ancestor "refs/tags/$TAG" origin/main
+          test "v$(node -p "require('./package.json').version")" = "$TAG"
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      # No dependency cache here, so a poisoned cache can't reach a published build.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-          cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org/'
 
       - name: Install dependencies

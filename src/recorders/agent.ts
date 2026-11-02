@@ -1,3 +1,20 @@
+/*
+ * Copyright 2026 Snowflake Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
  * `AgentInvocationRecorder` — wraps an `invoke_agent` span.
  *
@@ -19,8 +36,9 @@
  */
 
 import type { Span } from '@opentelemetry/api';
-import type { ContentCaptureMode } from '../content/capture.js';
+import { type ContentCaptureMode, omitsContent } from '../content/capture.js';
 import { emitAgentContent } from '../content/sink.js';
+import type { HandedDown } from '../context.js';
 import type { AgentCreationStart, AgentInvocationStart } from '../models/agent.js';
 import type { Message } from '../models/message.js';
 import {
@@ -45,8 +63,9 @@ export class AgentInvocationRecorder extends RecorderBase {
     seed: AgentInvocationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -83,7 +102,7 @@ export class AgentInvocationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode, config: captureConfig } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(agentSpanName(this.seed.agentName));
     applyAgentAttributes(this.span, this.seed);
@@ -100,7 +119,7 @@ export class AgentInvocationRecorder extends RecorderBase {
       );
     }
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_PROVIDER_CALL, stripped)
@@ -112,8 +131,9 @@ export class AgentInvocationRecorder extends RecorderBase {
       operationName: OP_INVOKE_AGENT,
       providerName: this.seed.requestProvider ?? '',
       requestModel: this.seed.requestModel ?? '',
-      agentName: this.seed.agentName,
+      agentName: this.seed.agentName ?? '',
       conversationId: this.seed.conversationId,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });
@@ -139,7 +159,8 @@ export class AgentInvocationRecorder extends RecorderBase {
  *
  * Lifecycle is minimal: optional `setError(err)` if setup fails, then
  * `end()`. Use the callback variant on `Client.createAgent(seed, fn)` to
- * auto-end on body completion and auto-parent any nested spans.
+ * auto-end on body completion and auto-parent any nested spans. Nested spans
+ * inherit its user id, but not its agent name.
  */
 export class AgentCreationRecorder extends RecorderBase {
   private readonly seed: AgentCreationStart;
@@ -150,8 +171,9 @@ export class AgentCreationRecorder extends RecorderBase {
     seed: AgentCreationStart,
     startedAtMs: number,
     perCallContentCapture: ContentCaptureMode,
+    handedDown?: HandedDown,
   ) {
-    super(host, span, startedAtMs, perCallContentCapture);
+    super(host, span, startedAtMs, perCallContentCapture, handedDown);
     this.seed = seed;
   }
 
@@ -164,12 +186,12 @@ export class AgentCreationRecorder extends RecorderBase {
     const completedAtMs = this.resolveCompletedAtMs();
     this.completedAtMs = completedAtMs;
     const { mode } = this.resolveContentCapture();
-    const stripped = mode === 'metadata_only';
+    const stripped = omitsContent(mode);
 
     this.span.updateName(agentCreateSpanName(this.seed.agentName));
     applyAgentCreationAttributes(this.span, this.seed);
 
-    this.recordExceptionIfAny(this.callError, stripped);
+    this.recordExceptionIfAny(this.callError, mode);
     const classified =
       this.callError != null
         ? this.classify(this.callError, ERR_TYPE_VALIDATION, stripped)
@@ -182,6 +204,7 @@ export class AgentCreationRecorder extends RecorderBase {
       providerName: this.seed.requestProvider ?? '',
       requestModel: this.seed.requestModel ?? '',
       agentName: this.seed.agentName,
+      userId: this.seed.userId,
       errorType: classified.errorType,
       errorCategory: classified.errorCategory,
     });
