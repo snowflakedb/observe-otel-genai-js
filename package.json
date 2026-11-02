@@ -1,0 +1,202 @@
+{
+  "name": "@genai-otel/core",
+  "version": "0.6.0",
+  "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
+  "license": "Apache-2.0",
+  "author": "Snowflake Inc.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Snowflake-Labs/observe-otel-genai-js.git"
+  },
+  "homepage": "https://github.com/Snowflake-Labs/observe-otel-genai-js#readme",
+  "bugs": "https://github.com/Snowflake-Labs/observe-otel-genai-js/issues",
+  "keywords": ["opentelemetry", "otel", "genai", "llm", "observability", "tracing", "ai-agents"],
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap/index.d.ts",
+      "import": "./dist/bootstrap/index.js",
+      "require": "./dist/cjs/bootstrap/index.js"
+    },
+    "./vercel-ai-sdk": {
+      "types": "./dist/integrations/vercel-ai-sdk/index.d.ts",
+      "import": "./dist/integrations/vercel-ai-sdk/index.js",
+      "require": "./dist/cjs/integrations/vercel-ai-sdk/index.js"
+    },
+    "./vercel-ai-sdk/instrumentation": {
+      "types": "./dist/integrations/vercel-ai-sdk/instrumentation.d.ts",
+      "import": "./dist/integrations/vercel-ai-sdk/instrumentation.js",
+      "require": "./dist/cjs/integrations/vercel-ai-sdk/instrumentation.js"
+    },
+    "./openai-agents": {
+      "types": "./dist/integrations/openai-agents/index.d.ts",
+      "import": "./dist/integrations/openai-agents/index.js",
+      "require": "./dist/cjs/integrations/openai-agents/index.js"
+    },
+    "./openai-agents/instrumentation": {
+      "types": "./dist/integrations/openai-agents/instrumentation.d.ts",
+      "import": "./dist/integrations/openai-agents/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai-agents/instrumentation.js"
+    },
+    "./openai/instrumentation": {
+      "types": "./dist/integrations/openai/instrumentation.d.ts",
+      "import": "./dist/integrations/openai/instrumentation.js",
+      "require": "./dist/cjs/integrations/openai/instrumentation.js"
+    },
+    "./openai": {
+      "types": "./dist/integrations/openai/index.d.ts",
+      "import": "./dist/integrations/openai/index.js",
+      "require": "./dist/cjs/integrations/openai/index.js"
+    },
+    "./anthropic": {
+      "types": "./dist/integrations/anthropic/index.d.ts",
+      "import": "./dist/integrations/anthropic/index.js",
+      "require": "./dist/cjs/integrations/anthropic/index.js"
+    },
+    "./claude-agent-sdk": {
+      "types": "./dist/integrations/claude-agent-sdk/index.d.ts",
+      "import": "./dist/integrations/claude-agent-sdk/index.js",
+      "require": "./dist/cjs/integrations/claude-agent-sdk/index.js"
+    },
+    "./claude-agent-sdk/instrumentation": {
+      "types": "./dist/integrations/claude-agent-sdk/instrumentation.d.ts",
+      "import": "./dist/integrations/claude-agent-sdk/instrumentation.js",
+      "require": "./dist/cjs/integrations/claude-agent-sdk/instrumentation.js"
+    },
+    "./langchain": {
+      "types": "./dist/integrations/langchain/index.d.ts",
+      "import": "./dist/integrations/langchain/index.js",
+      "require": "./dist/cjs/integrations/langchain/index.js"
+    },
+    "./langchain/instrumentation": {
+      "types": "./dist/integrations/langchain/instrumentation.d.ts",
+      "import": "./dist/integrations/langchain/instrumentation.js",
+      "require": "./dist/cjs/integrations/langchain/instrumentation.js"
+    }
+  },
+  "files": ["dist", "docs", "LICENSE", "README.md"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.12.4",
+  "scripts": {
+    "clean": "rm -rf dist .test-dist",
+    "sync-version": "node ./scripts/sync-version.mjs",
+    "prebuild": "node ./scripts/sync-version.mjs",
+    "pretest": "node ./scripts/sync-version.mjs",
+    "build": "pnpm run clean && tsc --project tsconfig.build.json && node ./scripts/build-cjs.mjs",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "pnpm run lint && pnpm run typecheck && pnpm run test:unit",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "test:ci": "vitest run --reporter=verbose",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
+  },
+  "peerDependencies": {
+    "@openai/agents": ">=0.14.0 <1",
+    "@openai/agents-core": ">=0.14.0 <1",
+    "@openai/agents-extensions": ">=0.14.0 <1",
+    "@anthropic-ai/sdk": ">=0.30.0 <1",
+    "@langchain/core": "^0.3.0 || ^1.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^2.0.0",
+    "@opentelemetry/exporter-metrics-otlp-http": ">=0.200.0 <0.300.0",
+    "@opentelemetry/exporter-trace-otlp-http": ">=0.200.0 <0.300.0",
+    "@opentelemetry/instrumentation": ">=0.200.0 <0.300.0",
+    "@opentelemetry/resources": "^2.0.0",
+    "@opentelemetry/sdk-metrics": "^2.0.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.0",
+    "@opentelemetry/semantic-conventions": "^1.30.0",
+    "ai": "^7.0.0",
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@openai/agents": {
+      "optional": true
+    },
+    "@openai/agents-core": {
+      "optional": true
+    },
+    "@openai/agents-extensions": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@opentelemetry/instrumentation": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@opentelemetry/context-async-hooks": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-metrics-otlp-http": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-http": {
+      "optional": true
+    },
+    "@opentelemetry/resources": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-metrics": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-node": {
+      "optional": true
+    },
+    "@opentelemetry/semantic-conventions": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@biomejs/biome": "^1.9.4",
+    "@langchain/core": "^0.3.0",
+    "@openai/agents": "~0.17.0",
+    "@openai/agents-core": "~0.17.0",
+    "@openai/agents-extensions": "~0.17.0",
+    "@openai/agents-openai": "~0.17.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^2.0.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.205.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.205.0",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/resources": "^2.0.0",
+    "@opentelemetry/sdk-metrics": "^2.0.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.0",
+    "@opentelemetry/semantic-conventions": "^1.30.0",
+    "@types/node": "^22.0.0",
+    "ai": "^7.0.0",
+    "esbuild": "^0.25.0",
+    "openai": "^6.46.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0",
+    "zod": "^4.5.4"
+  }
+}

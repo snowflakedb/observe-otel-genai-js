@@ -1,0 +1,191 @@
+# Copyright 2026 Snowflake Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test:ci
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Validate package exports
+        run: |
+          test -f dist/index.js
+          test -f dist/index.d.ts
+          test -f dist/bootstrap/index.js
+          test -f dist/bootstrap/index.d.ts
+          test -f dist/integrations/vercel-ai-sdk/index.js
+          test -f dist/integrations/vercel-ai-sdk/index.d.ts
+          test -f dist/integrations/openai/index.js
+          test -f dist/integrations/openai/index.d.ts
+          test -f dist/integrations/openai/instrumentation.js
+          test -f dist/integrations/openai/instrumentation.d.ts
+          test -f dist/integrations/openai-agents/index.js
+          test -f dist/integrations/openai-agents/index.d.ts
+          test -f dist/integrations/openai-agents/instrumentation.js
+          test -f dist/integrations/openai-agents/instrumentation.d.ts
+          test -f dist/integrations/anthropic/index.js
+          test -f dist/integrations/anthropic/index.d.ts
+          test -f dist/integrations/langchain/index.js
+          test -f dist/integrations/langchain/index.d.ts
+          echo "All export entry points present."
+
+  # The dev install uses recent OpenTelemetry packages. This job runs the tests
+  # against the lowest versions our peer ranges allow, so code that relies on a
+  # newer API fails here instead of on users' machines.
+  compat-otel-min:
+    name: Compat (lowest OpenTelemetry peer versions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin OpenTelemetry packages to 0.200.0
+        run: |
+          pnpm add -D \
+            @opentelemetry/instrumentation@0.200.0 \
+            @opentelemetry/exporter-trace-otlp-http@0.200.0 \
+            @opentelemetry/exporter-metrics-otlp-http@0.200.0
+          pnpm ls @opentelemetry/instrumentation \
+            @opentelemetry/exporter-trace-otlp-http \
+            @opentelemetry/exporter-metrics-otlp-http
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test:ci
+
+  # The Agents SDK ships a minor roughly every two weeks, and this integration
+  # reads its tracing payloads field by field. The in-repo suite pins one version,
+  # so this job covers payload changes in the versions we would otherwise never
+  # run against. It reinstalls the peer at each version and reruns the agents
+  # tests, the only ones that touch the SDK.
+  openai-agents-versions:
+    name: "@openai/agents ${{ matrix.agents }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor of the supported range, a mid-range minor, and whatever is current.
+        agents: ['0.14.3', '0.16.0', 'latest']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin @openai/agents
+        run: |
+          pnpm add -D \
+            "@openai/agents@${{ matrix.agents }}" \
+            "@openai/agents-core@${{ matrix.agents }}" \
+            "@openai/agents-openai@${{ matrix.agents }}" \
+            "@openai/agents-extensions@${{ matrix.agents }}"
+          # Resolve by file path: 0.16 does not export `./package.json`, so
+          # `require('@openai/agents-core/package.json')` throws.
+          node -e "const p=require('node:path');const e=require.resolve('@openai/agents-core');const r=e.split(p.sep+'node_modules'+p.sep+'@openai'+p.sep+'agents-core'+p.sep)[0];console.log('resolved:', require(p.join(r,'node_modules','@openai','agents-core','package.json')).version)"
+
+      - name: Typecheck against this version
+        # vitest strips types, so the contract test's type checks only run here.
+        run: pnpm run typecheck
+
+      - name: Test the agents integration
+        run: pnpm vitest run test/integrations/openai-agents
+
+  # Single stable check for branch-protection to require. Gating on the matrix
+  # jobs directly means the required-check names ("Test (Node 22)", ...) are
+  # literal strings in the ruleset that silently go stale whenever the matrix
+  # changes — and a required check that never reports blocks merges forever.
+  # Requiring only this job keeps the matrix free to change.
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [test, compat-otel-min, openai-agents-versions]
+    # `always()` is load-bearing: without it this job is *skipped* when the
+    # matrix fails, and GitHub counts a skipped required check as passing.
+    # Because it always runs, the result must be asserted explicitly.
+    if: always()
+    steps:
+      - name: Verify all matrix jobs succeeded
+        run: |
+          echo "test result: ${{ needs.test.result }}"
+          echo "compat result: ${{ needs.compat-otel-min.result }}"
+          echo "openai-agents-versions result: ${{ needs.openai-agents-versions.result }}"
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::One or more Test (Node ...) jobs did not succeed."
+            exit 1
+          fi
+          if [ "${{ needs.compat-otel-min.result }}" != "success" ]; then
+            echo "::error::The lowest OpenTelemetry peer versions compat job did not succeed."
+            exit 1
+          fi
+          if [ "${{ needs.openai-agents-versions.result }}" != "success" ]; then
+            echo "::error::One or more @openai/agents version jobs did not succeed."
+            exit 1
+          fi
