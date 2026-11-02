@@ -11,8 +11,10 @@ The core entry point depends only on `@opentelemetry/api`. It does not register 
 Requires Node.js 22 or later. The package ships both ESM and CommonJS.
 
 ```bash
-pnpm add @genai-otel/core @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/instrumentation
+pnpm add @genai-otel/core @opentelemetry/api@1.9.1 @opentelemetry/sdk-node@0.223.0 @opentelemetry/instrumentation@0.223.0
 ```
+
+Keep the OpenTelemetry versions as shown. Without them, the install picks up OpenTelemetry's new major release (`@opentelemetry/instrumentation` 0.300 and `@opentelemetry/api` 1.10), which this package does not support yet.
 
 If your app already sets up OpenTelemetry, skip `@opentelemetry/sdk-node` and add the instrumentations below to your existing setup.
 
