@@ -120,7 +120,9 @@ export interface GenAIOtelTracingProcessorOptions {
 const SDK_DEFAULT_WORKFLOW_NAME = 'Agent workflow';
 
 /** Context key marking which `Runner.run()` call the current code runs under. */
-export const RUN_TOKEN_KEY = createContextKey('@genai-otel/openai-agents-run-token');
+export const RUN_TOKEN_KEY = createContextKey(
+  '@snowflake/observe-otel-genai/openai-agents-run-token',
+);
 
 export interface AgentsIdentity {
   conversationId?: string;
@@ -741,7 +743,7 @@ export class GenAIOtelTracingProcessor implements SdkTracingProcessor {
 
   private safely<T>(where: string, fn: () => T): T | undefined {
     const warn = (err: unknown) =>
-      this.client.config.logger.warn(`genai-otel: openai-agents ${where} failed`, err);
+      this.client.config.logger.warn(`observe-otel-genai: openai-agents ${where} failed`, err);
     try {
       const result = fn();
       if (result instanceof Promise) return result.catch(warn) as T;

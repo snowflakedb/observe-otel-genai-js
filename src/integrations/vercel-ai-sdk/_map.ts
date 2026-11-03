@@ -22,7 +22,7 @@
  * These are consumed by both the (transitional) hook-bag API in `hooks.ts` and
  * the `Telemetry` integration in `integration.ts`. They read only the fields we
  * need off each AI SDK event and convert AI SDK message/content shapes into
- * genai-otel `Message` / `Part` values.
+ * observe-otel-genai `Message` / `Part` values.
  *
  * Keeping them here (rather than in `hooks.ts`) means the integration does not
  * depend on the hook bags, so the hook-bag API can be removed in a later
@@ -264,7 +264,7 @@ export interface AiObjectStepEndEvent {
 // ---------------------------------------------------------------------------
 
 /**
- * Converts AI SDK `ModelMessage[]` (step input) to genai-otel `Message[]`.
+ * Converts AI SDK `ModelMessage[]` (step input) to observe-otel-genai `Message[]`.
  * System messages are skipped — they ride on the generation seed's `systemPrompt`.
  */
 export function mapModelMessages(messages: AiModelMessage[]): Message[] {
@@ -285,7 +285,7 @@ export function mapModelMessages(messages: AiModelMessage[]): Message[] {
 
 /**
  * Maps AI SDK `ModelMessage[]` (the `streamText` / `generateText` input shape)
- * to genai-otel `Message[]`, suitable for `AgentInvocationStart.input` /
+ * to observe-otel-genai `Message[]`, suitable for `AgentInvocationStart.input` /
  * `gen_ai.input.messages` on an `invoke_agent` span. System messages are
  * skipped — they belong on the agent/generation `systemPrompt`, not
  * `input.messages`, per the GenAI semantic conventions.
@@ -305,7 +305,7 @@ export function mapCallPrompt(params: {
 }
 
 /**
- * Converts `AiContentPart[]` (from a message's content array) to genai-otel `Part[]`.
+ * Converts `AiContentPart[]` (from a message's content array) to observe-otel-genai `Part[]`.
  */
 export function mapContentParts(content: AiContentPart[]): Part[] {
   const parts: Part[] = [];
@@ -401,7 +401,7 @@ export function mapStepOutput(content: AiContentPart[]): Message[] {
 
 /**
  * Converts an AI SDK provider-format prompt (`LanguageModelV4Prompt`, used by
- * generateObject step events) to genai-otel `Message[]` + `systemPrompt`.
+ * generateObject step events) to observe-otel-genai `Message[]` + `systemPrompt`.
  * The `system` role carries a plain string (returned separately so it rides on
  * the seed's `systemPrompt`); other roles carry provider part arrays.
  */
@@ -431,7 +431,7 @@ export function mapProviderPrompt(prompt: AiProviderMessage[]): {
   };
 }
 
-/** Converts provider-format content parts to genai-otel `Part[]`. */
+/** Converts provider-format content parts to observe-otel-genai `Part[]`. */
 export function mapProviderParts(content: AiProviderPart[]): Part[] {
   const parts: Part[] = [];
   for (const c of content) {

@@ -479,7 +479,7 @@ export class Client implements RecorderHostContext {
     try {
       await this.forceFlushProviders();
     } catch (err) {
-      this.logger.warn('genai-otel: shutdown flush failed', err);
+      this.logger.warn('observe-otel-genai: shutdown flush failed', err);
     }
   }
 
@@ -598,7 +598,7 @@ export class Client implements RecorderHostContext {
 
   private assertOpen() {
     if (this.closed) {
-      throw new ClientShutdownError('genai-otel: client has been shut down');
+      throw new ClientShutdownError('observe-otel-genai: client has been shut down');
     }
   }
 
@@ -623,7 +623,7 @@ export class Client implements RecorderHostContext {
         const handle = setTimeout(() => {
           if (settled) return;
           settled = true;
-          reject(new FlushTimeoutError(`genai-otel: flush timed out after ${timeoutMs}ms`));
+          reject(new FlushTimeoutError(`observe-otel-genai: flush timed out after ${timeoutMs}ms`));
         }, timeoutMs);
         // Don't keep the event loop alive just for the timeout watchdog.
         if (typeof (handle as { unref?: () => void }).unref === 'function') {
@@ -651,14 +651,14 @@ export class Client implements RecorderHostContext {
       try {
         tasks.push(wait(tp.forceFlush(timeoutMs)));
       } catch (err) {
-        this.logger.warn('genai-otel: tracer provider flush failed', err);
+        this.logger.warn('observe-otel-genai: tracer provider flush failed', err);
       }
     }
     if (typeof mp.forceFlush === 'function') {
       try {
         tasks.push(wait(mp.forceFlush(timeoutMs)));
       } catch (err) {
-        this.logger.warn('genai-otel: meter provider flush failed', err);
+        this.logger.warn('observe-otel-genai: meter provider flush failed', err);
       }
     }
     await Promise.all(tasks);

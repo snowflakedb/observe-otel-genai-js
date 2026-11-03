@@ -49,7 +49,9 @@ import { wrapProviderStream } from '../_common/stream.js';
 
 export type AnthropicAdapterOptions = AdapterCallOptions;
 
-const accessor = createMetadataAccessor<AnthropicAdapterOptions>('@genai-otel/anthropic-metadata');
+const accessor = createMetadataAccessor<AnthropicAdapterOptions>(
+  '@snowflake/observe-otel-genai/anthropic-metadata',
+);
 export const withMetadata = accessor.withMetadata;
 const readMetadata = accessor.readMetadata;
 const stripMetadata = accessor.stripMetadata;
@@ -286,7 +288,7 @@ function extractSystemText(blocks: unknown[] | undefined): string | undefined {
 }
 
 // -----------------------------------------------------------------------------
-// Content mapping (Anthropic messages/blocks -> genai-otel Message[])
+// Content mapping (Anthropic messages/blocks -> observe-otel-genai Message[])
 //
 // System instructions ride on the separate `system` param (-> systemPrompt ->
 // gen_ai.system_instructions), so they are not part of this message mapping.

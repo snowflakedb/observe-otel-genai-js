@@ -20,7 +20,7 @@
  *
  * `src/integrations/openai-agents/_sdk-types.ts` declares the SDK's tracing
  * shapes locally, so the published `.d.ts` does not force every consumer of
- * `@genai-otel/core` to install `@openai/agents`. The cost of that choice is that
+ * `@snowflake/observe-otel-genai` to install `@openai/agents`. The cost of that choice is that
  * nothing in `src/` is checked against the real SDK. This file is where that check
  * lives, against a dev-only dependency.
  *

@@ -45,7 +45,7 @@ export interface HandedDown extends IdentityFields {
 
 type Scope = ContextValues & HandedDown;
 
-const SCOPE_KEY = createContextKey('@genai-otel/scope');
+const SCOPE_KEY = createContextKey('@snowflake/observe-otel-genai/scope');
 
 function getScope(ctx: Context = context.active()): Scope | undefined {
   return ctx.getValue(SCOPE_KEY) as Scope | undefined;

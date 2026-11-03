@@ -74,7 +74,7 @@ export function createHarness(input?: ClientConfig): Harness {
     shutdown: async () => {},
   };
   const tracerProvider = new NodeTracerProvider({
-    resource: resourceFromAttributes({ 'service.name': 'genai-otel-test' }),
+    resource: resourceFromAttributes({ 'service.name': 'observe-otel-genai-test' }),
     spanProcessors: [openTracker, new SimpleSpanProcessor(spans)],
   });
   tracerProvider.register();
@@ -86,7 +86,7 @@ export function createHarness(input?: ClientConfig): Harness {
     exportIntervalMillis: 60_000, // we trigger flushes manually
   });
   const meterProvider = new MeterProvider({
-    resource: resourceFromAttributes({ 'service.name': 'genai-otel-test' }),
+    resource: resourceFromAttributes({ 'service.name': 'observe-otel-genai-test' }),
     readers: [metricReader],
   });
   metricsApi.setGlobalMeterProvider(meterProvider);

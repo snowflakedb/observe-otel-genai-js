@@ -16,7 +16,7 @@
  */
 
 /**
- * Public entry point for `@genai-otel/core`.
+ * Public entry point for `@snowflake/observe-otel-genai`.
  *
  * Re-exports the user-facing surface. Internals (recorder base class, span
  * helpers, metric helpers, etc.) are intentionally not exported.

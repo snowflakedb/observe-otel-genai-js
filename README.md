@@ -1,4 +1,4 @@
-# @genai-otel/core
+# @snowflake/observe-otel-genai
 
 OpenTelemetry tracing and metrics for AI agents, following the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
 
@@ -11,7 +11,7 @@ The core entry point depends only on `@opentelemetry/api`. It does not register 
 Requires Node.js 22 or later. The package ships both ESM and CommonJS.
 
 ```bash
-pnpm add @genai-otel/core @opentelemetry/api@1.9.1 @opentelemetry/sdk-node@0.223.0 @opentelemetry/instrumentation@0.223.0
+pnpm add @snowflake/observe-otel-genai @opentelemetry/api@1.9.1 @opentelemetry/sdk-node@0.223.0 @opentelemetry/instrumentation@0.223.0
 ```
 
 Keep the OpenTelemetry versions as shown. Without them, the install picks up OpenTelemetry's new major release (`@opentelemetry/instrumentation` 0.300 and `@opentelemetry/api` 1.10), which this package does not support yet.
@@ -24,12 +24,12 @@ Each framework has an instrumentation that traces your app without changing its 
 
 | Framework | Instrumentation |
 |---|---|
-| [OpenAI SDK](docs/integrations.md#openai-sdk) | `new OpenAIInstrumentation()` from `@genai-otel/core/openai/instrumentation` |
-| [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) | `new OpenAIAgentsInstrumentation()` from `@genai-otel/core/openai-agents/instrumentation`, together with `OpenAIInstrumentation` for the model calls |
-| [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) | `new LangChainInstrumentation()` from `@genai-otel/core/langchain/instrumentation`. Under ESM, also call its `manuallyInstrument(...)` (see the link) |
-| [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) | `new ClaudeAgentSdkInstrumentation()` from `@genai-otel/core/claude-agent-sdk/instrumentation` |
-| [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) | `new VercelAiSdkInstrumentation()` from `@genai-otel/core/vercel-ai-sdk/instrumentation`, or `registerTelemetry(genaiTelemetryIntegration(client))` from `@genai-otel/core/vercel-ai-sdk` |
-| [Anthropic SDK](docs/integrations.md#anthropic-sdk) | No instrumentation: wrap the client with `wrapAnthropic(client, new Anthropic())` from `@genai-otel/core/anthropic` |
+| [OpenAI SDK](docs/integrations.md#openai-sdk) | `new OpenAIInstrumentation()` from `@snowflake/observe-otel-genai/openai/instrumentation` |
+| [OpenAI Agents SDK](docs/integrations.md#openai-agents-sdk) | `new OpenAIAgentsInstrumentation()` from `@snowflake/observe-otel-genai/openai-agents/instrumentation`, together with `OpenAIInstrumentation` for the model calls |
+| [LangChain.js and LangGraph](docs/integrations.md#langchainjs--langgraph) | `new LangChainInstrumentation()` from `@snowflake/observe-otel-genai/langchain/instrumentation`. Under ESM, also call its `manuallyInstrument(...)` (see the link) |
+| [Claude Agent SDK](docs/integrations.md#claude-agent-sdk) | `new ClaudeAgentSdkInstrumentation()` from `@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation` |
+| [Vercel AI SDK](docs/integrations.md#vercel-ai-sdk) | `new VercelAiSdkInstrumentation()` from `@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation`, or `registerTelemetry(genaiTelemetryIntegration(client))` from `@snowflake/observe-otel-genai/vercel-ai-sdk` |
+| [Anthropic SDK](docs/integrations.md#anthropic-sdk) | No instrumentation: wrap the client with `wrapAnthropic(client, new Anthropic())` from `@snowflake/observe-otel-genai/anthropic` |
 
 Each link shows the setup for that framework. Usually it is a preload file that starts the OpenTelemetry SDK and registers the instrumentation, with the app started as `node --import ./preload.mjs app.mjs`. Each model call then becomes a `chat` span, with token usage and duration metrics, sent where the standard `OTEL_*` environment variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT`, point: see [docs/exporting.md](docs/exporting.md).
 
@@ -37,7 +37,7 @@ To give spans an agent name, conversation id and user id, run the code inside `w
 
 ### Without auto-instrumentation
 
-To trace only some calls, or to skip the loader hook, wrap a client instead: `wrapOpenAI(client, new OpenAI())` from `@genai-otel/core/openai` traces every call made through that client. See [docs/integrations.md](docs/integrations.md) for the wrapper of each framework.
+To trace only some calls, or to skip the loader hook, wrap a client instead: `wrapOpenAI(client, new OpenAI())` from `@snowflake/observe-otel-genai/openai` traces every call made through that client. See [docs/integrations.md](docs/integrations.md) for the wrapper of each framework.
 
 For a model or framework without an integration, record each call with the `Client` directly: `client.startGeneration(...)`, then `rec.setResult(...)` and `rec.end()` (or `await using rec = ...`). [examples/basic-chat](examples/basic-chat/index.ts) shows the full pattern, and the other `Client` methods cover embeddings, tools, retrievals, agents and workflows.
 
@@ -48,7 +48,7 @@ A recorder started this way does not become the parent of spans started after it
 **Prompts, completions and tool payloads are not recorded by default.** The default mode, `metadata_only`, keeps the model, token usage, timing and error type, but no content. To change it, give each instrumentation a `Client` with another mode, in the preload file:
 
 ```js
-import { Client } from '@genai-otel/core';
+import { Client } from '@snowflake/observe-otel-genai';
 
 // After the OpenTelemetry SDK has started.
 const client = new Client({ contentCaptureMode: 'no_tool_content' });

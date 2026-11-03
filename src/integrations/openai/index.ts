@@ -44,7 +44,9 @@ import { instrumentResponseApiPromise } from './_responses.js';
 /** Per-call metadata that can be attached via `withMetadata(params, opts)`. */
 export type OpenAIAdapterOptions = AdapterCallOptions;
 
-const accessor = createMetadataAccessor<OpenAIAdapterOptions>('@genai-otel/openai-metadata');
+const accessor = createMetadataAccessor<OpenAIAdapterOptions>(
+  '@snowflake/observe-otel-genai/openai-metadata',
+);
 export const withMetadata = accessor.withMetadata;
 const readMetadata = accessor.readMetadata;
 const stripMetadata = accessor.stripMetadata;
@@ -312,7 +314,7 @@ function instrumentOrPassThrough(
     return instrument(raw);
   } catch (err) {
     diag.debug(
-      'genai-otel: failed to record OpenAI telemetry; returning the call untraced',
+      'observe-otel-genai: failed to record OpenAI telemetry; returning the call untraced',
       err instanceof Error ? err.message : String(err),
     );
     return raw;

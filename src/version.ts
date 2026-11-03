@@ -23,4 +23,4 @@
  * scripts/sync-version.mjs (runs on prebuild / pretest). test/invariants.test.ts
  * asserts this stays in sync.
  */
-export const VERSION = '0.6.0';
+export const VERSION = '0.1.0';

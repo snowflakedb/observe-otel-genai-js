@@ -20,8 +20,8 @@ OTEL_DEPLOYMENT_ENVIRONMENT_NAME=prod
 3. Set up OTel with `bootstrapOtel` (or your existing OTel setup) and create a `Client`:
 
 ```ts
-import { Client } from '@genai-otel/core';
-import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { Client } from '@snowflake/observe-otel-genai';
+import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
 
 const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
 const client = new Client();
@@ -43,13 +43,13 @@ Both variables are required; without them the test is skipped. `OTLP_SMOKE_ENDPO
 
 The test:
 
-1. Calls `bootstrapOtel({ serviceName: 'genai-otel-smoke', ... })`.
+1. Calls `bootstrapOtel({ serviceName: 'observe-otel-genai-smoke', ... })`.
 2. Emits one `chat` span with token usage and no messages.
 3. Flushes and shuts down the providers. An export error fails the test.
 
 A pass means the endpoint accepted the export. The test does not query the backend, so check there for a span with:
 
-- `service.name = "genai-otel-smoke"`
+- `service.name = "observe-otel-genai-smoke"`
 - `gen_ai.operation.name = "chat"`
 - `gen_ai.conversation.id = "smoke-conv-1"`
 
@@ -131,7 +131,7 @@ new NodeTracerProvider({
 
 ```ts
 import { detectResources, hostDetector } from '@opentelemetry/resources';
-import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
 
 const detected = detectResources({ detectors: [hostDetector] });
 await detected.waitForAsyncAttributes?.();

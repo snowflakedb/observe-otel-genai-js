@@ -441,7 +441,7 @@ describe('genaiTelemetryIntegration', () => {
               // Stand-in for auto-instrumented HTTP/undici work kicked off after
               // an await — must nest under execute_tool, not an ambient ancestor.
               await Promise.resolve();
-              const child = trace.getTracer('genai-otel-test').startSpan('tool.downstream');
+              const child = trace.getTracer('observe-otel-genai-test').startSpan('tool.downstream');
               child.end();
               return 'pong';
             },

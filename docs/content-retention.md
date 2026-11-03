@@ -22,7 +22,7 @@ const client = new Client({ contentCaptureMode: 'allow_list' });
 For one request (every span started inside `fn`):
 
 ```ts
-import { withContentCaptureMode } from '@genai-otel/core';
+import { withContentCaptureMode } from '@snowflake/observe-otel-genai';
 
 await withContentCaptureMode('allow_list', () => handleRequest(req));
 ```
@@ -97,7 +97,7 @@ active span is the filtered one.
 ## The list is fixed
 
 There is no way to add keys at runtime. Changing the list means editing
-[`src/content/allow-list.ts`](https://github.com/Snowflake-Labs/observe-otel-genai-js/blob/main/src/content/allow-list.ts),
+[`src/content/allow-list.ts`](https://github.com/snowflakedb/observe-otel-genai-js/blob/main/src/content/allow-list.ts),
 and needs a privacy review.
 
 ## What it does not cover

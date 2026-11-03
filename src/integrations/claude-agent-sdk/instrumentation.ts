@@ -19,7 +19,7 @@
  * OpenTelemetry instrumentation for the Claude Agent SDK.
  *
  *   import { registerInstrumentations } from '@opentelemetry/instrumentation';
- *   import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
+ *   import { ClaudeAgentSdkInstrumentation } from '@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation';
  *
  *   registerInstrumentations({ instrumentations: [new ClaudeAgentSdkInstrumentation()] });
  *
@@ -30,7 +30,7 @@
  * The SDK ships only an ESM build, and a native ESM namespace rejects writes, so the
  * patch needs the OpenTelemetry ESM loader hook registered before the SDK is first
  * imported (see `docs/integrations.md`). Without the hook, use `wrapQuery` from
- * `@genai-otel/core/claude-agent-sdk` at the call site instead.
+ * `@snowflake/observe-otel-genai/claude-agent-sdk` at the call site instead.
  */
 
 import {
@@ -86,7 +86,7 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
   private readonly originals = new Map<ClaudeAgentSdkModuleExports, ClaudeAgentSdkModuleExports>();
 
   constructor(config: ClaudeAgentSdkInstrumentationConfig = {}) {
-    super('@genai-otel/instrumentation-claude-agent-sdk', VERSION, config);
+    super('@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation', VERSION, config);
   }
 
   protected init(): InstrumentationNodeModuleDefinition {
@@ -134,7 +134,7 @@ export class ClaudeAgentSdkInstrumentation extends InstrumentationBase<ClaudeAge
     }
     if (!canAssign(moduleExports, original)) {
       this._diag.warn(
-        `cannot replace the query export on ${MODULE_NAME}: the module namespace rejects assignment. Register the OpenTelemetry ESM loader hook before the SDK is imported. If the app loads the SDK with require(), or the hook cannot be used, wrap the call site with wrapQuery(client, query, options) from @genai-otel/core/claude-agent-sdk.`,
+        `cannot replace the query export on ${MODULE_NAME}: the module namespace rejects assignment. Register the OpenTelemetry ESM loader hook before the SDK is imported. If the app loads the SDK with require(), or the hook cannot be used, wrap the call site with wrapQuery(client, query, options) from @snowflake/observe-otel-genai/claude-agent-sdk.`,
       );
       return moduleExports;
     }

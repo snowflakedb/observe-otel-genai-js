@@ -48,7 +48,7 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     const { Client } = await import('../../src/client.js');
 
     const { tracerProvider, meterProvider } = bootstrapOtel({
-      serviceName: 'genai-otel-smoke',
+      serviceName: 'observe-otel-genai-smoke',
       serviceVersion: '0.1.0',
       deploymentEnvironment: 'integration',
       metricExportIntervalMillis: 5_000,

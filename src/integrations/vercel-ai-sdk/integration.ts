@@ -16,11 +16,11 @@
  */
 
 /**
- * AI SDK v7 `Telemetry` integration for genai-otel.
+ * AI SDK v7 `Telemetry` integration for observe-otel-genai.
  *
  * Register once via `registerTelemetry(genaiTelemetryIntegration(client))` and
  * every `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` / `embed`
- * / `embedMany` call in the process emits genai-otel spans — no per-call-site wiring.
+ * / `embedMany` call in the process emits observe-otel-genai spans — no per-call-site wiring.
  *
  * Span tree (GenAI semconv): `invoke_agent` (operation) → `chat` (per step) and
  * `execute_tool` (per tool), side by side. A `chat` span ends with its model call,
@@ -108,7 +108,7 @@ export interface DeriveOptionsEvent {
   readonly modelId?: string;
 }
 
-/** Maps an operation-start event to genai-otel identity/tags for that turn. */
+/** Maps an operation-start event to observe-otel-genai identity/tags for that turn. */
 export type DeriveOptions = (event: DeriveOptionsEvent) => VercelAdapterOptions;
 
 export interface GenaiTelemetryOptions {
@@ -182,7 +182,7 @@ interface PendingEmbed {
 
 /**
  * Owns the per-operation registry and translates AI SDK lifecycle events into
- * genai-otel recorder calls. One instance backs one registered integration.
+ * observe-otel-genai recorder calls. One instance backs one registered integration.
  */
 class GenaiTelemetry {
   private readonly ops = new Map<string, OpState>();
@@ -630,7 +630,7 @@ async function end(rec: { end(): Promise<void> }): Promise<void> {
 }
 
 /**
- * Builds a genai-otel `Telemetry` integration. Register once at startup:
+ * Builds an observe-otel-genai `Telemetry` integration. Register once at startup:
  *
  *   import { registerTelemetry } from 'ai';
  *   registerTelemetry(genaiTelemetryIntegration(client, { deriveOptions }));

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`@genai-otel/core` is pre-1.0. Security fixes are applied to the latest
+`@snowflake/observe-otel-genai` is pre-1.0. Security fixes are applied to the latest
 published `0.x` release. Please upgrade to the most recent version before
 reporting an issue.
 
@@ -18,7 +18,7 @@ When reporting, please include:
 
 - A description of the vulnerability and its impact.
 - Steps to reproduce (a minimal repro is ideal).
-- The version of `@genai-otel/core` affected.
+- The version of `@snowflake/observe-otel-genai` affected.
 
 We will acknowledge your report, investigate, and coordinate a fix and
 disclosure timeline with you.

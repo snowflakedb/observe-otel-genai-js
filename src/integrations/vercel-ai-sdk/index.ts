@@ -23,7 +23,7 @@
  * 1. **Telemetry integration** (recommended) — `genaiTelemetryIntegration(client)`
  *    registered once via the AI SDK's `registerTelemetry(...)`. Every
  *    `generateText` / `streamText` / `ToolLoopAgent` / `generateObject` call in
- *    the process then emits genai-otel spans (`invoke_agent`, with `chat` and
+ *    the process then emits observe-otel-genai spans (`invoke_agent`, with `chat` and
  *    `execute_tool` spans under it) with no per-call-site wiring.
  *
  * 2. **Function wrappers** — `wrapGenerateText` / `wrapStreamText` / etc. wrap a
@@ -35,7 +35,7 @@
  *
  * Usage (integration):
  *   import { registerTelemetry } from 'ai';
- *   import { genaiTelemetryIntegration } from '@genai-otel/core/vercel-ai-sdk';
+ *   import { genaiTelemetryIntegration } from '@snowflake/observe-otel-genai/vercel-ai-sdk';
  *
  *   registerTelemetry(genaiTelemetryIntegration(client, { deriveOptions }));
  *
@@ -83,7 +83,7 @@ export {
   genaiTelemetryIntegration,
 } from './integration.js';
 
-// Public mapper: AI SDK `ModelMessage[]` -> genai-otel `Message[]` (for callers
+// Public mapper: AI SDK `ModelMessage[]` -> observe-otel-genai `Message[]` (for callers
 // authoring their own `invoke_agent` spans / `gen_ai.input.messages`).
 export { toAgentInputMessages };
 

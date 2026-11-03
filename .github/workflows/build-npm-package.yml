@@ -1,0 +1,71 @@
+# Copyright 2026 Snowflake Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Release tooling downloads the npm-package artifact from this workflow's run
+# for the release commit. Keep this file name, the artifact name, and the
+# tarball name stable.
+name: Build npm package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build npm package
+    # Release artifacts must come from a reviewed commit on main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # No dependency cache here, so a poisoned cache can't reach a released build.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      # Corepack installs the pnpm version pinned in package.json#packageManager.
+      - run: corepack enable
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint, typecheck and test
+        run: |
+          pnpm run lint
+          pnpm run typecheck
+          pnpm run test:ci
+
+      - name: Pack
+        id: pack
+        run: |
+          out="$RUNNER_TEMP/npm-package"
+          mkdir -p "$out"
+          pnpm pack --pack-destination "$out"
+          cd "$out"
+          file=$(ls *.tgz)
+          sha256sum "$file" > "$file.sha256"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-package
+          path: ${{ steps.pack.outputs.dir }}
+          if-no-files-found: error
+          retention-days: 90

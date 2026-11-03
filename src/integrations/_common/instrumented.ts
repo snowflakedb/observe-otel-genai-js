@@ -16,7 +16,7 @@
  */
 
 /**
- * A marker for "this SDK method already has genai-otel instrumentation on it".
+ * A marker for "this SDK method already has observe-otel-genai instrumentation on it".
  *
  * A provider adapter can be applied two ways at once: the `wrapX(client, sdk)`
  * proxy (per-client) and the OTel `XInstrumentation` (prototype-level). A user
@@ -32,14 +32,14 @@
  * package, which is the case that needs to dedup when both copies patch the same
  * prototype. `metadata.ts` uses a module-local `Symbol` for the opposite reason.
  *
- * The marker covers genai-otel instrumentation only. A third-party OTel
+ * The marker covers observe-otel-genai instrumentation only. A third-party OTel
  * instrumentation on the same method is no reason to skip: its span carries its
  * own conventions, so suppressing ours would drop attributes the user installed
  * this package to get.
  */
-const MARKER = Symbol.for('@genai-otel/instrumented-method');
+const MARKER = Symbol.for('@snowflake/observe-otel-genai/instrumented-method');
 
-/** Flags `fn` as carrying genai-otel instrumentation. */
+/** Flags `fn` as carrying observe-otel-genai instrumentation. */
 export function markInstrumented<T extends object>(fn: T): T {
   try {
     Object.defineProperty(fn, MARKER, {

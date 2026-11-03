@@ -39,7 +39,7 @@ if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
 }
 
 const { tracerProvider, meterProvider } = bootstrapOtel({
-  serviceName: process.env.OTEL_SERVICE_NAME ?? 'genai-otel-example',
+  serviceName: process.env.OTEL_SERVICE_NAME ?? 'observe-otel-genai-example',
   serviceVersion: process.env.OTEL_SERVICE_VERSION,
   deploymentEnvironment: process.env.OTEL_DEPLOYMENT_ENVIRONMENT_NAME,
 });

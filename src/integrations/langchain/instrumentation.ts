@@ -21,7 +21,7 @@
  * Registers like any other OTel instrumentation:
  *
  *   import { registerInstrumentations } from '@opentelemetry/instrumentation';
- *   import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
+ *   import { LangChainInstrumentation } from '@snowflake/observe-otel-genai/langchain/instrumentation';
  *
  *   registerInstrumentations({ instrumentations: [new LangChainInstrumentation()] });
  *
@@ -143,7 +143,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
   private readonly manualModules = new Set<CallbackManagerModuleExports & PregelModuleExports>();
 
   constructor(config: LangChainInstrumentationConfig = {}) {
-    super('@genai-otel/instrumentation-langchain', VERSION, config);
+    super('@snowflake/observe-otel-genai/langchain/instrumentation', VERSION, config);
   }
 
   /**
@@ -318,7 +318,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
           // Injection failed (e.g. Client construction threw). Fall back to
           // LangChain's unmodified result — this run just won't be traced.
           instrumentation._diag.error(
-            'failed to inject genai-otel callback handler; continuing without instrumentation for this run',
+            'failed to inject observe-otel-genai callback handler; continuing without instrumentation for this run',
             err instanceof Error ? err.message : String(err),
           );
           return base;
@@ -346,7 +346,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
         .dispose()
         .catch((err) =>
           this._diag.error(
-            'failed to drain genai-otel LangChain handler on disable',
+            'failed to drain observe-otel-genai LangChain handler on disable',
             err instanceof Error ? err.message : String(err),
           ),
         );
@@ -370,7 +370,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
         await this.handlerInstance.dispose();
       } catch (err) {
         this._diag.error(
-          'failed to drain genai-otel LangChain handler on shutdown',
+          'failed to drain observe-otel-genai LangChain handler on shutdown',
           err instanceof Error ? err.message : String(err),
         );
       }
@@ -380,7 +380,7 @@ export class LangChainInstrumentation extends InstrumentationBase<LangChainInstr
         await this.ownedClient.shutdown();
       } catch (err) {
         this._diag.error(
-          'failed to shut down genai-otel Client on shutdown',
+          'failed to shut down observe-otel-genai Client on shutdown',
           err instanceof Error ? err.message : String(err),
         );
       }
