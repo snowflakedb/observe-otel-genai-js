@@ -29,7 +29,7 @@
  * structured-vs-JSON-string decision so the serializer stays a pure
  * shape-mapper that's easy to unit-test and reuse.
  *
- * Part-kind mapping (genai-otel `Part.kind` -> semconv part `type`):
+ * Part-kind mapping (observe-otel-genai `Part.kind` -> semconv part `type`):
  *   text        -> { type: 'text', content }
  *   thinking    -> { type: 'reasoning', content }
  *   tool_call   -> { type: 'tool_call', id?, name, arguments }

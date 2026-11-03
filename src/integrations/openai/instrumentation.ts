@@ -21,7 +21,7 @@
  * Registers like any other OTel instrumentation:
  *
  *   import { registerInstrumentations } from '@opentelemetry/instrumentation';
- *   import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+ *   import { OpenAIInstrumentation } from '@snowflake/observe-otel-genai/openai/instrumentation';
  *
  *   registerInstrumentations({ instrumentations: [new OpenAIInstrumentation()] });
  *
@@ -158,7 +158,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
   private readonly ownWrappers = new WeakSet<object>();
 
   constructor(config: OpenAIInstrumentationConfig = {}) {
-    super('@genai-otel/instrumentation-openai', VERSION, config);
+    super('@snowflake/observe-otel-genai/openai/instrumentation', VERSION, config);
   }
 
   protected init(): InstrumentationNodeModuleDefinition {
@@ -299,7 +299,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
           // caller's request untouched: telemetry wiring must never break the
           // user's call.
           instrumentation._diag.error(
-            `failed to set up genai-otel instrumentation for openai ${key}; continuing untraced`,
+            `failed to set up observe-otel-genai instrumentation for openai ${key}; continuing untraced`,
             err instanceof Error ? err.message : String(err),
           );
           return original.apply(this, args);
@@ -351,7 +351,7 @@ export class OpenAIInstrumentation extends InstrumentationBase<OpenAIInstrumenta
         await this.ownedClient.shutdown();
       } catch (err) {
         this._diag.error(
-          'failed to shut down genai-otel Client on shutdown',
+          'failed to shut down observe-otel-genai Client on shutdown',
           err instanceof Error ? err.message : String(err),
         );
       }

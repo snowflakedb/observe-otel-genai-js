@@ -1,6 +1,6 @@
 # `bootstrapOtel(...)` helper
 
-An optional one-call setup that creates an OTel `TracerProvider` and `MeterProvider` with OTLP/HTTP exporters and registers them globally. It lives in its own entry point, `@genai-otel/core/bootstrap`, so the core library has no runtime dependency on `@opentelemetry/sdk-*`.
+An optional one-call setup that creates an OTel `TracerProvider` and `MeterProvider` with OTLP/HTTP exporters and registers them globally. It lives in its own entry point, `@snowflake/observe-otel-genai/bootstrap`, so the core library has no runtime dependency on `@opentelemetry/sdk-*`.
 
 ## When to use it
 
@@ -17,7 +17,7 @@ Skip it when:
 The bootstrap entry point needs these optional peer dependencies. Keep the versions as shown: OpenTelemetry's new major release (3.0, with 0.300 for the experimental packages) is not supported yet.
 
 ```bash
-pnpm add @genai-otel/core \
+pnpm add @snowflake/observe-otel-genai \
   @opentelemetry/api@1.9.1 \
   @opentelemetry/context-async-hooks@2.12.0 \
   @opentelemetry/sdk-trace-node@2.12.0 \
@@ -32,8 +32,8 @@ pnpm add @genai-otel/core \
 ## Usage
 
 ```ts
-import { Client } from '@genai-otel/core';
-import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+import { Client } from '@snowflake/observe-otel-genai';
+import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
 
 const { tracerProvider, meterProvider } = bootstrapOtel({
   serviceName: 'my-agent',

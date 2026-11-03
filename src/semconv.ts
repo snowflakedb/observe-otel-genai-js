@@ -239,5 +239,5 @@ export const ERR_TYPE_VALIDATION = 'validation_error';
 // Identity
 // -----------------------------------------------------------------------------
 
-export const INSTRUMENTATION_NAME = '@genai-otel/core';
-export const SDK_NAME = 'genai-otel-ts';
+export const INSTRUMENTATION_NAME = '@snowflake/observe-otel-genai';
+export const SDK_NAME = 'observe-otel-genai-js';

@@ -19,7 +19,7 @@
  * OpenTelemetry instrumentation for the Vercel AI SDK.
  *
  *   import { registerInstrumentations } from '@opentelemetry/instrumentation';
- *   import { VercelAiSdkInstrumentation } from '@genai-otel/core/vercel-ai-sdk/instrumentation';
+ *   import { VercelAiSdkInstrumentation } from '@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation';
  *
  *   registerInstrumentations({ instrumentations: [new VercelAiSdkInstrumentation()] });
  *
@@ -63,7 +63,7 @@ export class VercelAiSdkInstrumentation extends InstrumentationBase<VercelAiSdkI
   private ownedClient?: Client;
 
   constructor(config: VercelAiSdkInstrumentationConfig = {}) {
-    super('@genai-otel/instrumentation-vercel-ai-sdk', VERSION, config);
+    super('@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation', VERSION, config);
   }
 
   /** No module to patch: the AI SDK finds the integration on its global list. */

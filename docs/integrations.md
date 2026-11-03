@@ -1,15 +1,15 @@
 # Framework integrations
 
-`@genai-otel/core` ships adapters for the common TypeScript LLM SDKs and agent frameworks. Each adapter has its own subpath export, so you only load what you import.
+`@snowflake/observe-otel-genai` ships adapters for the common TypeScript LLM SDKs and agent frameworks. Each adapter has its own subpath export, so you only load what you import.
 
 | Framework | Subpath | Peer dependency |
 |---|---|---|
-| Vercel AI SDK | `@genai-otel/core/vercel-ai-sdk`, `@genai-otel/core/vercel-ai-sdk/instrumentation` | `ai` ^7.0.0 |
-| OpenAI SDK | `@genai-otel/core/openai`, `@genai-otel/core/openai/instrumentation` | `openai` ^4, ^5, ^6 or ^7 |
-| OpenAI Agents SDK | `@genai-otel/core/openai-agents/instrumentation` (processor only: `@genai-otel/core/openai-agents`) | `@openai/agents` >=0.14.0 <1 |
-| Anthropic SDK | `@genai-otel/core/anthropic` | `@anthropic-ai/sdk` >=0.30.0 <1 |
-| LangChain.js / LangGraph | `@genai-otel/core/langchain`, `@genai-otel/core/langchain/instrumentation` | `@langchain/core` ^0.3 or ^1 |
-| Claude Agent SDK | `@genai-otel/core/claude-agent-sdk/instrumentation`, `@genai-otel/core/claude-agent-sdk` | none declared; supports `@anthropic-ai/claude-agent-sdk` >=0.3.142 <0.4.0 |
+| Vercel AI SDK | `@snowflake/observe-otel-genai/vercel-ai-sdk`, `@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation` | `ai` ^7.0.0 |
+| OpenAI SDK | `@snowflake/observe-otel-genai/openai`, `@snowflake/observe-otel-genai/openai/instrumentation` | `openai` ^4, ^5, ^6 or ^7 |
+| OpenAI Agents SDK | `@snowflake/observe-otel-genai/openai-agents/instrumentation` (processor only: `@snowflake/observe-otel-genai/openai-agents`) | `@openai/agents` >=0.14.0 <1 |
+| Anthropic SDK | `@snowflake/observe-otel-genai/anthropic` | `@anthropic-ai/sdk` >=0.30.0 <1 |
+| LangChain.js / LangGraph | `@snowflake/observe-otel-genai/langchain`, `@snowflake/observe-otel-genai/langchain/instrumentation` | `@langchain/core` ^0.3 or ^1 |
+| Claude Agent SDK | `@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation`, `@snowflake/observe-otel-genai/claude-agent-sdk` | none declared; supports `@anthropic-ai/claude-agent-sdk` >=0.3.142 <0.4.0 |
 
 All peer dependencies are optional, so installing the core does not pull them in. The `/instrumentation` subpaths also need `@opentelemetry/instrumentation`.
 
@@ -140,8 +140,8 @@ Two ways in: the telemetry integration, registered once for the whole process (d
 ```ts
 import { openai } from '@ai-sdk/openai';
 import { generateText, registerTelemetry } from 'ai';
-import { Client } from '@genai-otel/core';
-import { genaiTelemetryIntegration } from '@genai-otel/core/vercel-ai-sdk';
+import { Client } from '@snowflake/observe-otel-genai';
+import { genaiTelemetryIntegration } from '@snowflake/observe-otel-genai/vercel-ai-sdk';
 
 const client = new Client();
 registerTelemetry(genaiTelemetryIntegration(client));
@@ -168,12 +168,12 @@ The same integration also comes as an OpenTelemetry instrumentation, for setups 
 
 ```ts
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { VercelAiSdkInstrumentation } from '@genai-otel/core/vercel-ai-sdk/instrumentation';
+import { VercelAiSdkInstrumentation } from '@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation';
 
 registerInstrumentations({ instrumentations: [new VercelAiSdkInstrumentation()] });
 ```
 
-- It takes the same options, plus an optional `client`. The options are read when it is enabled. Without a `client`, one is built from the tracer and meter providers the instrumentation is given, on the first AI SDK call, and its spans carry the scope name `@genai-otel/instrumentation-vercel-ai-sdk`. Providers set after that first call are not picked up.
+- It takes the same options, plus an optional `client`. The options are read when it is enabled. Without a `client`, one is built from the tracer and meter providers the instrumentation is given, on the first AI SDK call, and its spans carry the scope name `@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation`. Providers set after that first call are not picked up.
 - Nothing is patched, so it works the same under CommonJS and ESM, with no loader hook and no `manuallyInstrument` step, whenever `ai` is loaded.
 - `disable()` stops tracing; `await instrumentation.shutdown()` also shuts down a `Client` it built.
 - Use it instead of `registerTelemetry(genaiTelemetryIntegration(...))`, not with it: both together trace every call twice.
@@ -198,8 +198,8 @@ Limits: the integration does not trace `rerank`, since the GenAI conventions hav
 
 ```ts
 import { openai } from '@ai-sdk/openai';
-import { Client } from '@genai-otel/core';
-import { wrapGenerateText, wrapStreamText } from '@genai-otel/core/vercel-ai-sdk';
+import { Client } from '@snowflake/observe-otel-genai';
+import { wrapGenerateText, wrapStreamText } from '@snowflake/observe-otel-genai/vercel-ai-sdk';
 
 const client = new Client();
 
@@ -230,8 +230,8 @@ Wrap a client and use it as usual:
 
 ```ts
 import OpenAI from 'openai';
-import { Client } from '@genai-otel/core';
-import { wrapOpenAI, withMetadata } from '@genai-otel/core/openai';
+import { Client } from '@snowflake/observe-otel-genai';
+import { wrapOpenAI, withMetadata } from '@snowflake/observe-otel-genai/openai';
 
 const client = new Client();
 const openai = wrapOpenAI(client, new OpenAI());
@@ -255,7 +255,7 @@ await openai.chat.completions.create(
 Per-method helpers are available too. Pass them a plain client: a wrapped or auto-instrumented one traces each request twice. `instrumentedChatCompletion` does not accept `stream: true`; use `wrapOpenAI` for streams.
 
 ```ts
-import { instrumentedChatCompletion, instrumentedEmbedding } from '@genai-otel/core/openai';
+import { instrumentedChatCompletion, instrumentedEmbedding } from '@snowflake/observe-otel-genai/openai';
 
 const result = await instrumentedChatCompletion(client, new OpenAI(), { /* params */ });
 ```
@@ -266,7 +266,7 @@ const result = await instrumentedChatCompletion(client, new OpenAI(), { /* param
 
 ```ts
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+import { OpenAIInstrumentation } from '@snowflake/observe-otel-genai/openai/instrumentation';
 
 registerInstrumentations({
   instrumentations: [new OpenAIInstrumentation()],
@@ -319,8 +319,8 @@ If both stay on, the split can depend on versions: the other library may take yo
 
 ```ts
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { OpenAIAgentsInstrumentation } from '@genai-otel/core/openai-agents/instrumentation';
-import { OpenAIInstrumentation } from '@genai-otel/core/openai/instrumentation';
+import { OpenAIAgentsInstrumentation } from '@snowflake/observe-otel-genai/openai-agents/instrumentation';
+import { OpenAIInstrumentation } from '@snowflake/observe-otel-genai/openai/instrumentation';
 
 registerInstrumentations({
   instrumentations: [new OpenAIAgentsInstrumentation(), new OpenAIInstrumentation()],
@@ -432,7 +432,7 @@ setTraceProcessors([]);
 Automatic patching reaches the SDK's own model classes only. Wrap a hand-written model so spans it creates nest under the agent:
 
 ```ts
-import { instrumentModel } from '@genai-otel/core/openai-agents/instrumentation';
+import { instrumentModel } from '@snowflake/observe-otel-genai/openai-agents/instrumentation';
 import { getCurrentSpan } from '@openai/agents';
 
 const model = instrumentModel(new MyModel(), instrumentation.processor, getCurrentSpan);
@@ -450,11 +450,11 @@ const model = instrumentModel(new MyModel(), instrumentation.processor, getCurre
 
 ### The processor on its own
 
-`@genai-otel/core/openai-agents` exports `GenAIOtelTracingProcessor` for custom setups:
+`@snowflake/observe-otel-genai/openai-agents` exports `GenAIOtelTracingProcessor` for custom setups:
 
 ```ts
 import { addTraceProcessor, getCurrentTrace } from '@openai/agents';
-import { GenAIOtelTracingProcessor } from '@genai-otel/core/openai-agents';
+import { GenAIOtelTracingProcessor } from '@snowflake/observe-otel-genai/openai-agents';
 
 const processor = new GenAIOtelTracingProcessor({ getCurrentTrace });
 addTraceProcessor(processor);
@@ -474,8 +474,8 @@ Without the instrumentation:
 
 ```ts
 import Anthropic from '@anthropic-ai/sdk';
-import { Client } from '@genai-otel/core';
-import { wrapAnthropic, withMetadata } from '@genai-otel/core/anthropic';
+import { Client } from '@snowflake/observe-otel-genai';
+import { wrapAnthropic, withMetadata } from '@snowflake/observe-otel-genai/anthropic';
 
 const client = new Client();
 const anthropic = wrapAnthropic(client, new Anthropic());
@@ -524,8 +524,8 @@ Pass `GenAIOtelCallbackHandler` as a callback:
 ```ts
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { Client } from '@genai-otel/core';
-import { GenAIOtelCallbackHandler } from '@genai-otel/core/langchain';
+import { Client } from '@snowflake/observe-otel-genai';
+import { GenAIOtelCallbackHandler } from '@snowflake/observe-otel-genai/langchain';
 
 const client = new Client();
 const handler = new GenAIOtelCallbackHandler({ client });
@@ -562,7 +562,7 @@ When one handler is reused across many requests, call `await handler.dispose()` 
 
 ```ts
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
+import { LangChainInstrumentation } from '@snowflake/observe-otel-genai/langchain/instrumentation';
 
 registerInstrumentations({
   instrumentations: [new LangChainInstrumentation()],
@@ -574,7 +574,7 @@ registerInstrumentations({
 - **ESM**: call `manuallyInstrument(...)` once with the modules below, before importing `@langchain/core`. Do the same for bundlers that inline `@langchain/core` (Next.js, some Webpack or esbuild setups) and non-Node runtimes. Do not enable the OpenTelemetry ESM loader hook for `@langchain/core`: it breaks the library's LangSmith interop.
 
   ```ts
-  import { LangChainInstrumentation } from '@genai-otel/core/langchain/instrumentation';
+  import { LangChainInstrumentation } from '@snowflake/observe-otel-genai/langchain/instrumentation';
   import * as CallbackManagerModule from '@langchain/core/callbacks/manager';
   import * as PregelModule from '@langchain/langgraph/pregel';
 
@@ -633,8 +633,8 @@ Register it as an OpenTelemetry instrumentation, which needs `@opentelemetry/ins
 // preload.mjs
 import { register } from 'node:module';
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { bootstrapOtel } from '@genai-otel/core/bootstrap';
-import { ClaudeAgentSdkInstrumentation } from '@genai-otel/core/claude-agent-sdk/instrumentation';
+import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
+import { ClaudeAgentSdkInstrumentation } from '@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation';
 
 // Register the hook before the app imports the SDK.
 register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
@@ -656,7 +656,7 @@ Without the hook, or if the SDK was imported before the hook was registered, not
 
 ```ts
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { wrapQuery } from '@genai-otel/core/claude-agent-sdk';
+import { wrapQuery } from '@snowflake/observe-otel-genai/claude-agent-sdk';
 
 const tracedQuery = wrapQuery(client, query, { agentName: 'support-bot' });
 for await (const msg of tracedQuery({ prompt, options })) { /* ... */ }

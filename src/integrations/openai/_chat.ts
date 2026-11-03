@@ -17,7 +17,7 @@
 
 /**
  * OpenAI Chat Completions (`client.chat.completions.create`) instrumentation:
- * the recording core and the mapping from chat messages to genai-otel
+ * the recording core and the mapping from chat messages to observe-otel-genai
  * `Message[]`. The entry points that call into it (`wrapOpenAI`, the per-call
  * helper, and the prototype patch) live in `index.ts`.
  */
@@ -285,7 +285,7 @@ function normalizeStop(stop: unknown): string[] | undefined {
 }
 
 // -----------------------------------------------------------------------------
-// Content mapping (chat messages -> genai-otel Message[])
+// Content mapping (chat messages -> observe-otel-genai Message[])
 //
 // Note: OpenAI carries system instructions inline in the `messages` array (part
 // of the chat history), so they map to `gen_ai.input.messages` with role

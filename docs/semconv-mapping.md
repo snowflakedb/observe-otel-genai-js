@@ -11,7 +11,7 @@ Every span attribute, event, and metric this library emits, and when each is set
 | Attribute | Type | Where |
 |---|---|---|
 | `gen_ai.operation.name` | string | every span: `chat`, `text_completion`, `generate_content`, `embeddings`, `execute_tool`, `invoke_agent`, `invoke_workflow`, `create_agent`, or `retrieval` |
-| `genai.sdk.name` | string | every span, always `"genai-otel-ts"` |
+| `genai.sdk.name` | string | every span, always `"observe-otel-genai-js"` |
 | `gen_ai.conversation.id` | string | every span except `create_agent`, when set (see [Identity resolution](#identity-resolution)) |
 | `genai.conversation.title` | string | generation and `execute_tool` spans, when set. Under `metadata_only` it is written as an empty string. |
 | `genai.conversation.turn_index` | int | generation spans, when `turnIndex` is set |
@@ -233,4 +233,4 @@ When the second part is empty, the name is the operation alone (tool spans use `
 
 ## Instrumentation scope
 
-Spans and metrics from a `Client` you create use the scope name `@genai-otel/core`. The OTel-native instrumentations use their own scope names, such as `@genai-otel/instrumentation-openai-agents`, unless you pass them a `client`.
+Spans and metrics from a `Client` you create use the scope name `@snowflake/observe-otel-genai`. The OTel-native instrumentations use their own scope names, such as `@snowflake/observe-otel-genai/openai-agents/instrumentation`, unless you pass them a `client`.

@@ -230,7 +230,7 @@ type SdkQuery = Partial<
 >;
 
 function logRecordingFailure(err: unknown): void {
-  diag.debug('genai-otel: failed to record Claude Agent SDK telemetry', err);
+  diag.debug('observe-otel-genai: failed to record Claude Agent SDK telemetry', err);
 }
 
 // -----------------------------------------------------------------------------

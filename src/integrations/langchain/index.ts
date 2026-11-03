@@ -19,7 +19,7 @@
  * LangChain.js adapter.
  *
  * `GenAIOtelCallbackHandler` implements LangChain's `BaseCallbackHandler`
- * interface and emits `@genai-otel/core` recorders for every LLM, tool, and
+ * interface and emits `@snowflake/observe-otel-genai` recorders for every LLM, tool, and
  * chain run.
  *
  * Mapping:
@@ -101,7 +101,7 @@ interface ModelHint {
 }
 
 export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
-  override name = 'genai-otel';
+  override name = 'observe-otel-genai';
   /** LangChain uses this to dedupe duplicate handler instances. */
   override ignoreLLM = false;
   override ignoreChain = false;
@@ -464,7 +464,7 @@ export class GenAIOtelCallbackHandler extends BaseCallbackHandler {
    * reused across many requests, to avoid leaked spans and unbounded map growth.
    */
   async dispose(): Promise<void> {
-    const err = new Error('genai-otel: LangChain handler disposed with an open run');
+    const err = new Error('observe-otel-genai: LangChain handler disposed with an open run');
     for (const { rec } of this.llmRunMap.values()) {
       rec.setCallError(err);
       await safeEnd(rec);
@@ -590,7 +590,7 @@ function chainOutputToMessages(output: ChainValues | undefined): Message[] {
 }
 
 // -----------------------------------------------------------------------------
-// Message mapping (LangChain BaseMessage -> genai-otel Message[])
+// Message mapping (LangChain BaseMessage -> observe-otel-genai Message[])
 // -----------------------------------------------------------------------------
 
 interface LCBaseMessage {
@@ -940,7 +940,7 @@ function numField(obj: Record<string, unknown> | undefined, key: string): number
 
 /**
  * Maps LangChain `Document` objects (`{ pageContent, metadata, id? }`) into the
- * genai-otel `RetrievalDocument` shape. Non-object entries are skipped.
+ * observe-otel-genai `RetrievalDocument` shape. Non-object entries are skipped.
  */
 function mapRetrieverDocuments(documents: unknown[]): RetrievalDocument[] {
   if (!Array.isArray(documents)) return [];
@@ -1112,7 +1112,7 @@ function isStreaming(extraParams?: Record<string, unknown>): boolean {
 /**
  * Extracts the bound tool list from `extraParams.invocation_params.tools` (where
  * LangChain records the tools passed to `.bindTools(...)` at chat-model start)
- * and normalizes each provider shape into a genai-otel `ToolDefinition`.
+ * and normalizes each provider shape into an observe-otel-genai `ToolDefinition`.
  * Returns `undefined` when no tools were bound.
  */
 function toolDefinitionsFromExtraParams(

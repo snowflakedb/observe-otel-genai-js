@@ -68,7 +68,7 @@ export class SpanLinkMap {
       const lru = this.map.keys().next().value;
       if (lru === undefined) break;
       this.map.delete(lru);
-      this.logger.debug?.('genai-otel: span-link map evicted LRU entry', { key: lru });
+      this.logger.debug?.('observe-otel-genai: span-link map evicted LRU entry', { key: lru });
     }
   }
 
@@ -77,7 +77,9 @@ export class SpanLinkMap {
     if (!entry) return undefined;
     if (entry.expiresAt <= this.now()) {
       this.map.delete(generationId);
-      this.logger.debug?.('genai-otel: span-link map evicted expired entry', { generationId });
+      this.logger.debug?.('observe-otel-genai: span-link map evicted expired entry', {
+        generationId,
+      });
       return undefined;
     }
     // Touch-on-read: refresh LRU position so hot entries stay alive.

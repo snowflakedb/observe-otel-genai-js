@@ -16,7 +16,7 @@
  */
 
 /**
- * Maps `@openai/agents` span payloads onto genai-otel shapes.
+ * Maps `@openai/agents` span payloads onto observe-otel-genai shapes.
  *
  * Model inputs and outputs reach the processor in three formats:
  *  - the Agents protocol item list: `generation.output` on the AI SDK path and

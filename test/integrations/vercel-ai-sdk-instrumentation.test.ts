@@ -117,7 +117,7 @@ describe('VercelAiSdkInstrumentation', () => {
     const finished = spans.getFinishedSpans();
     expect(finished.map((s) => s.name).sort()).toEqual(['chat mock-gen', 'invoke_agent ai-sdk']);
     expect(new Set(finished.map((s) => s.instrumentationScope.name))).toEqual(
-      new Set(['@genai-otel/instrumentation-vercel-ai-sdk']),
+      new Set(['@snowflake/observe-otel-genai/vercel-ai-sdk/instrumentation']),
     );
     expect(h.spans.getFinishedSpans()).toEqual([]);
     await provider.shutdown();

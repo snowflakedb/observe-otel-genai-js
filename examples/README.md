@@ -1,6 +1,6 @@
 # Examples
 
-Runnable examples of `@genai-otel/core`. They import from the local `src/`, so you can run them without building or publishing the package.
+Runnable examples of `@snowflake/observe-otel-genai`. They import from the local `src/`, so you can run them without building or publishing the package.
 
 ## Setup
 

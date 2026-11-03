@@ -19,13 +19,13 @@
  * Optional one-liner that wires up an OTel TracerProvider + MeterProvider
  * with OTLP/HTTP exporters from `OTEL_EXPORTER_OTLP_*` env vars.
  *
- * Lives in a separate package entry point (`@genai-otel/core/bootstrap`) so
+ * Lives in a separate package entry point (`@snowflake/observe-otel-genai/bootstrap`) so
  * the core library has no runtime dependency on `@opentelemetry/sdk-*`. The
  * SDK packages are declared as optional peerDependencies; this module will
  * throw a helpful error if any of them is missing.
  *
  * Usage:
- *   import { bootstrapOtel } from '@genai-otel/core/bootstrap';
+ *   import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
  *   const { tracerProvider, meterProvider } = bootstrapOtel({
  *     serviceName: 'my-agent',
  *     serviceVersion: '0.1.0',
@@ -39,7 +39,7 @@
  *
  * Note: this bootstrap submodule DOES run standard OTel batch processors and
  * a periodic exporting metric reader (timers + background work). The core
- * `@genai-otel/core` entry point still has no library-owned background work;
+ * `@snowflake/observe-otel-genai` entry point still has no library-owned background work;
  * that promise applies only to the core, not to the optional bootstrap.
  */
 
@@ -101,7 +101,7 @@ export interface BootstrapResult {
 }
 
 /**
- * Wires up OTel providers and registers them globally so `@genai-otel/core`
+ * Wires up OTel providers and registers them globally so `@snowflake/observe-otel-genai`
  * (and any other library using `@opentelemetry/api`) picks them up.
  *
  * Reads `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` via the

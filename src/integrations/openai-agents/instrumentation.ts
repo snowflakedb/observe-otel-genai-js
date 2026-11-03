@@ -111,7 +111,7 @@ export class OpenAIAgentsInstrumentation extends InstrumentationBase<OpenAIAgent
   private readonly ownWrappers = new WeakSet<object>();
 
   constructor(config: OpenAIAgentsInstrumentationConfig = {}) {
-    super('@genai-otel/instrumentation-openai-agents', VERSION, config);
+    super('@snowflake/observe-otel-genai/openai-agents/instrumentation', VERSION, config);
   }
 
   /**

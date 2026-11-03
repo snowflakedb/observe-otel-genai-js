@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in contributing to `@genai-otel/core`. This document
+Thanks for your interest in contributing to `@snowflake/observe-otel-genai`. This document
 covers the basics: dev setup, running tests, and conventions.
 
 ## Dev setup
@@ -42,11 +42,6 @@ failure, so a lint or type error surfaces without waiting on the suite. Use
   metric assertions.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
-## Contributor agreement
-
-Before we can merge your pull request, you need to agree to the Snowflake
-[contributor license agreement](https://github.com/Snowflake-Labs/CLA).
-
 ## Reporting issues
 
 For security vulnerabilities, do **not** open a public issue — see
@@ -55,7 +50,7 @@ For security vulnerabilities, do **not** open a public issue — see
 Open a GitHub issue with:
 
 - A minimal repro
-- The version of `@genai-otel/core` you're on
+- The version of `@snowflake/observe-otel-genai` you're on
 - The OTel exporter / backend you're using
 
 ## Submitting changes
@@ -63,3 +58,13 @@ Open a GitHub issue with:
 - Open a PR against `main`.
 - Run `pnpm run test` locally first — it covers lint, typecheck, and the suite.
 - Update `CHANGELOG.md` under `[Unreleased]`.
+
+## Releasing
+
+1. Open a PR that sets the new `version` in `package.json`, runs
+   `pnpm run sync-version`, and moves the `[Unreleased]` entries in
+   `CHANGELOG.md` under the new version.
+2. After it merges, run the **Build npm package** workflow on `main` from the
+   Actions tab. It runs the full test suite, then uploads the tarball and its
+   `.sha256` file as the `npm-package` artifact. The artifact expires after 90
+   days, so publish within that window or run the workflow again.

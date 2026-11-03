@@ -20,7 +20,7 @@
  *
  * Proves the *production* auto-patch path: `registerInstrumentations` installs
  * OpenTelemetry's require hook, and a later CommonJS `require('@langchain/core')`
- * is intercepted so a genai-otel handler is injected into a bare `invoke()`
+ * is intercepted so an observe-otel-genai handler is injected into a bare `invoke()`
  * that passes NO callbacks. This is the path the in-process vitest tests can't
  * cover (vitest never fires the require/import hook), so it's the real guard
  * against the module-file name (`.cjs`) drifting out of sync with the package.
