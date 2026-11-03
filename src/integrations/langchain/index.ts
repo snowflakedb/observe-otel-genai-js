@@ -70,7 +70,8 @@ import type { GenerationRecorder } from '../../recorders/generation.js';
 import type { RetrievalRecorder } from '../../recorders/retrieval.js';
 import type { ToolExecutionRecorder } from '../../recorders/tool.js';
 import type { WorkflowInvocationRecorder } from '../../recorders/workflow.js';
-import { matchProvider } from '../_common/provider.js';
+import { matchProvider, providerOfHost } from '../_common/provider.js';
+import { serverOf } from '../_common/request.js';
 import { toolDefinitions } from '../_common/tool-definitions.js';
 import {
   CREATE_AGENT_INTEGRATION,
@@ -729,7 +730,20 @@ function modelFromSerialized(
     id[id.length - 1] ??
     'langchain';
 
-  return { provider, name: modelName };
+  return {
+    provider: provider === 'openai' ? (providerOfBaseURL(kwargs) ?? provider) : provider,
+    name: modelName,
+  };
+}
+
+/**
+ * The provider a chat model built on the OpenAI client calls, from its base URL. Only a
+ * base URL passed to the constructor is serialized; one from `OPENAI_BASE_URL` is not.
+ */
+function providerOfBaseURL(kwargs: Record<string, unknown>): string | undefined {
+  const configuration = readObject(kwargs, 'configuration');
+  const baseURL = configuration ? strField(configuration, 'baseURL') : undefined;
+  return providerOfHost(serverOf(baseURL).serverAddress);
 }
 
 function toolNameFromSerialized(s: Serialized): string {

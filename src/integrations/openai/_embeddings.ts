@@ -26,6 +26,7 @@ import type OpenAI from 'openai';
 import type { Client } from '../../client.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
+import { providerOfHost } from '../_common/provider.js';
 import { serverOf } from '../_common/request.js';
 
 type OpenAIAdapterOptions = AdapterCallOptions;
@@ -92,15 +93,16 @@ function buildEmbeddingSeed(
   options: OpenAIAdapterOptions,
   baseURL: string | undefined,
 ) {
+  const server = serverOf(baseURL);
   return {
-    model: { provider: 'openai', name: params.model },
+    model: { provider: providerOfHost(server.serverAddress) ?? 'openai', name: params.model },
     agentName: options.agentName,
     agentVersion: options.agentVersion,
     conversationId: options.conversationId,
     userId: options.userId,
     dimensions: params.dimensions,
     encodingFormat: params.encoding_format,
-    ...serverOf(baseURL),
+    ...server,
     contentCapture: options.contentCapture,
     tags: options.tags,
     metadata: options.metadata,

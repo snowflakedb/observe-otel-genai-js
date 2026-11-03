@@ -26,7 +26,7 @@
 
 import { readFileSync } from 'node:fs';
 import { SpanStatusCode, context, trace } from '@opentelemetry/api';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientConfig } from '../../src/config.js';
 import { withAgent, withConversationId } from '../../src/context.js';
@@ -1744,6 +1744,40 @@ describe('Claude Agent SDK adapter: errors and lifecycle', () => {
       },
     );
     expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('anthropic');
+  });
+
+  it('reads the provider of ANTHROPIC_BASE_URL when no platform flag is set', async () => {
+    const h = harness();
+    const provider = async (env: Record<string, string>) => {
+      h.spans.reset();
+      await run(h, [init(), assistant('msg_1', [text('hi')]), result()], {}, { env });
+      return [ROOT, CHAT].map((name) => attr(findSpan(h, name), 'gen_ai.provider.name'));
+    };
+    const cortex = 'https://myorg-myaccount.snowflakecomputing.com/api/v2/cortex/anthropic';
+
+    expect(await provider({ ANTHROPIC_BASE_URL: cortex })).toEqual(['snowflake', 'snowflake']);
+    expect(await provider({ ANTHROPIC_BASE_URL: 'http://localhost:4000' })).toEqual([
+      'anthropic',
+      'anthropic',
+    ]);
+    expect(await provider({ ANTHROPIC_BASE_URL: cortex, CLAUDE_CODE_USE_BEDROCK: '1' })).toEqual([
+      'aws.bedrock',
+      'aws.bedrock',
+    ]);
+  });
+
+  it('reads ANTHROPIC_BASE_URL from the process env without options.env', async () => {
+    vi.stubEnv(
+      'ANTHROPIC_BASE_URL',
+      'https://myorg-myaccount.snowflakecomputing.com/api/v2/cortex/anthropic',
+    );
+    try {
+      const h = harness();
+      await run(h, [init(), assistant('msg_1', [text('hi')]), result()]);
+      expect(attr(findSpan(h, CHAT), 'gen_ai.provider.name')).toBe('snowflake');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('reads the platform flags the way the CLI does', async () => {

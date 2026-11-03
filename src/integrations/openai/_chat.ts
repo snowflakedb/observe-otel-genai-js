@@ -36,6 +36,7 @@ import {
 import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import { type AdapterCallOptions, identityFieldsFromOptions } from '../_common/metadata.js';
+import { providerOfHost } from '../_common/provider.js';
 import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 import { toolDefinitions } from '../_common/tool-definitions.js';
@@ -150,8 +151,9 @@ function buildChatSeed(
   options: OpenAIAdapterOptions,
   baseURL: string | undefined,
 ): GenerationStart {
+  const server = serverOf(baseURL);
   return {
-    model: { provider: 'openai', name: params.model },
+    model: { provider: providerOfHost(server.serverAddress) ?? 'openai', name: params.model },
     operationName: OP_CHAT,
     maxTokens:
       (params as { max_completion_tokens?: number }).max_completion_tokens ??
@@ -166,7 +168,7 @@ function buildChatSeed(
     toolChoice: typeof params.tool_choice === 'string' ? params.tool_choice : undefined,
     outputType: outputTypeOf(params.response_format?.type),
     tools: toolDefinitions(params.tools),
-    ...serverOf(baseURL),
+    ...server,
     ...identityFieldsFromOptions(options),
     contentCapture: options.contentCapture,
     tags: options.tags,

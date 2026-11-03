@@ -47,6 +47,7 @@ import { ATTR_USAGE_IS_PARTIAL, OP_CHAT } from '../../semconv.js';
 import { type ApiPromiseLike, instrumentApiPromise } from '../_common/api-promise.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
 import { identityFieldsFromOptions } from '../_common/metadata.js';
+import { providerOfHost } from '../_common/provider.js';
 import { outputTypeOf, serverOf } from '../_common/request.js';
 import { type StreamWrapOptions, wrapProviderStream } from '../_common/stream.js';
 
@@ -112,8 +113,12 @@ function buildResponsesSeed(
     text?: { format?: { type?: string } };
     conversation?: string | { id?: string } | null;
   };
+  const server = serverOf(baseURL);
   return {
-    model: { provider: 'openai', name: typeof p.model === 'string' ? p.model : '' },
+    model: {
+      provider: providerOfHost(server.serverAddress) ?? 'openai',
+      name: typeof p.model === 'string' ? p.model : '',
+    },
     operationName: OP_CHAT,
     maxTokens: p.max_output_tokens ?? undefined,
     temperature: p.temperature ?? undefined,
@@ -125,7 +130,7 @@ function buildResponsesSeed(
     systemPrompt: p.instructions ?? undefined,
     outputType: outputTypeOf(p.text?.format?.type),
     tools: mapResponsesTools(p.tools),
-    ...serverOf(baseURL),
+    ...server,
     ...identityFieldsFromOptions(options),
     // The request's own conversation, unless withMetadata names one.
     conversationId:

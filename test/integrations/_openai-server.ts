@@ -137,6 +137,20 @@ function isFailure(value: unknown): value is { status: number; body: unknown } {
   );
 }
 
+/**
+ * A `fetch` that sends every request to `server`, so a client can keep a base URL
+ * naming another host, which is what the instrumentation reads.
+ */
+export function fetchVia(server: FakeOpenAIServer): typeof fetch {
+  const target = new URL(server.baseURL);
+  return (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    url.protocol = target.protocol;
+    url.host = target.host;
+    return fetch(url, init);
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Payload builders
 // -----------------------------------------------------------------------------
