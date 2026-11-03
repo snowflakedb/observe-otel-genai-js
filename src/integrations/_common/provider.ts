@@ -51,3 +51,25 @@ export function matchProvider(hints: readonly string[]): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Providers serving OpenAI's or Anthropic's API, by base URL host. Keep in sync with
+ * `_PROVIDER_BY_HOST` in the Python SDK.
+ */
+const PROVIDER_BY_HOST: readonly (readonly [RegExp, string])[] = [
+  [/(^|\.)snowflakecomputing\.com$/, 'snowflake'],
+  [/\.openai\.azure\.com$/, 'azure.ai.openai'],
+  [/\.(services|inference)\.ai\.azure\.com$/, 'azure.ai.inference'],
+  [/^bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com$/, 'aws.bedrock'],
+  [/^api\.groq\.com$/, 'groq'],
+  [/^api\.deepseek\.com$/, 'deepseek'],
+  [/^api\.x\.ai$/, 'x_ai'],
+  [/^api\.mistral\.ai$/, 'mistral_ai'],
+  [/^generativelanguage\.googleapis\.com$/, 'gcp.gemini'],
+];
+
+/** The provider serving `host`, or undefined for a host not in the table. */
+export function providerOfHost(host: string | undefined): string | undefined {
+  if (!host) return undefined;
+  return PROVIDER_BY_HOST.find(([pattern]) => pattern.test(host))?.[1];
+}

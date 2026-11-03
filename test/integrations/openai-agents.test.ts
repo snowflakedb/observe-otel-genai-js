@@ -83,6 +83,7 @@ import {
   type FakeOpenAIHandler,
   type FakeOpenAIServer,
   chatCompletion,
+  fetchVia,
   responsesMessage,
   responsesStreamEvents,
   responsesToolCall,
@@ -826,6 +827,20 @@ describe('OpenAIAgentsInstrumentation — real Agent/Runner', () => {
     expect(input).toContain('say hello');
     expect(input).not.toContain('Be brief.');
     expect(String(agentSpan.attributes['gen_ai.output.messages'])).toContain('hello from chat');
+  });
+
+  it('reports the provider from the base URL on the Chat Completions path', async () => {
+    const { server } = await setup(() => chatCompletion());
+    const cortex = new OpenAI({
+      apiKey: 'test',
+      baseURL: 'https://myorg-myaccount.snowflakecomputing.com/api/v2/cortex/v1',
+      fetch: fetchVia(server),
+    });
+    const model = new A.OpenAIChatCompletionsModel(cortex, 'claude-haiku-4-5');
+    await new A.Runner().run(new A.Agent({ name: 'cortex-agent', model }), 'say hello');
+
+    const chat = only(spansNamed(OP_CHAT), 'chat span');
+    expect(chat.attributes[ATTR_PROVIDER_NAME]).toBe('snowflake');
   });
 
   it('records agent messages on the Responses path', async () => {

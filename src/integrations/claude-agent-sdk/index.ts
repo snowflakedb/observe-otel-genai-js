@@ -56,6 +56,8 @@ import {
 import { usageAttributes } from '../../spans/attributes.js';
 import { blockToParts } from '../_common/anthropic-blocks.js';
 import type { AdapterCallOptions } from '../_common/metadata.js';
+import { providerOfHost } from '../_common/provider.js';
+import { serverOf } from '../_common/request.js';
 import { isTracedQuery, markTraced } from './traced-queries.js';
 import type {
   AgentContentBlock,
@@ -900,12 +902,16 @@ function callerSystemPrompt(prompt: unknown): string | undefined {
   return custom?.type === 'custom' ? pickString(custom.prompt) : undefined;
 }
 
+/**
+ * With no routing flag set, the CLI calls `ANTHROPIC_BASE_URL`, which can be another
+ * provider serving the Anthropic API, such as Snowflake Cortex.
+ */
 function resolveProvider(options: AgentQueryOptions): string {
   const env = options.env ?? process.env;
   for (const [key, provider] of PROVIDER_ENV) {
     if (TRUTHY.has(env[key]?.trim().toLowerCase() ?? '')) return provider;
   }
-  return 'anthropic';
+  return providerOfHost(serverOf(env.ANTHROPIC_BASE_URL).serverAddress) ?? 'anthropic';
 }
 
 /** Adds to the replayed conversation, dropping the oldest messages past the bound. */
