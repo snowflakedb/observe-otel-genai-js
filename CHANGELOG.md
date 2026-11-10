@@ -6,6 +6,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
 ### Added
 - Support for OpenTelemetry JS SDK 3.x: the `@opentelemetry/instrumentation`
   peer range is now `>=0.200.0 <0.400.0`. Before, npm refused to install the

@@ -1,6 +1,6 @@
 {
   "name": "@snowflake/observe-otel-genai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
   "license": "Apache-2.0",
   "author": "Snowflake Inc.",
