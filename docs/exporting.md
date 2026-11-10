@@ -47,9 +47,9 @@ Both variables are required; without them the test is skipped. `OTLP_SMOKE_ENDPO
 
 The test:
 
-1. Starts `NodeSDK` with `serviceName: 'observe-otel-genai-smoke'`.
+1. Sets up OTLP/HTTP trace and metric export with `service.name = "observe-otel-genai-smoke"`.
 2. Emits one `chat` span with token usage and no messages.
-3. Shuts down the SDK, which flushes the spans and metrics. An export error fails the test.
+3. Shuts down the providers, which flushes the spans and metrics. An export error fails the test.
 
 A pass means the endpoint accepted the export. The test does not query the backend, so check there for a span with:
 

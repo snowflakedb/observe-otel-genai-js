@@ -44,14 +44,33 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = ENDPOINT!;
     process.env.OTEL_EXPORTER_OTLP_HEADERS = `Authorization=Bearer ${TOKEN}`;
 
-    process.env.OTEL_RESOURCE_ATTRIBUTES =
-      'service.version=0.1.0,deployment.environment.name=integration';
-
-    const { NodeSDK } = await import('@opentelemetry/sdk-node');
+    const { metrics, trace } = await import('@opentelemetry/api');
+    const { OTLPMetricExporter } = await import('@opentelemetry/exporter-metrics-otlp-http');
+    const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-http');
+    const { resourceFromAttributes } = await import('@opentelemetry/resources');
+    const { MeterProvider, PeriodicExportingMetricReader } = await import(
+      '@opentelemetry/sdk-metrics'
+    );
+    const { BatchSpanProcessor, BasicTracerProvider } = await import(
+      '@opentelemetry/sdk-trace-base'
+    );
     const { Client } = await import('../../src/client.js');
 
-    const sdk = new NodeSDK({ serviceName: 'observe-otel-genai-smoke' });
-    sdk.start();
+    const resource = resourceFromAttributes({
+      'service.name': 'observe-otel-genai-smoke',
+      'service.version': '0.1.0',
+      'deployment.environment.name': 'integration',
+    });
+    const tracerProvider = new BasicTracerProvider({
+      resource,
+      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter())],
+    });
+    const meterProvider = new MeterProvider({
+      resource,
+      readers: [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter() })],
+    });
+    trace.setGlobalTracerProvider(tracerProvider);
+    metrics.setGlobalMeterProvider(meterProvider);
 
     const client = new Client();
     const rec = client.startGeneration({
@@ -63,7 +82,8 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     await rec.end();
 
     await client.shutdown();
-    await sdk.shutdown();
+    await tracerProvider.shutdown();
+    await meterProvider.shutdown();
 
     expect(true).toBe(true);
   }, 30_000);

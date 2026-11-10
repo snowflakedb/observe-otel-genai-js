@@ -18,8 +18,8 @@
 /**
  * OTLP export example.
  *
- * Starts the standard OpenTelemetry `NodeSDK`, which reads the OTLP exporter
- * settings from env vars, then emits a single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
+ * Sets up OTLP/HTTP export through the shared example setup, which reads the
+ * exporter settings from env vars, then emits a single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
  * points at — any OTel-native backend works (Tempo, Honeycomb, Jaeger,
  * Datadog, Observe, ...).
  *
@@ -30,18 +30,16 @@
  *   pnpm exec tsx examples/otlp-export/index.ts
  */
 
-import { NodeSDK } from '@opentelemetry/sdk-node';
 import { Client, assistantTextMessage, userTextMessage } from '../../src/index.js';
+import { setupOtel } from '../_setup.js';
 
 if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   console.error('OTEL_EXPORTER_OTLP_ENDPOINT is not set. See examples/otlp-export/.env.example.');
   process.exit(1);
 }
 
-// NodeSDK takes service.name from OTEL_SERVICE_NAME and other resource
-// attributes from OTEL_RESOURCE_ATTRIBUTES.
-const sdk = new NodeSDK();
-sdk.start();
+// OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override the default resource.
+const otel = setupOtel('observe-otel-genai-example');
 
 async function main() {
   const client = new Client();
@@ -70,5 +68,5 @@ async function main() {
 
 await main();
 // Shut down before exit so the background exporters get a chance to ship.
-await sdk.shutdown();
+await otel.shutdown();
 console.log('[example] flushed; check your backend for service.name = your OTEL_SERVICE_NAME');
