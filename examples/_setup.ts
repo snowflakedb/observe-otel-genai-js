@@ -24,7 +24,7 @@
 import { metrics, trace } from '@opentelemetry/api';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { resourceFromAttributes } from '@opentelemetry/resources';
+import { detectResources, envDetector, resourceFromAttributes } from '@opentelemetry/resources';
 import {
   MeterProvider,
   type MetricReader,
@@ -41,11 +41,12 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 export function setupOtel(serviceName: string) {
   const hasOtlp = !!process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
+  // OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override these defaults.
   const resource = resourceFromAttributes({
     'service.name': serviceName,
     'service.version': '0.1.0',
-    'deployment.environment.name': process.env.OTEL_DEPLOYMENT_ENVIRONMENT_NAME ?? 'example',
-  });
+    'deployment.environment.name': 'example',
+  }).merge(detectResources({ detectors: [envDetector] }));
 
   const spanProcessors: SpanProcessor[] = hasOtlp
     ? [new BatchSpanProcessor(new OTLPTraceExporter())]

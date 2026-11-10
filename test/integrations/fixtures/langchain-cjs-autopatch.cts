@@ -29,15 +29,24 @@
  */
 
 const { registerInstrumentations } = require('@opentelemetry/instrumentation');
-const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
-const { InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+const { context, trace } = require('@opentelemetry/api');
+const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
+// OpenTelemetry SDK 3.x replaced sdk-trace-base with sdk-trace; see test/_otel-sdk.ts.
+let sdk3: any;
+try {
+  sdk3 = require('@opentelemetry/sdk-trace');
+} catch {}
+const sdk = sdk3 ?? require('@opentelemetry/sdk-trace-base');
 const {
   LangChainInstrumentation,
 } = require('../../../src/integrations/langchain/instrumentation.ts');
 
-const exporter = new InMemorySpanExporter();
-const provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
-provider.register();
+const exporter = new sdk.InMemorySpanExporter();
+const provider = sdk3
+  ? new sdk3.TracerProvider({ spanProcessors: [new sdk3.SimpleSpanProcessor({ exporter })] })
+  : new sdk.BasicTracerProvider({ spanProcessors: [new sdk.SimpleSpanProcessor(exporter)] });
+trace.setGlobalTracerProvider(provider);
+context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 
 // Register BEFORE @langchain/core is required, so the hook can intercept it.
 registerInstrumentations({

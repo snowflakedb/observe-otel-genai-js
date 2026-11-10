@@ -31,23 +31,25 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from '@opentelemetry/sdk-metrics';
-import {
-  InMemorySpanExporter,
-  SimpleSpanProcessor,
-  type SpanProcessor,
-} from '@opentelemetry/sdk-trace-base';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import type { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 
 import { Client } from '../src/client.js';
 import type { ClientConfig } from '../src/config.js';
 import { METRIC_ATTR_TOKEN_TYPE, METRIC_TOKEN_USAGE } from '../src/semconv.js';
+import {
+  InMemorySpanExporter,
+  type TracerProvider,
+  createTracerProvider,
+  registerTracerProvider,
+  simpleSpanProcessor,
+} from './_otel-sdk.js';
 
 export interface Harness {
   client: Client;
   spans: InMemorySpanExporter;
   metricsExporter: InMemoryMetricExporter;
   metricReader: PeriodicExportingMetricReader;
-  tracerProvider: NodeTracerProvider;
+  tracerProvider: TracerProvider;
   meterProvider: MeterProvider;
   /** Flushes everything and shuts the harness down. */
   shutdown(): Promise<void>;
@@ -73,12 +75,11 @@ export function createHarness(input?: ClientConfig): Harness {
     forceFlush: async () => {},
     shutdown: async () => {},
   };
-  const tracerProvider = new NodeTracerProvider({
+  const tracerProvider = createTracerProvider({
     resource: resourceFromAttributes({ 'service.name': 'observe-otel-genai-test' }),
-    spanProcessors: [openTracker, new SimpleSpanProcessor(spans)],
+    spanProcessors: [openTracker, simpleSpanProcessor(spans)],
   });
-  tracerProvider.register();
-  trace.setGlobalTracerProvider(tracerProvider);
+  registerTracerProvider(tracerProvider);
 
   const metricsExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
   const metricReader = new PeriodicExportingMetricReader({

@@ -11,10 +11,10 @@ The core entry point depends only on `@opentelemetry/api`. It does not register 
 Requires Node.js 22 or later. The package ships both ESM and CommonJS.
 
 ```bash
-pnpm add @snowflake/observe-otel-genai @opentelemetry/api@1.9.1 @opentelemetry/sdk-node@0.223.0 @opentelemetry/instrumentation@0.223.0
+pnpm add @snowflake/observe-otel-genai @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/instrumentation
 ```
 
-Keep the OpenTelemetry versions as shown. Without them, the install picks up OpenTelemetry's new major release (`@opentelemetry/instrumentation` 0.300 and `@opentelemetry/api` 1.10), which this package does not support yet.
+Both OpenTelemetry JS SDK 2.x and 3.x work. SDK 3.x (`@opentelemetry/sdk-node` 0.300 and later) needs Node.js 22.15 or later.
 
 If your app already sets up OpenTelemetry, skip `@opentelemetry/sdk-node` and add the instrumentations below to your existing setup.
 
@@ -55,7 +55,7 @@ const client = new Client({ contentCaptureMode: 'no_tool_content' });
 registerInstrumentations({ instrumentations: [new VercelAiSdkInstrumentation({ client })] });
 ```
 
-Create the `Client` after the OpenTelemetry SDK starts (`sdk.start()` or `bootstrapOtel()`), and register the instrumentations after it: a `Client` created before records spans but no metrics.
+Create the `Client` after the OpenTelemetry SDK starts (`sdk.start()`), and register the instrumentations after it: a `Client` created before records spans but no metrics.
 
 | Mode | What is recorded |
 |---|---|

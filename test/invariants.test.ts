@@ -18,9 +18,9 @@
 /**
  * Repository invariants enforced as CI gates.
  *
- *  1. Core purity: nothing under `src/` (except the opt-in `src/bootstrap/`
- *     submodule) may import from `@opentelemetry/sdk-*`, the OTLP exporters, or
- *     `@opentelemetry/resources`. The core depends only on `@opentelemetry/api`.
+ *  1. Core purity: nothing under `src/` may import from `@opentelemetry/sdk-*`,
+ *     the OTLP exporters, or `@opentelemetry/resources`. The core depends only
+ *     on `@opentelemetry/api`.
  *     This is the library's headline design promise; this test makes it
  *     impossible to regress silently.
  *  2. Version sync: `VERSION` in `src/version.ts` must match `package.json`'s
@@ -28,7 +28,7 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { VERSION } from '../src/version.js';
@@ -36,9 +36,8 @@ import { VERSION } from '../src/version.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const srcDir = join(repoRoot, 'src');
-const bootstrapDir = join(srcDir, 'bootstrap');
 
-/** Module specifiers that the core (outside bootstrap) must never import. */
+/** Module specifiers that `src/` must never import. */
 const FORBIDDEN_SPECIFIER = /^@opentelemetry\/(sdk-|exporter-|resources)/;
 
 /** Collects module specifiers from import/export-from, side-effect, and dynamic forms. */
@@ -73,8 +72,8 @@ function listTsFiles(dir: string): string[] {
 }
 
 describe('core purity', () => {
-  it('no src/ file outside bootstrap/ imports @opentelemetry/sdk-*, exporters, or resources', () => {
-    const coreFiles = listTsFiles(srcDir).filter((f) => !f.startsWith(bootstrapDir + sep));
+  it('no src/ file imports @opentelemetry/sdk-*, exporters, or resources', () => {
+    const coreFiles = listTsFiles(srcDir);
     expect(coreFiles.length).toBeGreaterThan(0);
 
     const violations: string[] = [];

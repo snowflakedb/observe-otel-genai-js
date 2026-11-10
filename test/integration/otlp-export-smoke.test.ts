@@ -44,15 +44,14 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = ENDPOINT!;
     process.env.OTEL_EXPORTER_OTLP_HEADERS = `Authorization=Bearer ${TOKEN}`;
 
-    const { bootstrapOtel } = await import('../../src/bootstrap/index.js');
+    process.env.OTEL_RESOURCE_ATTRIBUTES =
+      'service.version=0.1.0,deployment.environment.name=integration';
+
+    const { NodeSDK } = await import('@opentelemetry/sdk-node');
     const { Client } = await import('../../src/client.js');
 
-    const { tracerProvider, meterProvider } = bootstrapOtel({
-      serviceName: 'observe-otel-genai-smoke',
-      serviceVersion: '0.1.0',
-      deploymentEnvironment: 'integration',
-      metricExportIntervalMillis: 5_000,
-    });
+    const sdk = new NodeSDK({ serviceName: 'observe-otel-genai-smoke' });
+    sdk.start();
 
     const client = new Client();
     const rec = client.startGeneration({
@@ -64,10 +63,7 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     await rec.end();
 
     await client.shutdown();
-    await tracerProvider.forceFlush();
-    await meterProvider.forceFlush();
-    await tracerProvider.shutdown();
-    await meterProvider.shutdown();
+    await sdk.shutdown();
 
     expect(true).toBe(true);
   }, 30_000);

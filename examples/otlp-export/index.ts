@@ -18,8 +18,8 @@
 /**
  * OTLP export example.
  *
- * Uses `bootstrapOtel` to wire up OTLP/HTTP from env vars, then emits a
- * single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
+ * Starts the standard OpenTelemetry `NodeSDK`, which reads the OTLP exporter
+ * settings from env vars, then emits a single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
  * points at — any OTel-native backend works (Tempo, Honeycomb, Jaeger,
  * Datadog, Observe, ...).
  *
@@ -30,7 +30,7 @@
  *   pnpm exec tsx examples/otlp-export/index.ts
  */
 
-import { bootstrapOtel } from '../../src/bootstrap/index.js';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { Client, assistantTextMessage, userTextMessage } from '../../src/index.js';
 
 if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
@@ -38,11 +38,10 @@ if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   process.exit(1);
 }
 
-const { tracerProvider, meterProvider } = bootstrapOtel({
-  serviceName: process.env.OTEL_SERVICE_NAME ?? 'observe-otel-genai-example',
-  serviceVersion: process.env.OTEL_SERVICE_VERSION,
-  deploymentEnvironment: process.env.OTEL_DEPLOYMENT_ENVIRONMENT_NAME,
-});
+// NodeSDK takes service.name from OTEL_SERVICE_NAME and other resource
+// attributes from OTEL_RESOURCE_ATTRIBUTES.
+const sdk = new NodeSDK();
+sdk.start();
 
 async function main() {
   const client = new Client();
@@ -70,9 +69,6 @@ async function main() {
 }
 
 await main();
-// Flush before exit so the background exporters get a chance to ship.
-await tracerProvider.forceFlush();
-await meterProvider.forceFlush();
-await tracerProvider.shutdown();
-await meterProvider.shutdown();
+// Shut down before exit so the background exporters get a chance to ship.
+await sdk.shutdown();
 console.log('[example] flushed; check your backend for service.name = your OTEL_SERVICE_NAME');

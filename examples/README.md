@@ -40,6 +40,6 @@ pnpm exec tsx examples/otlp-export/index.ts
 | `multi-turn/` | Three turns of one conversation, each its own trace. `withConversationId` and `withUserId` set the conversation and user for every turn; `turnIndex` and `turnRole` add `genai.conversation.turn_index` and `genai.conversation.turn_role`. |
 | `multi-agent-dag/` | A planner, executor and responder inside one `invokeAgent(seed, fn)` callback, so all three nest under the `invoke_agent orchestrator` span. Each later step lists earlier ones in `parentGenerationIds`, which become span links. |
 | `openai-agents/` | `OpenAIAgentsInstrumentation` and `OpenAIInstrumentation` registered together on a real `Agent` / `Runner` handoff, producing one trace: `invoke_workflow` > `invoke_agent` > `chat` and `execute_tool`. A local server stands in for the OpenAI API. |
-| `otlp-export/` | `bootstrapOtel` set up from `OTEL_*` env vars, sending one generation to any OTLP/HTTP backend. |
+| `otlp-export/` | The standard `NodeSDK` set up from `OTEL_*` env vars, sending one generation to any OTLP/HTTP backend. |
 
 `_setup.ts` is the shared OpenTelemetry setup the first four examples use.
