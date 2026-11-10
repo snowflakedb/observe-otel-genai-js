@@ -42,4 +42,4 @@ pnpm exec tsx examples/otlp-export/index.ts
 | `openai-agents/` | `OpenAIAgentsInstrumentation` and `OpenAIInstrumentation` registered together on a real `Agent` / `Runner` handoff, producing one trace: `invoke_workflow` > `invoke_agent` > `chat` and `execute_tool`. A local server stands in for the OpenAI API. |
 | `otlp-export/` | OTLP/HTTP export set up from `OTEL_*` env vars, sending one generation to any OTLP/HTTP backend. |
 
-`_setup.ts` is the shared OpenTelemetry setup all the examples use.
+`_setup.ts` is the shared OpenTelemetry setup all the examples use. In your own app, start `NodeSDK` from `@opentelemetry/sdk-node` as [docs/exporting.md](../docs/exporting.md) describes. The examples build the providers by hand only so this repository does not depend on `sdk-node`.

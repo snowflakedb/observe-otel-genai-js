@@ -19,8 +19,8 @@
  * The trace SDK the tests collect spans with, on either OpenTelemetry SDK 2.x or
  * 3.x. The dev install uses 2.x (`@opentelemetry/sdk-trace-base`); a CI job
  * swaps in 3.x, which replaced that package with `@opentelemetry/sdk-trace` and
- * changed two constructors. Types come from 2.x; the shapes the tests use are
- * the same in both.
+ * changed two constructors. `SdkTrace2` and `SdkTrace3` list what the tests use
+ * from each; the types come from 2.x because only 2.x is installed for dev.
  */
 
 import { context, trace } from '@opentelemetry/api';
@@ -33,31 +33,48 @@ import type {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 
-async function importIfInstalled(name: string): Promise<any> {
+type TracerProviderConfig = {
+  resource?: Resource;
+  spanProcessors: SpanProcessor[];
+};
+
+interface SdkTrace2 {
+  BasicTracerProvider: typeof BasicTracerProvider;
+  SimpleSpanProcessor: new (exporter: SpanExporter) => SpanProcessor;
+  InMemorySpanExporter: typeof InMemorySpanExporterType;
+}
+
+interface SdkTrace3 {
+  TracerProvider: new (config: TracerProviderConfig) => BasicTracerProvider;
+  SimpleSpanProcessor: new (config: { exporter: SpanExporter }) => SpanProcessor;
+  InMemorySpanExporter: typeof InMemorySpanExporterType;
+}
+
+async function importIfInstalled<T>(name: string): Promise<T | undefined> {
   try {
-    return await import(name);
+    return (await import(name)) as T;
   } catch {
     return undefined;
   }
 }
 
-const sdk3 = await importIfInstalled('@opentelemetry/sdk-trace');
-const sdk = sdk3 ?? (await importIfInstalled('@opentelemetry/sdk-trace-base'));
+const sdk3 = await importIfInstalled<SdkTrace3>('@opentelemetry/sdk-trace');
+const sdk2 = sdk3 ? undefined : await importIfInstalled<SdkTrace2>('@opentelemetry/sdk-trace-base');
 
 export type InMemorySpanExporter = InMemorySpanExporterType;
-export const InMemorySpanExporter: typeof InMemorySpanExporterType = sdk.InMemorySpanExporter;
+export const InMemorySpanExporter: typeof InMemorySpanExporterType = (sdk3 ?? sdk2)!
+  .InMemorySpanExporter;
 
 export type TracerProvider = BasicTracerProvider;
 
-export function createTracerProvider(config: {
-  resource?: Resource;
-  spanProcessors: SpanProcessor[];
-}): TracerProvider {
-  return sdk3 ? new sdk3.TracerProvider(config) : new sdk.BasicTracerProvider(config);
+export function createTracerProvider(config: TracerProviderConfig): TracerProvider {
+  return sdk3 ? new sdk3.TracerProvider(config) : new sdk2!.BasicTracerProvider(config);
 }
 
 export function simpleSpanProcessor(exporter: SpanExporter): SpanProcessor {
-  return sdk3 ? new sdk3.SimpleSpanProcessor({ exporter }) : new sdk.SimpleSpanProcessor(exporter);
+  return sdk3
+    ? new sdk3.SimpleSpanProcessor({ exporter })
+    : new sdk2!.SimpleSpanProcessor(exporter);
 }
 
 /** Makes `provider` global, with the context manager that span nesting needs. */
