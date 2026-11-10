@@ -18,12 +18,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** the `@snowflake/observe-otel-genai/bootstrap` entry point and
   `bootstrapOtel()`. Start the standard OpenTelemetry SDK instead, for example
   `new NodeSDK({ serviceName: 'my-agent' }).start()` from
-  `@opentelemetry/sdk-node` (0.206.0 or later; earlier versions also need
-  `OTEL_METRICS_EXPORTER=otlp` to export metrics). It reads the same
-  `OTEL_EXPORTER_OTLP_*` variables,
-  plus `OTEL_RESOURCE_ATTRIBUTES` and the resource detectors that
-  `bootstrapOtel()` skipped. `bootstrapOtel()` also read `OTEL_SERVICE_VERSION`
-  and `OTEL_DEPLOYMENT_ENVIRONMENT_NAME`, which are not standard; set
+  `@opentelemetry/sdk-node` 0.209.0 or later. Earlier versions export only
+  traces unless `OTEL_METRICS_EXPORTER=otlp` is set, and `bootstrapOtel()`
+  always exported metrics, so do not pin an earlier version. `NodeSDK` reads
+  the same `OTEL_EXPORTER_OTLP_*` variables, plus `OTEL_RESOURCE_ATTRIBUTES`
+  and the resource detectors that `bootstrapOtel()` skipped. `bootstrapOtel()`
+  also read `OTEL_SERVICE_VERSION` and `OTEL_DEPLOYMENT_ENVIRONMENT_NAME`,
+  which are not standard; set
   `OTEL_RESOURCE_ATTRIBUTES=service.version=...,deployment.environment.name=...`
   instead.
 - The optional peer dependencies only the bootstrap entry point used:
