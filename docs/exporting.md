@@ -31,7 +31,7 @@ const client = new Client();
 await sdk.shutdown();
 ```
 
-`NodeSDK` from `@opentelemetry/sdk-node` reads the variables above and exports traces and metrics over OTLP. Versions before 0.206.0 export only traces unless you also set `OTEL_METRICS_EXPORTER=otlp`. If your app already sets up OpenTelemetry, skip this step and just construct a `Client`.
+`NodeSDK` from `@opentelemetry/sdk-node` reads the variables above and exports traces and metrics over OTLP. Versions before 0.209.0 export only traces unless you also set `OTEL_METRICS_EXPORTER=otlp`. If your app already sets up OpenTelemetry, skip this step and just construct a `Client`.
 
 ## Smoke test
 
