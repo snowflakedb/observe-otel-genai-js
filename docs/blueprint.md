@@ -11,7 +11,7 @@ A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emi
 - **Language**: TypeScript-first, published as both ESM and CommonJS, Node 22+.
 - **Sync and async**: recorder setters (`setResult`, `setCallError`, `setFirstTokenAt`, ...) are synchronous. Only `recorder.end()`, `client.flush()` and `client.shutdown()` return a `Promise`. There is no separate async client.
 - **Cleanup**: recorders and the `Client` support `await using` through `Symbol.asyncDispose`. A manual `try/finally` works too.
-- **Packaging**: one package, `@snowflake/observe-otel-genai`. Each integration has its own subpath export (`/openai`, `/langchain`, ...) behind an optional peer dependency. The OTel SDK setup lives in `/bootstrap`, so the core entry point depends only on `@opentelemetry/api`.
+- **Packaging**: one package, `@snowflake/observe-otel-genai`. Each integration has its own subpath export (`/openai`, `/langchain`, ...) behind an optional peer dependency. The package does not set up the OTel SDK: the app starts its own, for example `NodeSDK`, so the core entry point depends only on `@opentelemetry/api`.
 - **Span parenting**: the fluent `startX(...)` methods start a span without making it active. The callback variants, `invokeAgent(seed, fn)`, `invokeWorkflow(seed, fn)` and `createAgent(seed, fn)`, make their span active for `fn`, so spans started inside nest under it. A fluent recorder can do the same with `recorder.withActiveContext(fn)`.
 - **Identity**: agent name and version, conversation id, conversation title and user id each take the first value set by the span itself, then the enclosing scope (a `withX(...)` helper or the span it was started under), then the `Client` default. The version only travels with its agent name. Scopes live in the OpenTelemetry context next to the active span. Integration instrumentations take no identity options. Full rules: [integrations.md](integrations.md#identity).
 - **Operation naming**: method names stay ergonomic (`startGeneration`, `startStreamingGeneration`). The spec value goes on the span as `gen_ai.operation.name`, `chat` by default, with `text_completion` and `generate_content` as overrides.
@@ -32,7 +32,7 @@ Out of scope:
 - A custom ingest, proto or export pipeline, or any vendor-specific ingest feature.
 - Image, audio and other multi-modal operations.
 - Ports to other languages.
-- A gRPC exporter in `bootstrapOtel`. It ships OTLP/HTTP only; users can wire gRPC themselves.
+- Setting up the OTel SDK. Providers, exporters, samplers and resource detectors are the app's choice.
 
 ## Public API
 

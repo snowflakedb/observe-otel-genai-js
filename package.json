@@ -1,6 +1,6 @@
 {
   "name": "@snowflake/observe-otel-genai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lightweight, vendor-neutral OpenTelemetry wrapper for AI agents. Pure OTel emission with GenAI semantic-conventions support.",
   "license": "Apache-2.0",
   "author": "Snowflake Inc.",
@@ -20,11 +20,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/cjs/index.js"
-    },
-    "./bootstrap": {
-      "types": "./dist/bootstrap/index.d.ts",
-      "import": "./dist/bootstrap/index.js",
-      "require": "./dist/cjs/bootstrap/index.js"
     },
     "./vercel-ai-sdk": {
       "types": "./dist/integrations/vercel-ai-sdk/index.d.ts",
@@ -110,15 +105,7 @@
     "@anthropic-ai/sdk": ">=0.30.0 <1",
     "@langchain/core": "^0.3.0 || ^1.0.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/context-async-hooks": "^2.0.0",
-    "@opentelemetry/exporter-metrics-otlp-http": ">=0.200.0 <0.300.0",
-    "@opentelemetry/exporter-trace-otlp-http": ">=0.200.0 <0.300.0",
-    "@opentelemetry/instrumentation": ">=0.200.0 <0.300.0",
-    "@opentelemetry/resources": "^2.0.0",
-    "@opentelemetry/sdk-metrics": "^2.0.0",
-    "@opentelemetry/sdk-trace-base": "^2.0.0",
-    "@opentelemetry/sdk-trace-node": "^2.0.0",
-    "@opentelemetry/semantic-conventions": "^1.30.0",
+    "@opentelemetry/instrumentation": ">=0.200.0 <0.400.0",
     "ai": "^7.0.0",
     "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
@@ -139,30 +126,6 @@
       "optional": true
     },
     "@langchain/core": {
-      "optional": true
-    },
-    "@opentelemetry/context-async-hooks": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-metrics-otlp-http": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-trace-otlp-http": {
-      "optional": true
-    },
-    "@opentelemetry/resources": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-metrics": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-base": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-node": {
-      "optional": true
-    },
-    "@opentelemetry/semantic-conventions": {
       "optional": true
     },
     "ai": {
@@ -189,7 +152,6 @@
     "@opentelemetry/sdk-metrics": "^2.0.0",
     "@opentelemetry/sdk-trace-base": "^2.0.0",
     "@opentelemetry/sdk-trace-node": "^2.0.0",
-    "@opentelemetry/semantic-conventions": "^1.30.0",
     "@types/node": "^22.0.0",
     "ai": "^7.0.0",
     "esbuild": "^0.25.0",

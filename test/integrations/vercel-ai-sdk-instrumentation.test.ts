@@ -15,11 +15,6 @@
  * limitations under the License.
  */
 
-import {
-  BasicTracerProvider,
-  InMemorySpanExporter,
-  SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-base';
 import { generateText } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,6 +23,7 @@ import { Client } from '../../src/client.js';
 import { genaiTelemetryIntegration } from '../../src/integrations/vercel-ai-sdk/index.js';
 import { VercelAiSdkInstrumentation } from '../../src/integrations/vercel-ai-sdk/instrumentation.js';
 import { type Harness, createHarness } from '../_harness.js';
+import { InMemorySpanExporter, createTracerProvider, simpleSpanProcessor } from '../_otel-sdk.js';
 
 /** The AI SDK's global list of telemetry integrations. */
 const aiSdkGlobal = globalThis as { AI_SDK_TELEMETRY_INTEGRATIONS?: unknown[] };
@@ -108,7 +104,7 @@ describe('VercelAiSdkInstrumentation', () => {
   it('builds its own client on the first call, from the providers it is given afterwards', async () => {
     // Not the global provider, so only a client built after setTracerProvider records here.
     const spans = new InMemorySpanExporter();
-    const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(spans)] });
+    const provider = createTracerProvider({ spanProcessors: [simpleSpanProcessor(spans)] });
     // As registerInstrumentations does: construct (which enables), then hand over providers.
     instr = new VercelAiSdkInstrumentation();
     instr.setTracerProvider(provider);

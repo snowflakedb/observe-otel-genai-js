@@ -6,6 +6,35 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
+### Added
+- Support for OpenTelemetry JS SDK 3.x: the `@opentelemetry/instrumentation`
+  peer range is now `>=0.200.0 <0.400.0`. Before, npm refused to install the
+  package into an app that had `@opentelemetry/instrumentation` 0.300. CI runs
+  the tests on both SDK 2.x and 3.x.
+
+### Removed
+- **Breaking:** the `@snowflake/observe-otel-genai/bootstrap` entry point and
+  `bootstrapOtel()`. Start the standard OpenTelemetry SDK instead, for example
+  `new NodeSDK({ serviceName: 'my-agent' }).start()` from
+  `@opentelemetry/sdk-node` 0.209.0 or later. Earlier versions export only
+  traces unless `OTEL_METRICS_EXPORTER=otlp` is set, and `bootstrapOtel()`
+  always exported metrics, so do not pin an earlier version. `NodeSDK` reads
+  the same `OTEL_EXPORTER_OTLP_*` variables, plus `OTEL_RESOURCE_ATTRIBUTES`
+  and the resource detectors that `bootstrapOtel()` skipped. `bootstrapOtel()`
+  also read `OTEL_SERVICE_VERSION` and `OTEL_DEPLOYMENT_ENVIRONMENT_NAME`,
+  which are not standard; set
+  `OTEL_RESOURCE_ATTRIBUTES=service.version=...,deployment.environment.name=...`
+  instead.
+- The optional peer dependencies only the bootstrap entry point used:
+  `@opentelemetry/sdk-trace-node`, `@opentelemetry/sdk-trace-base`,
+  `@opentelemetry/sdk-metrics`, `@opentelemetry/resources`,
+  `@opentelemetry/exporter-trace-otlp-http`,
+  `@opentelemetry/exporter-metrics-otlp-http` and
+  `@opentelemetry/semantic-conventions`, and `@opentelemetry/context-async-hooks`,
+  which nothing used.
+
 ### Fixed
 - OpenAI: `gen_ai.provider.name` comes from the client's base URL host, so an
   OpenAI client pointed at Snowflake Cortex, Azure, Bedrock, Groq, DeepSeek, xAI,

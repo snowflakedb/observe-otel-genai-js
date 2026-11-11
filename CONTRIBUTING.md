@@ -32,8 +32,8 @@ failure, so a lint or type error surfaces without waiting on the suite. Use
 ## Conventions
 
 - TypeScript strict mode. No `any` outside provider-typed boundaries.
-- Keep `src/` free of `@opentelemetry/sdk-*` imports outside `src/bootstrap/`.
-  The core imports only `@opentelemetry/api`; the OTel-native
+- Keep `src/` free of `@opentelemetry/sdk-*` imports: setting up the SDK is
+  the app's job. The core imports only `@opentelemetry/api`; the OTel-native
   instrumentations in `src/integrations/` also use
   `@opentelemetry/instrumentation`.
 - Library-specific attributes go under the `genai.*` namespace; only OTel

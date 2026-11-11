@@ -18,8 +18,8 @@
 /**
  * OTLP export example.
  *
- * Uses `bootstrapOtel` to wire up OTLP/HTTP from env vars, then emits a
- * single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
+ * Sets up OTLP/HTTP export through the shared example setup, which reads the
+ * exporter settings from env vars, then emits a single generation that ships to whichever backend `OTEL_EXPORTER_OTLP_*`
  * points at — any OTel-native backend works (Tempo, Honeycomb, Jaeger,
  * Datadog, Observe, ...).
  *
@@ -30,19 +30,16 @@
  *   pnpm exec tsx examples/otlp-export/index.ts
  */
 
-import { bootstrapOtel } from '../../src/bootstrap/index.js';
 import { Client, assistantTextMessage, userTextMessage } from '../../src/index.js';
+import { setupOtel } from '../_setup.js';
 
 if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   console.error('OTEL_EXPORTER_OTLP_ENDPOINT is not set. See examples/otlp-export/.env.example.');
   process.exit(1);
 }
 
-const { tracerProvider, meterProvider } = bootstrapOtel({
-  serviceName: process.env.OTEL_SERVICE_NAME ?? 'observe-otel-genai-example',
-  serviceVersion: process.env.OTEL_SERVICE_VERSION,
-  deploymentEnvironment: process.env.OTEL_DEPLOYMENT_ENVIRONMENT_NAME,
-});
+// OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override the default resource.
+const otel = setupOtel('observe-otel-genai-example');
 
 async function main() {
   const client = new Client();
@@ -70,9 +67,6 @@ async function main() {
 }
 
 await main();
-// Flush before exit so the background exporters get a chance to ship.
-await tracerProvider.forceFlush();
-await meterProvider.forceFlush();
-await tracerProvider.shutdown();
-await meterProvider.shutdown();
+// Shut down before exit so the background exporters get a chance to ship.
+await otel.shutdown();
 console.log('[example] flushed; check your backend for service.name = your OTEL_SERVICE_NAME');

@@ -13,8 +13,6 @@
 
 All peer dependencies are optional, so installing the core does not pull them in. The `/instrumentation` subpaths also need `@opentelemetry/instrumentation`.
 
-Adapters work the same whether you set up OpenTelemetry yourself or with [`bootstrapOtel`](bootstrap.md).
-
 ## Capability matrix
 
 Messages and tool definitions appear only once [content capture](#content-capture) is on.
@@ -98,7 +96,7 @@ agent's name.
 
 Scopes live in the OpenTelemetry context, next to the active span, so code that saves
 and restores a context restores both. Like span nesting, they need a registered
-context manager (`bootstrapOtel` and `NodeTracerProvider.register()` install one);
+context manager (`NodeSDK` and `NodeTracerProvider.register()` install one);
 without it, scopes do nothing.
 
 An agent span that the first three levels leave unnamed takes its integration's
@@ -569,7 +567,7 @@ registerInstrumentations({
 });
 ```
 
-- The config takes every handler option plus an optional `client`. Without a `client`, one is built from the registered providers, so register those first (for example with `bootstrapOtel`).
+- The config takes every handler option plus an optional `client`. Without a `client`, one is built from the registered providers, so start the OpenTelemetry SDK first (for example `NodeSDK`).
 - **CommonJS**: patched automatically. Call `registerInstrumentations(...)` before the first `require('@langchain/core')` or `require('@langchain/langgraph')`.
 - **ESM**: call `manuallyInstrument(...)` once with the modules below, before importing `@langchain/core`. Do the same for bundlers that inline `@langchain/core` (Next.js, some Webpack or esbuild setups) and non-Node runtimes. Do not enable the OpenTelemetry ESM loader hook for `@langchain/core`: it breaks the library's LangSmith interop.
 
@@ -633,12 +631,12 @@ Register it as an OpenTelemetry instrumentation, which needs `@opentelemetry/ins
 // preload.mjs
 import { register } from 'node:module';
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { ClaudeAgentSdkInstrumentation } from '@snowflake/observe-otel-genai/claude-agent-sdk/instrumentation';
 
 // Register the hook before the app imports the SDK.
 register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
-bootstrapOtel({ serviceName: 'my-agent' });
+new NodeSDK({ serviceName: 'my-agent' }).start();
 registerInstrumentations({
   instrumentations: [new ClaudeAgentSdkInstrumentation()],
 });

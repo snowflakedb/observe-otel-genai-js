@@ -41,16 +41,25 @@
 
 const http = require('node:http');
 const { registerInstrumentations } = require('@opentelemetry/instrumentation');
-const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
-const { InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+const { context, trace } = require('@opentelemetry/api');
+const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
+// OpenTelemetry SDK 3.x replaced sdk-trace-base with sdk-trace; see test/_otel-sdk.ts.
+let sdk3: any;
+try {
+  sdk3 = require('@opentelemetry/sdk-trace');
+} catch {}
+const sdk = sdk3 ?? require('@opentelemetry/sdk-trace-base');
 const {
   OpenAIAgentsInstrumentation,
 } = require('../../../src/integrations/openai-agents/instrumentation.ts');
 const { OpenAIInstrumentation } = require('../../../src/integrations/openai/instrumentation.ts');
 
-const exporter = new InMemorySpanExporter();
-const provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
-provider.register();
+const exporter = new sdk.InMemorySpanExporter();
+const provider = sdk3
+  ? new sdk3.TracerProvider({ spanProcessors: [new sdk3.SimpleSpanProcessor({ exporter })] })
+  : new sdk.BasicTracerProvider({ spanProcessors: [new sdk.SimpleSpanProcessor(exporter)] });
+trace.setGlobalTracerProvider(provider);
+context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 
 const agentsInstrumentation = new OpenAIAgentsInstrumentation({
   contentCapture: 'full',
@@ -67,7 +76,6 @@ const Agents = require('@openai/agents');
 const agentsCoreDir = path.dirname(require.resolve('@openai/agents-core'));
 const openaiEntry = require.resolve('openai', { paths: [agentsCoreDir] });
 const OpenAIModule = require(openaiEntry);
-const { trace } = require('@opentelemetry/api');
 
 // The SDK disables tracing under NODE_ENV=test. This fixture runs under plain
 // `node`; setting the switch here keeps it independent of the environment.

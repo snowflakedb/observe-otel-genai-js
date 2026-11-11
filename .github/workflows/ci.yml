@@ -61,8 +61,6 @@ jobs:
         run: |
           test -f dist/index.js
           test -f dist/index.d.ts
-          test -f dist/bootstrap/index.js
-          test -f dist/bootstrap/index.d.ts
           test -f dist/integrations/vercel-ai-sdk/index.js
           test -f dist/integrations/vercel-ai-sdk/index.d.ts
           test -f dist/integrations/openai/index.js
@@ -97,18 +95,52 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Pin OpenTelemetry packages to 0.200.0
+      - name: Pin @opentelemetry/instrumentation to 0.200.0
         run: |
-          pnpm add -D \
-            @opentelemetry/instrumentation@0.200.0 \
-            @opentelemetry/exporter-trace-otlp-http@0.200.0 \
-            @opentelemetry/exporter-metrics-otlp-http@0.200.0
-          pnpm ls @opentelemetry/instrumentation \
-            @opentelemetry/exporter-trace-otlp-http \
-            @opentelemetry/exporter-metrics-otlp-http
+          pnpm add -D @opentelemetry/instrumentation@0.200.0
+          pnpm ls @opentelemetry/instrumentation
 
       - name: Typecheck
         run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test:ci
+
+  # The dev install uses OpenTelemetry SDK 2.x. Apps on SDK 3.x bring
+  # @opentelemetry/api 1.10 and @opentelemetry/instrumentation 0.300, so this
+  # job swaps the whole 3.x line in and reruns the tests. test/_otel-sdk.ts
+  # picks up the 3.x trace package when it is installed.
+  compat-otel-sdk3:
+    name: Compat (OpenTelemetry SDK 3.x)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Swap in OpenTelemetry SDK 3.x
+        run: |
+          pnpm remove @opentelemetry/sdk-trace-base @opentelemetry/sdk-trace-node
+          pnpm add -D \
+            @opentelemetry/api@^1.10.0 \
+            @opentelemetry/instrumentation@latest \
+            @opentelemetry/context-async-hooks@^3.0.0 \
+            @opentelemetry/resources@^3.0.0 \
+            @opentelemetry/sdk-metrics@^3.0.0 \
+            @opentelemetry/sdk-trace@^3.0.0
+          pnpm ls @opentelemetry/api @opentelemetry/instrumentation @opentelemetry/sdk-trace
+
+      # The tests and examples are typed against SDK 2.x, so only src/ is
+      # type-checked here.
+      - name: Typecheck src against 3.x
+        run: pnpm exec tsc --project tsconfig.build.json --noEmit
 
       - name: Test
         run: pnpm run test:ci
@@ -164,7 +196,7 @@ jobs:
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
-    needs: [test, compat-otel-min, openai-agents-versions]
+    needs: [test, compat-otel-min, compat-otel-sdk3, openai-agents-versions]
     # `always()` is load-bearing: without it this job is *skipped* when the
     # matrix fails, and GitHub counts a skipped required check as passing.
     # Because it always runs, the result must be asserted explicitly.
@@ -174,6 +206,7 @@ jobs:
         run: |
           echo "test result: ${{ needs.test.result }}"
           echo "compat result: ${{ needs.compat-otel-min.result }}"
+          echo "compat-otel-sdk3 result: ${{ needs.compat-otel-sdk3.result }}"
           echo "openai-agents-versions result: ${{ needs.openai-agents-versions.result }}"
           if [ "${{ needs.test.result }}" != "success" ]; then
             echo "::error::One or more Test (Node ...) jobs did not succeed."
@@ -181,6 +214,10 @@ jobs:
           fi
           if [ "${{ needs.compat-otel-min.result }}" != "success" ]; then
             echo "::error::The lowest OpenTelemetry peer versions compat job did not succeed."
+            exit 1
+          fi
+          if [ "${{ needs.compat-otel-sdk3.result }}" != "success" ]; then
+            echo "::error::The OpenTelemetry SDK 3.x compat job did not succeed."
             exit 1
           fi
           if [ "${{ needs.openai-agents-versions.result }}" != "success" ]; then

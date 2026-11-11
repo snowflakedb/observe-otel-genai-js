@@ -44,15 +44,33 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = ENDPOINT!;
     process.env.OTEL_EXPORTER_OTLP_HEADERS = `Authorization=Bearer ${TOKEN}`;
 
-    const { bootstrapOtel } = await import('../../src/bootstrap/index.js');
+    const { metrics } = await import('@opentelemetry/api');
+    const { OTLPMetricExporter } = await import('@opentelemetry/exporter-metrics-otlp-http');
+    const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-http');
+    const { resourceFromAttributes } = await import('@opentelemetry/resources');
+    const { MeterProvider, PeriodicExportingMetricReader } = await import(
+      '@opentelemetry/sdk-metrics'
+    );
+    const { createTracerProvider, registerTracerProvider, simpleSpanProcessor } = await import(
+      '../_otel-sdk.js'
+    );
     const { Client } = await import('../../src/client.js');
 
-    const { tracerProvider, meterProvider } = bootstrapOtel({
-      serviceName: 'observe-otel-genai-smoke',
-      serviceVersion: '0.1.0',
-      deploymentEnvironment: 'integration',
-      metricExportIntervalMillis: 5_000,
+    const resource = resourceFromAttributes({
+      'service.name': 'observe-otel-genai-smoke',
+      'service.version': '0.1.0',
+      'deployment.environment.name': 'integration',
     });
+    const tracerProvider = createTracerProvider({
+      resource,
+      spanProcessors: [simpleSpanProcessor(new OTLPTraceExporter())],
+    });
+    const meterProvider = new MeterProvider({
+      resource,
+      readers: [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter() })],
+    });
+    registerTracerProvider(tracerProvider);
+    metrics.setGlobalMeterProvider(meterProvider);
 
     const client = new Client();
     const rec = client.startGeneration({
@@ -64,8 +82,6 @@ describe.skipIf(skip)('OTLP export smoke', () => {
     await rec.end();
 
     await client.shutdown();
-    await tracerProvider.forceFlush();
-    await meterProvider.forceFlush();
     await tracerProvider.shutdown();
     await meterProvider.shutdown();
 

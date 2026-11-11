@@ -12,22 +12,26 @@ This library emits plain OpenTelemetry spans and metrics and sends them through 
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com
 OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <your-token>
 OTEL_SERVICE_NAME=my-agent
-OTEL_DEPLOYMENT_ENVIRONMENT_NAME=prod
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=prod
 ```
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the base URL: the OTLP/HTTP exporters add `/v1/traces` and `/v1/metrics` to it. To give a full per-signal URL instead, use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`.
 
-3. Set up OTel with `bootstrapOtel` (or your existing OTel setup) and create a `Client`:
+3. Start the OpenTelemetry SDK, then create a `Client`:
 
 ```ts
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { Client } from '@snowflake/observe-otel-genai';
-import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
 
-const { tracerProvider, meterProvider } = bootstrapOtel({ serviceName: 'my-agent' });
+const sdk = new NodeSDK();
+sdk.start();
 const client = new Client();
+
+// On exit, flush what is left:
+await sdk.shutdown();
 ```
 
-`bootstrapOtel` is a thin wrapper over the standard OTLP/HTTP exporters; see [bootstrap.md](bootstrap.md). If your app already sets up OTel, skip it and just construct a `Client`.
+`NodeSDK` from `@opentelemetry/sdk-node` reads the variables above and exports traces and metrics over OTLP. Versions before 0.209.0 export only traces unless you also set `OTEL_METRICS_EXPORTER=otlp`. If your app already sets up OpenTelemetry, skip this step and just construct a `Client`.
 
 ## Smoke test
 
@@ -43,9 +47,9 @@ Both variables are required; without them the test is skipped. `OTLP_SMOKE_ENDPO
 
 The test:
 
-1. Calls `bootstrapOtel({ serviceName: 'observe-otel-genai-smoke', ... })`.
+1. Sets up OTLP/HTTP trace and metric export with `service.name = "observe-otel-genai-smoke"`.
 2. Emits one `chat` span with token usage and no messages.
-3. Flushes and shuts down the providers. An export error fails the test.
+3. Shuts down the providers, which flushes the spans and metrics. An export error fails the test.
 
 A pass means the endpoint accepted the export. The test does not query the backend, so check there for a span with:
 
@@ -57,13 +61,13 @@ A pass means the endpoint accepted the export. The test does not query the backe
 
 - **Attribute size limits:** many backends cap the size of one attribute. Content is unbounded by default, so if your prompts are larger than your backend's limit, set `new Client({ contentCapture: { maxContentLength: <limit> } })`.
 - **Histogram buckets:** the histograms suggest bucket boundaries to the SDK. If dashboards look wrong, compare with the bucket families in [semconv-mapping.md](semconv-mapping.md#metrics).
-- **`service.name`:** most backends group data by service. Set `OTEL_SERVICE_NAME` (or `serviceName`) and `OTEL_DEPLOYMENT_ENVIRONMENT_NAME` so dev, staging and prod stay separate.
+- **`service.name`:** most backends group data by service. Set `OTEL_SERVICE_NAME`, and `deployment.environment.name` in `OTEL_RESOURCE_ATTRIBUTES`, so dev, staging and prod stay separate.
 
 ## Redacting content
 
 No prompt or completion content is captured by default. The capture modes, including `allow_list`, are covered in [integrations.md](integrations.md#content-capture) and [content-retention.md](content-retention.md).
 
-To scrub specific fields before they leave the process, add a redacting `SpanProcessor` ahead of the exporting one. It also covers spans from other libraries, which the capture modes do not. `bootstrapOtel` takes no extra span processors, so set up the trace provider yourself:
+To scrub specific fields before they leave the process, add a redacting `SpanProcessor` ahead of the exporting one. It also covers spans from other libraries, which the capture modes do not:
 
 ```ts
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -127,19 +131,4 @@ new NodeTracerProvider({
 
 ## Resource detectors
 
-`bootstrapOtel` runs no resource detectors and does not read `OTEL_RESOURCE_ATTRIBUTES`. Its resource is `service.name`, `service.version`, `deployment.environment.name` and `extraResourceAttributes`. To add host or cloud attributes, run the detectors yourself and pass the result in:
-
-```ts
-import { detectResources, hostDetector } from '@opentelemetry/resources';
-import { bootstrapOtel } from '@snowflake/observe-otel-genai/bootstrap';
-
-const detected = detectResources({ detectors: [hostDetector] });
-await detected.waitForAsyncAttributes?.();
-
-bootstrapOtel({
-  serviceName: 'my-agent',
-  extraResourceAttributes: detected.attributes as Record<string, string | number | boolean>,
-});
-```
-
-Cloud detectors, such as those in `@opentelemetry/resource-detector-aws` and `@opentelemetry/resource-detector-gcp`, plug into `detectResources` the same way. If you set up the providers yourself, pass the detected resource to them directly.
+The resource comes from your SDK setup. `NodeSDK` reads `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`, and runs the host, process and environment detectors by default. To add cloud attributes, pass detectors such as those in `@opentelemetry/resource-detector-aws` or `@opentelemetry/resource-detector-gcp` through its `resourceDetectors` option.
