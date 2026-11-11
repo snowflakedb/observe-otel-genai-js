@@ -6,6 +6,24 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Vercel AI SDK: each step runs with its operation's `invoke_agent` span active,
+  so spans the step starts outside a tool parent under the agent. A nested
+  `generateText` in `repairToolCall`, or in `generateText`'s `prepareStep`, used to
+  parent under whatever was active when the operation started, next to the agent
+  rather than inside it, and its own `invoke_agent` span read as a second turn of
+  the conversation. `streamText` runs `prepareStep` outside the step, so a call
+  there still parents as before. The integration binds the context manager's
+  `AsyncLocalStorage` to the AI SDK's `ai:telemetry` tracing channel while an
+  operation with an `invoke_agent` span is open; it needs Node and an
+  `AsyncLocalStorage` context manager, and otherwise does nothing.
+- `GenaiContextManager` (`@snowflake/observe-otel-genai/context-manager`), an
+  `AsyncLocalStorageContextManager` that exposes its storage. Register it in place
+  of the default one (`new NodeSDK({ contextManager: new GenaiContextManager() })`);
+  the integration also finds the default manager's storage, but only through its
+  private field. It needs `@opentelemetry/context-async-hooks` 2.x or 3.x, a new
+  optional peer dependency.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added
