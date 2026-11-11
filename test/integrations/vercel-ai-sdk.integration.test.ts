@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { tracingChannel } from 'node:diagnostics_channel';
+import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import {
   APICallError,
   type Tool,
@@ -33,6 +34,7 @@ import { MockEmbeddingModelV3, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { GenaiContextManager } from '../../src/context-manager.js';
 import { withAgent } from '../../src/context.js';
 import {
   type DeriveOptionsEvent,
@@ -143,6 +145,80 @@ function toolLoopModel() {
             c.enqueue({ type: 'text-delta', id: '0', delta: 'pong done' });
             c.enqueue({ type: 'text-end', id: '0' });
             c.enqueue({ type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(6, 3) });
+            c.close();
+          },
+        }),
+      };
+    },
+  });
+}
+
+function textGenerateModel(text: string, modelId = 'mock-gen') {
+  return new MockLanguageModelV3({
+    provider: 'mock',
+    modelId,
+    doGenerate: async () => ({
+      content: [{ type: 'text', text }],
+      finishReason: v7Finish('stop'),
+      usage: v7Usage(1, 1),
+      warnings: [],
+    }),
+  });
+}
+
+/** Step 1 calls `lookup` with input its schema rejects; step 2 emits final text. */
+function badToolCallGenerateModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'mock',
+    modelId: 'mock-gen',
+    doGenerate: async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          content: [
+            { type: 'tool-call', toolCallId: 't0', toolName: 'lookup', input: '{"wrong":1}' },
+          ],
+          finishReason: v7Finish('tool-calls'),
+          usage: v7Usage(1, 1),
+          warnings: [],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: 'done' }],
+        finishReason: v7Finish('stop'),
+        usage: v7Usage(1, 1),
+        warnings: [],
+      };
+    },
+  });
+}
+
+/** Streaming {@link badToolCallGenerateModel}. */
+function badToolCallStreamModel() {
+  let call = 0;
+  return new MockLanguageModelV3({
+    provider: 'mock',
+    modelId: 'mock-stream',
+    doStream: async () => {
+      call += 1;
+      const parts =
+        call === 1
+          ? [
+              { type: 'tool-call', toolCallId: 't0', toolName: 'lookup', input: '{"wrong":1}' },
+              { type: 'finish', finishReason: v7Finish('tool-calls'), usage: v7Usage(1, 1) },
+            ]
+          : [
+              { type: 'text-start', id: '0' },
+              { type: 'text-delta', id: '0', delta: 'done' },
+              { type: 'text-end', id: '0' },
+              { type: 'finish', finishReason: v7Finish('stop'), usage: v7Usage(1, 1) },
+            ];
+      return {
+        stream: new ReadableStream({
+          start(c) {
+            c.enqueue({ type: 'stream-start', warnings: [] });
+            for (const part of parts) c.enqueue(part as never);
             c.close();
           },
         }),
@@ -518,6 +594,184 @@ describe('genaiTelemetryIntegration', () => {
         agents.some((ag) => ag.spanContext().spanId === c.parentSpanContext?.spanId),
       ),
     ).toBe(true);
+  });
+
+  describe('nested calls a step makes outside a tool', () => {
+    const lookup = {
+      lookup: tool({
+        inputSchema: z.object({ q: z.string() }),
+        execute: async () => 'found',
+      }),
+    };
+    const stopAfterTwoSteps = (({ steps }: { steps: unknown[] }) => steps.length >= 2) as never;
+    const onlyOuterIsAnAgent = (e: DeriveOptionsEvent) => e.functionId === 'outer';
+
+    /** Repairs the bad tool call with a nested generateText, like a model-backed repair. */
+    const repairWithNestedCall = async ({ toolCall }: { toolCall: { input: string } }) => {
+      await generateText({
+        model: textGenerateModel('{"q":"fixed"}', 'nested-gen'),
+        prompt: 'repair',
+        telemetry: { functionId: 'repair' } as never,
+      });
+      return { ...toolCall, input: '{"q":"fixed"}' };
+    };
+
+    const outerAgents = () =>
+      h.spans.getFinishedSpans().filter((s) => s.name === 'invoke_agent outer');
+    const nestedChats = () =>
+      h.spans.getFinishedSpans().filter((s) => s.name === 'chat nested-gen');
+
+    function expectNestedUnderOuter() {
+      const [outer] = outerAgents();
+      const [nested] = nestedChats();
+      expect(outer).toBeDefined();
+      expect(nested).toBeDefined();
+      expect(nested!.parentSpanContext?.spanId).toBe(outer!.spanContext().spanId);
+      expect(oneByName(h, 'invoke_agent repair')).toBeUndefined();
+    }
+
+    it('parents a nested generateText in streamText repairToolCall under invoke_agent', async () => {
+      registerTelemetry(
+        genaiTelemetryIntegration(h.client, { emitOperationSpan: onlyOuterIsAnAgent }),
+      );
+      await drain(
+        streamText({
+          model: badToolCallStreamModel(),
+          prompt: 'look it up',
+          tools: lookup,
+          experimental_repairToolCall: repairWithNestedCall as never,
+          stopWhen: stopAfterTwoSteps,
+          telemetry: { functionId: 'outer' } as never,
+        }),
+      );
+      expectNestedUnderOuter();
+    });
+
+    it('parents a nested generateText in generateText repairToolCall under invoke_agent', async () => {
+      registerTelemetry(
+        genaiTelemetryIntegration(h.client, { emitOperationSpan: onlyOuterIsAnAgent }),
+      );
+      await generateText({
+        model: badToolCallGenerateModel(),
+        prompt: 'look it up',
+        tools: lookup,
+        experimental_repairToolCall: repairWithNestedCall as never,
+        stopWhen: stopAfterTwoSteps,
+        telemetry: { functionId: 'outer' } as never,
+      });
+      expectNestedUnderOuter();
+    });
+
+    it('parents a nested generateText in generateText prepareStep under invoke_agent', async () => {
+      registerTelemetry(
+        genaiTelemetryIntegration(h.client, { emitOperationSpan: onlyOuterIsAnAgent }),
+      );
+      await generateText({
+        model: textGenerateModel('done'),
+        prompt: 'hi',
+        prepareStep: async () => {
+          await generateText({
+            model: textGenerateModel('summary', 'nested-gen'),
+            prompt: 'summarize',
+            telemetry: { functionId: 'repair' } as never,
+          });
+          return {};
+        },
+        telemetry: { functionId: 'outer' } as never,
+      });
+      expectNestedUnderOuter();
+    });
+
+    it('nests a nested invoke_agent under the outer one', async () => {
+      registerTelemetry(genaiTelemetryIntegration(h.client));
+      await drain(
+        streamText({
+          model: badToolCallStreamModel(),
+          prompt: 'look it up',
+          tools: lookup,
+          experimental_repairToolCall: repairWithNestedCall as never,
+          stopWhen: stopAfterTwoSteps,
+          telemetry: { functionId: 'outer' } as never,
+        }),
+      );
+      const [outer] = outerAgents();
+      const nestedAgent = oneByName(h, 'invoke_agent repair');
+      expect(nestedAgent?.parentSpanContext?.spanId).toBe(outer!.spanContext().spanId);
+    });
+
+    it('keeps concurrent operations nested under their own invoke_agent', async () => {
+      registerTelemetry(
+        genaiTelemetryIntegration(h.client, { emitOperationSpan: onlyOuterIsAnAgent }),
+      );
+      const run = () =>
+        drain(
+          streamText({
+            model: badToolCallStreamModel(),
+            prompt: 'look it up',
+            tools: lookup,
+            experimental_repairToolCall: repairWithNestedCall as never,
+            stopWhen: stopAfterTwoSteps,
+            telemetry: { functionId: 'outer' } as never,
+          }),
+        );
+      await Promise.all([run(), run()]);
+
+      const outers = outerAgents();
+      const nested = nestedChats();
+      expect(outers).toHaveLength(2);
+      expect(nested).toHaveLength(2);
+      for (const chat of nested) {
+        const parent = outers.find(
+          (o) => o.spanContext().spanId === chat.parentSpanContext?.spanId,
+        );
+        expect(parent?.spanContext().traceId).toBe(chat.spanContext().traceId);
+      }
+      expect(new Set(nested.map((c) => c.parentSpanContext?.spanId)).size).toBe(2);
+    });
+
+    it('leaves the context alone when the operation has no invoke_agent span', async () => {
+      registerTelemetry(genaiTelemetryIntegration(h.client, { emitOperationSpan: false }));
+      await drain(
+        streamText({
+          model: badToolCallStreamModel(),
+          prompt: 'look it up',
+          tools: lookup,
+          experimental_repairToolCall: repairWithNestedCall as never,
+          stopWhen: stopAfterTwoSteps,
+        }),
+      );
+      const [nested] = nestedChats();
+      expect(nested).toBeDefined();
+      expect(nested!.parentSpanContext).toBeUndefined();
+    });
+
+    it('uses the storage GenaiContextManager exposes', async () => {
+      context.disable();
+      context.setGlobalContextManager(new GenaiContextManager().enable());
+      registerTelemetry(
+        genaiTelemetryIntegration(h.client, { emitOperationSpan: onlyOuterIsAnAgent }),
+      );
+      await generateText({
+        model: textGenerateModel('done'),
+        prompt: 'hi',
+        prepareStep: async () => {
+          await generateText({
+            model: textGenerateModel('summary', 'nested-gen'),
+            prompt: 'summarize',
+            telemetry: { functionId: 'repair' } as never,
+          });
+          return {};
+        },
+        telemetry: { functionId: 'outer' } as never,
+      });
+      expectNestedUnderOuter();
+    });
+
+    it('releases the tracing channel once no operation is open', async () => {
+      registerTelemetry(genaiTelemetryIntegration(h.client));
+      await generateText({ model: textGenerateModel('done'), prompt: 'hi' });
+      expect(tracingChannel('ai:telemetry').hasSubscribers).toBe(false);
+    });
   });
 
   it('derives identity/tags from runtimeContext', async () => {

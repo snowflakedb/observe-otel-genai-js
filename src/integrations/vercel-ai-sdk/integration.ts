@@ -30,7 +30,10 @@
  * enclosing scope, for the synchronous `startSpan` call. Separately,
  * `executeTool` re-activates the `execute_tool` span for the duration of
  * `tool.execute` so auto-instrumented work inside the tool (HTTP/undici, nested
- * `generateText`, …) parents under that span rather than an ambient ancestor.
+ * `generateText`, …) parents under that span rather than an ambient ancestor, and
+ * each step runs with the `invoke_agent` span active (`_step-context.ts`), so work
+ * the step starts outside a tool, such as a nested `generateText` in
+ * `repairToolCall` or `prepareStep`, parents under the agent.
  *
  * Correlation: every lifecycle event carries a `callId`; per-operation state is
  * keyed on it, so concurrent operations stay isolated.
@@ -75,6 +78,11 @@ import {
   normalizeAiSdkProviderName,
   requestParams,
 } from './_model.js';
+import {
+  type StepContextSource,
+  addStepContextSource,
+  removeStepContextSource,
+} from './_step-context.js';
 
 type GenerationRec = ReturnType<Client['startGeneration']>;
 type ToolRec = ReturnType<Client['startToolExecution']>;
@@ -199,6 +207,10 @@ class GenaiTelemetry {
     return this.getClient();
   }
 
+  /** The context an operation's steps run in: its `invoke_agent` span's, if it has one. */
+  private readonly stepContext: StepContextSource = (callId) =>
+    this.get(callId)?.agent?.withActiveContext(() => context.active());
+
   onStart(event: AiOperationStartEvent): void {
     if (!event.operationId) return;
     const deriveEvent: DeriveOptionsEvent = {
@@ -250,6 +262,7 @@ class GenaiTelemetry {
       tools: new Map(),
       closed: false,
     });
+    if (agent) addStepContextSource(this.stepContext);
   }
 
   onStepStart(event: AiStepStartEvent): void {
@@ -582,6 +595,7 @@ class GenaiTelemetry {
     if (op.closed) return;
     op.closed = true;
     this.ops.delete(callId);
+    if (![...this.ops.values()].some((o) => o.agent)) removeStepContextSource(this.stepContext);
     // Close any still-open step/tool recorders (error path or abandoned turn).
     for (const [, step] of op.steps) {
       if (error !== undefined) step.rec.setCallError(error);
